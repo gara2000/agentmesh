@@ -3,6 +3,9 @@
 # Runs in a background tmux window alongside the dispatcher. Never exits.
 set -euo pipefail
 
+# cd to agentmesh so notecove can find its .notecove config
+cd /Users/firas.gara/agentmesh
+
 REGISTRY=/Users/firas.gara/agentmesh/signals/workers
 QUEUE=/Users/firas.gara/agentmesh/signals/queue
 
