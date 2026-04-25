@@ -32,8 +32,8 @@ while true; do
     fi
 
     # Window is gone — check task state
-    state=$(notecove task show "$slug" --format json 2>/dev/null \
-      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('metadata',d).get('stateId',''))" 2>/dev/null || true)
+    state=$(notecove task show "$slug" --json 2>/dev/null \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stateId',''))" 2>/dev/null || true)
 
     if [[ "$state" == "doing" ]]; then
       echo "[watchdog] crash detected: $slug (window '$window' gone, state=doing)"
