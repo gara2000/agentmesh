@@ -80,6 +80,28 @@ Responsibilities:
 - Forward each event to the orchestrator via `tmux wait-for -S orchestrator-event`
 - Enables fan-in: multiple workers can signal concurrently without the orchestrator missing events
 
+### Watchdog
+
+**One instance.** Runs in the `orchestrator` session, window `watchdog`. Pure bash, no Claude.
+
+Responsibilities:
+- Poll the worker registry (`signals/workers`) every 30 seconds
+- For each registered worker, check if its tmux window still exists
+- If a window is gone and the task state is still `doing` → crash detected: append slug to queue and fire `worker-any-event` to wake the orchestrator
+- Remove the entry from the registry regardless (window gone = worker dead)
+- If the task state is anything other than `doing` (e.g. `done`, `in-review`) → worker finished cleanly before being unregistered; no action
+
+The orchestrator handles the crash case in its event loop: when it drains a slug whose task state is `doing`, it re-queues the task to `Ready` and spawns a new worker.
+
+The worker registry (`signals/workers`) is a line-oriented file maintained by the orchestrator:
+```
+# format: <task-slug> <tmux-window-name>
+WORK-pm4 WORK-pm4
+WORK-xyz WORK-xyz
+```
+
+**Crash detection latency**: at most 60 seconds (two poll cycles).
+
 ---
 
 ## tmux Layout
@@ -88,6 +110,7 @@ Responsibilities:
 Session: orchestrator       ← user attaches here only
   window 0: main            ← /orchestrator skill (Claude Code)
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
+  window 2: watchdog        ← scripts/watchdog.sh (bash loop)
 
 Session: workers
   window 0: WORK-pm4        ← /worker skill (Claude Code, yolo mode)
@@ -121,12 +144,14 @@ claude plugin update agentic-workflows@personal-claude-marketplace
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
-│   └── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
-└── signals/
-    └── queue               # runtime append-only file; worker slugs written here before signaling
+│   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
+│   └── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
+└── signals/                # runtime directory, created on orchestrator bootstrap
+    ├── queue               # append-only; worker slugs written here before signaling
+    └── workers             # worker registry; line per active worker: "<slug> <window-name>"
 ```
 
-The `signals/` directory and `queue` file are runtime artifacts — created fresh each time the orchestrator bootstraps.
+The `signals/` directory and its contents are runtime artifacts — created fresh each time the orchestrator bootstraps.
 
 ---
 
