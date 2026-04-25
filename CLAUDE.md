@@ -155,6 +155,29 @@ The `signals/` directory and its contents are runtime artifacts — created fres
 
 ---
 
+## Proactive Issue Reporting
+
+Workers are expected to file triage tasks for anything noteworthy they observe during their work — bugs, inconsistencies, missing tests, documentation gaps, security concerns — **even if unrelated to their assigned task**.
+
+All triage tasks go into the **Triage** folder at the root of the NoteCove storage directory. Workers resolve the folder ID dynamically at startup:
+
+```bash
+TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
+```
+
+Then create triage tasks using `${TRIAGE_FOLDER}`:
+
+```bash
+notecove task create "<title>" \
+  --folder ${TRIAGE_FOLDER} \
+  --project WORK \
+  --content-file - --content-format markdown --json
+```
+
+An automated triage process will eventually process these tasks. Workers should file them immediately rather than batching.
+
+---
+
 ## Starting the Orchestrator
 
 ```bash
