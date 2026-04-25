@@ -35,7 +35,8 @@ while true; do
     fi
 
     # Window is gone — check task state
-    state=$(notecove task show "$slug" --json 2>/dev/null \
+    # notecove is a shell function (not a binary), so call the CLI directly
+    state=$(node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs task show "$slug" --json 2>/dev/null \
       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stateId',''))" 2>/dev/null || true)
 
     if [[ "$state" == "doing" ]]; then
