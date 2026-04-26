@@ -8,6 +8,11 @@ cd /Users/firas.gara/agentmesh
 
 REGISTRY=/Users/firas.gara/agentmesh/signals/workers
 QUEUE=/Users/firas.gara/agentmesh/signals/queue
+LOG=/Users/firas.gara/agentmesh/signals/events.log
+
+log_event() {
+  printf '%s\twatchdog\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:--}" >> "$LOG"
+}
 
 echo "[watchdog] started"
 
@@ -41,12 +46,14 @@ while true; do
 
     if [[ "$state" == "doing" ]]; then
       echo "[watchdog] crash detected: $slug (window '$window' gone, state=doing)"
+      log_event "crash-detected" "$slug"
 
       # Wake orchestrator
       echo "$slug" >> "$QUEUE"
       tmux wait-for -S worker-any-event
     else
       echo "[watchdog] $slug window gone but state=$state — no action needed"
+      log_event "worker-exited-clean" "$slug"
     fi
 
     # Remove this entry from the registry regardless of state

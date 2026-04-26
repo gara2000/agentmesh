@@ -148,10 +148,42 @@ agentmesh/
 │   └── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; worker slugs written here before signaling
-    └── workers             # worker registry; line per active worker: "<slug> <window-name>"
+    ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
+    └── events.log          # append-only TSV: timestamp, component, event_type, slug
 ```
 
 The `signals/` directory and its contents are runtime artifacts — created fresh each time the orchestrator bootstraps.
+
+### Event log format
+
+`events.log` is a tab-separated file with four fields per line:
+
+```
+timestamp       component       event_type                  slug
+2026-04-26T...  dispatcher      worker-any-event-received   -
+2026-04-26T...  dispatcher      orchestrator-event-fired    -
+2026-04-26T...  watchdog        crash-detected              WORK-xyz
+2026-04-26T...  watchdog        worker-exited-clean         WORK-xyz
+2026-04-26T...  orchestrator    bootstrap-complete          -
+2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
+2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
+2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
+2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
+2026-04-26T...  orchestrator    review-approved             WORK-xyz
+2026-04-26T...  orchestrator    review-feedback             WORK-xyz
+2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
+2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  worker          started                     WORK-xyz
+2026-04-26T...  worker          signaling-attention         WORK-xyz
+2026-04-26T...  worker          resumed                     WORK-xyz
+2026-04-26T...  worker          signaling-plan              WORK-xyz
+2026-04-26T...  worker          resumed-from-plan           WORK-xyz
+2026-04-26T...  worker          implementing                WORK-xyz
+2026-04-26T...  worker          pr-created                  WORK-xyz
+2026-04-26T...  worker          signaling-in-review         WORK-xyz
+2026-04-26T...  worker          approved                    WORK-xyz
+2026-04-26T...  worker          feedback-received           WORK-xyz
+```
 
 ---
 
