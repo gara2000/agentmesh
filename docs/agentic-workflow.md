@@ -261,6 +261,15 @@ sequenceDiagram
     O->>W: Fire WORK-42-resume-3
     O->>O: Kill workers:WORK-42 window
 
+    Note over O: Check for newly unblocked tasks
+    O->>NC: Fetch Blocked tasks in project
+    loop for each blocked task
+        O->>NC: Check if all remaining blockers are Done
+        alt only blocker was WORK-42
+            O->>NC: Set dependent task → Ready
+        end
+    end
+
     W->>W: Confirm state=done, exit
 ```
 
