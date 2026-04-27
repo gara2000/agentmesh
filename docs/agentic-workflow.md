@@ -128,7 +128,7 @@ flowchart TD
     I2 -->|Yes| I3[Update docs/agentic-workflow.md\n& NoteCove note]
     I3 --> J[Open PR]
     I2 -->|No| J
-    J --> K[Create COMPLETION note\nSignal Attention (PR ready)\nBlock]
+    J --> K["Create COMPLETION note<br/>Signal Attention PR ready<br/>Block"]
     K --> L{Outcome}
     L -->|Approved| M([Exit])
     L -->|Feedback| I
@@ -153,7 +153,7 @@ flowchart TD
     E -->|Approved| F[Create child tasks in NoteCove\nIndependent → Ready\nBlocked → Blocked]
     F --> G[Establish blocking links between tasks]
     G --> H[Mark parent task Done]
-    H --> I[Signal Attention (completion)\nBlock]
+    H --> I["Signal Attention completion<br/>Block"]
     I --> J([Exit after orchestrator ack])
 ```
 
@@ -298,7 +298,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     Ready -->|Orchestrator picks up| Doing
-    Doing -->|Worker blocks\n(question, plan ready, PR ready)| Attention
+    Doing -->|Worker blocks: question, plan ready, or PR ready| Attention
     Attention -->|Orchestrator dispatches reviewer| InReview[In Review]
     InReview -->|Reviewer finishes| Attention
     Attention -->|Orchestrator resumes worker| Doing
