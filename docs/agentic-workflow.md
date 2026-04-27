@@ -38,7 +38,7 @@ Workflow from the user's perspective:
 
 1. Run `/orchestrator --project WORK` to start.
 2. The orchestrator picks up `Ready` tasks and dispatches agents automatically.
-3. When a worker needs input (`Attention`) or has a completed PR (`In Review`), the orchestrator surfaces it.
+3. When a worker needs input or has a completed PR (both signaled as `Attention`), the orchestrator surfaces it.
 4. The user responds in the orchestrator session — answering questions, approving or giving feedback.
 5. The orchestrator relays everything to the worker and resumes it.
 
@@ -70,7 +70,7 @@ sequenceDiagram
     participant O as Orchestrator
     participant NC as NoteCove
 
-    W->>NC: Set task state (Attention / In Review)
+    W->>NC: Set task state (always Attention)
     W->>W: Increment SIGNAL_SEQ, write to signals/<slug>.seq
     W->>W: Append slug to signals/queue
     W->>D: tmux wait-for -S worker-any-event
@@ -95,11 +95,11 @@ The orchestrator never reads worker notes — **task state is the only coordinat
 stateDiagram-v2
     [*] --> Ready : User queues task
     Ready --> Doing : Orchestrator picks up
-    Doing --> Attention : Worker needs input\nor plan review
+    Doing --> Attention : Worker needs input,\nplan ready, or PR ready
+    Attention --> InReview : Orchestrator dispatches\nreviewer agent
+    InReview --> Attention : Reviewer finishes
     Attention --> Doing : Orchestrator resumes\n(after user responds)
-    Doing --> InReview : Worker opens PR
-    InReview --> Done : User approves
-    InReview --> Doing : User gives feedback
+    Attention --> Done : User approves PR
     Done --> [*]
     Ready --> WontDo : User cancels task
     Doing --> WontDo : User cancels in-progress task
@@ -128,7 +128,7 @@ flowchart TD
     I2 -->|Yes| I3[Update docs/agentic-workflow.md\n& NoteCove note]
     I3 --> J[Open PR]
     I2 -->|No| J
-    J --> K[Create COMPLETION note\nSignal In Review\nBlock]
+    J --> K["Create COMPLETION note<br/>Signal Attention PR ready<br/>Block"]
     K --> L{Outcome}
     L -->|Approved| M([Exit])
     L -->|Feedback| I
@@ -153,7 +153,7 @@ flowchart TD
     E -->|Approved| F[Create child tasks in NoteCove\nIndependent → Ready\nBlocked → Blocked]
     F --> G[Establish blocking links between tasks]
     G --> H[Mark parent task Done]
-    H --> I[Signal In Review\nBlock]
+    H --> I["Signal Attention completion<br/>Block"]
     I --> J([Exit after orchestrator ack])
 ```
 
@@ -254,7 +254,7 @@ sequenceDiagram
     W->>W: Create worktree, implement, write tests
     W->>W: Push branch, open PR #17
     W->>NC: Create COMPLETION note
-    W->>NC: Set WORK-42 → In Review
+    W->>NC: Set WORK-42 → Attention
     W->>O: Signal
     W->>W: Block on WORK-42-resume-3
 
@@ -298,11 +298,11 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     Ready -->|Orchestrator picks up| Doing
-    Doing -->|Worker blocks, needs input| Attention
-    Attention -->|Orchestrator resumes| Doing
-    Doing -->|Worker opens PR| InReview[In Review]
-    InReview -->|User approves| Done
-    InReview -->|User gives feedback| Doing
+    Doing -->|Worker blocks: question, plan ready, or PR ready| Attention
+    Attention -->|Orchestrator dispatches reviewer| InReview[In Review]
+    InReview -->|Reviewer finishes| Attention
+    Attention -->|Orchestrator resumes worker| Doing
+    Attention -->|User approves PR| Done
     Ready -->|Planner creates blocked child| Blocked
     Blocked -->|All blockers resolved| Ready
     Ready -->|User cancels| WontDo[Won't Do]
@@ -313,8 +313,8 @@ flowchart LR
 |---|---|---|
 | `Ready` | User / Planner | Task is queued for pickup |
 | `Doing` | Orchestrator / Worker | Task is actively being worked |
-| `Attention` | Worker / Planner | Worker needs user input or plan review |
-| `In Review` | Worker / Planner | PR is open, awaiting approval |
+| `Attention` | Worker / Planner | Needs user attention — questions, plan ready, PR ready, or post-review |
+| `In Review` | Orchestrator only | A reviewer agent is currently running |
 | `Blocked` | Planner | Task is waiting on a dependency |
 | `Done` | Orchestrator | Fully approved and complete |
 | `Won't Do` | User | Task was cancelled — no work will be done |
