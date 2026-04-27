@@ -124,7 +124,10 @@ flowchart TD
     G -->|Feedback| F
     G -->|Approved| H[Create git worktree\nbranched from origin/main]
     H --> I[Implement + tests]
-    I --> J[Open PR]
+    I --> I2{Workflow files\nchanged?}
+    I2 -->|Yes| I3[Update docs/agentic-workflow.md\n& NoteCove note]
+    I3 --> J[Open PR]
+    I2 -->|No| J
     J --> K[Create COMPLETION note\nSignal In Review\nBlock]
     K --> L{Outcome}
     L -->|Approved| M([Exit])
