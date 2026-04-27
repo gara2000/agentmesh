@@ -32,8 +32,8 @@ The orchestrator does not use separate status files. After unblocking, it reads 
 
 | NoteCove Task State | Meaning |
 |---|---|
-| `Attention` | Worker has questions — needs user input |
-| `In Review` | Worker believes work is complete — needs user approval |
+| `Attention` | Worker/planner needs user input — questions, plan ready, or PR ready |
+| `In Review` | A reviewer agent is currently running (set by orchestrator only) |
 | `Done` | Set by orchestrator after user approves — triggers worker exit |
 
 ---
@@ -50,10 +50,12 @@ Responsibilities:
 - Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel)
 - Spawn a worker per task
 - Block on `orchestrator-event` and drain the queue after each unblock
-- Handle `Attention` events: surface worker questions to the user, write answers to NoteCove, resume the worker
-- Handle `In Review` events: surface completion summary to the user, wait for approval or feedback
-  - Approved → mark task `Done`, resume worker (which exits), kill its window
-  - Feedback → write feedback as an ANSWER note, set task back to `Doing`, resume worker to continue
+- Handle `Attention` events: determine the event type (questions, plan ready, PR ready, or post-review), surface to the user, resume the worker
+  - Questions → write user answers to NoteCove, resume worker
+  - Plan ready → user approves/rejects or requests plan reviewer (sets `In Review`, spawns plan-reviewer)
+  - PR ready → user approves/rejects/provides feedback or requests PR reviewer (sets `In Review`, spawns pr-reviewer)
+  - Post-review → present review findings, await user decision
+  - Planner completion → auto-ack, set Done, clean up
 - When all workers are done and no more Ready tasks exist: shut down dispatcher and exit
 
 ### Worker
@@ -66,7 +68,7 @@ Responsibilities:
 - Ask questions via `QUESTIONS-<N>` notes, signal `Attention`, block on resume
 - Create an implementation plan via `PLAN` note, signal `Attention` for review, block on resume
 - Implement the plan (TDD where applicable), create a PR
-- Signal `In Review` when complete — block on resume
+- Signal `Attention` when PR is ready — block on resume (approved → exit, feedback → continue)
 - Exit only after receiving the orchestrator's resume signal (which means the user approved)
 - Never interact with the user directly
 - Never mark its own task `Done`
@@ -89,7 +91,7 @@ Responsibilities:
 - For each registered worker, check if its tmux window still exists
 - If a window is gone and the task state is still `doing` → crash detected: append slug to queue and fire `worker-any-event` to wake the orchestrator
 - Remove the entry from the registry regardless (window gone = worker dead)
-- If the task state is anything other than `doing` (e.g. `done`, `in-review`) → worker finished cleanly before being unregistered; no action
+- If the task state is anything other than `doing` (e.g. `done`, `attention`) → worker finished cleanly before being unregistered; no action
 
 The orchestrator handles the crash case in its event loop: when it drains a slug whose task state is `doing`, it re-queues the task to `Ready` and spawns a new worker.
 
@@ -180,7 +182,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  worker          resumed-from-plan           WORK-xyz
 2026-04-26T...  worker          implementing                WORK-xyz
 2026-04-26T...  worker          pr-created                  WORK-xyz
-2026-04-26T...  worker          signaling-in-review         WORK-xyz
+2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  worker          approved                    WORK-xyz
 2026-04-26T...  worker          feedback-received           WORK-xyz
 ```
