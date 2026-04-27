@@ -101,6 +101,9 @@ stateDiagram-v2
     InReview --> Done : User approves
     InReview --> Doing : User gives feedback
     Done --> [*]
+    Ready --> WontDo : User cancels task
+    Doing --> WontDo : User cancels in-progress task
+    WontDo --> [*]
 ```
 
 ---
@@ -132,17 +135,23 @@ flowchart TD
 
 Spawned when a task is too large for a single PR (multiple independent components, distinct areas, explicit decomposition language).
 
+Like a normal worker, a planner can also ask the user questions before proposing a decomposition — it signals `Attention` with a `QUESTIONS-N` note and blocks until the orchestrator resumes it with answers.
+
 ```mermaid
 flowchart TD
     A([Start]) --> B[Read task & explore codebase]
-    B --> C[Create DECOMPOSITION note\nwith subtask breakdown\nSignal Attention\nBlock]
-    C --> D{Decomposition approved?}
-    D -->|Feedback| C
-    D -->|Approved| E[Create child tasks in NoteCove\nIndependent → Ready\nBlocked → Blocked]
-    E --> F[Establish blocking links between tasks]
-    F --> G[Mark parent task Done]
-    G --> H[Signal In Review\nBlock]
-    H --> I([Exit after orchestrator ack])
+    B --> C{Ambiguous?}
+    C -->|Yes| Q[Create QUESTIONS-N note\nSignal Attention\nBlock]
+    Q --> R[Read ANSWER-N note]
+    R --> C
+    C -->|No| D[Create DECOMPOSITION note\nwith subtask breakdown\nSignal Attention\nBlock]
+    D --> E{Decomposition approved?}
+    E -->|Feedback| D
+    E -->|Approved| F[Create child tasks in NoteCove\nIndependent → Ready\nBlocked → Blocked]
+    F --> G[Establish blocking links between tasks]
+    G --> H[Mark parent task Done]
+    H --> I[Signal In Review\nBlock]
+    I --> J([Exit after orchestrator ack])
 ```
 
 ---
@@ -284,6 +293,8 @@ flowchart LR
     InReview -->|User gives feedback| Doing
     Ready -->|Planner creates blocked child| Blocked
     Blocked -->|All blockers resolved| Ready
+    Ready -->|User cancels| WontDo[Won't Do]
+    Doing -->|User cancels| WontDo
 ```
 
 | State | Who sets it | Meaning |
@@ -294,6 +305,7 @@ flowchart LR
 | `In Review` | Worker / Planner | PR is open, awaiting approval |
 | `Blocked` | Planner | Task is waiting on a dependency |
 | `Done` | Orchestrator | Fully approved and complete |
+| `Won't Do` | User | Task was cancelled — no work will be done |
 
 ### Priority
 
@@ -315,3 +327,12 @@ flowchart TD
 ```
 
 Notes keep detailed context out of the task record. If a worker crashes and is restarted, it reads existing notes to restore context — no work is lost.
+
+### Answering Worker Questions
+
+When a worker signals `Attention` with a `QUESTIONS-N` note, the user has two ways to answer:
+
+- **Via the orchestrator session** — type the answer in-session; the orchestrator writes it to NoteCove and resumes the worker.
+- **Inline in the QUESTIONS note** — edit the note directly in NoteCove, writing answers beneath each question. The worker reads the updated note after being resumed.
+
+The inline approach keeps questions and answers together in one place, making the conversation easy to review later.
