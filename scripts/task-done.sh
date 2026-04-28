@@ -26,11 +26,13 @@ tmux kill-window -t "workers:${SLUG}" 2>/dev/null || true
 tmux kill-window -t "workers:plan-rev-${SLUG}" 2>/dev/null || true
 tmux kill-window -t "workers:pr-rev-${SLUG}" 2>/dev/null || true
 
-# 3. Unregister from the worker registry and remove seq file
-sed -i '' "/^${SLUG} /d" "$AGENTMESH/signals/workers"
+# 3. Unregister from the worker registry
+sed -i '' "/^${SLUG} /d" "$AGENTMESH/signals/workers" 2>/dev/null || true
+
+# 4. Remove seq file
 rm -f "$AGENTMESH/signals/${SLUG}.seq"
 
-# 4. Unblock any tasks whose only remaining blocker was this slug.
+# 5. Unblock any tasks whose only remaining blocker was this slug.
 #    Retry up to 3 times with a 2s delay to handle API propagation lag after
 #    the task was marked Done.
 sleep 2
@@ -39,6 +41,7 @@ while [ $_attempt -lt 3 ]; do
   _attempt=$((_attempt + 1))
   _blocked_json=$(notecove task list --project "$PROJECT" --state Blocked --limit 100 --json)
   _blocked_slugs=$(echo "$_blocked_json" | python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]")
+  # On the final attempt, process even if empty (no blocked tasks is a valid result)
   if [ -n "$_blocked_slugs" ] || [ $_attempt -eq 3 ]; then
     echo "$_blocked_slugs" | while read -r dep_slug; do
       [ -z "$dep_slug" ] && continue
