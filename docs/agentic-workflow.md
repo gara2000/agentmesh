@@ -319,6 +319,25 @@ It runs `new-window`, starts Claude in yolo mode, waits 3 seconds for the shell 
 
 ---
 
+## Task Cleanup Helper
+
+`scripts/task-done.sh` is called by the orchestrator whenever a task reaches a terminal state (Done, Won't Do). It consolidates the cleanup steps that are common to every task completion path.
+
+```bash
+bash scripts/task-done.sh <slug> <PROJECT> [<resume-sig>]
+```
+
+It performs, in order:
+1. **Resume signal** (optional) — if `<resume-sig>` is provided, fires `tmux wait-for -S <resume-sig>` to unblock the worker before its windows are killed.
+2. **Kill worker windows** — `workers:<slug>`, `workers:plan-rev-<slug>`, `workers:pr-rev-<slug>`.
+3. **Unregister** — removes the worker entry from `signals/workers` (no-op if the file is missing).
+4. **Remove seq file** — deletes `signals/<slug>.seq`.
+5. **Unblock dependents** — retries up to 3 times (2 s apart) to find and unblock any task whose only remaining non-terminal blocker was `<slug>`.
+
+Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit it when the worker is already gone (crash path, external abort).
+
+---
+
 ## End-to-End Example Workflow
 
 ```mermaid
