@@ -47,7 +47,7 @@ folders = json.load(sys.stdin)
 print(next(f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None))")
 echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
-printf '%s\torchestrator\tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\torchestrator \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
 # 0c. Create workers tmux session (if not already running)
 tmux new-session -d -s workers 2>/dev/null || true

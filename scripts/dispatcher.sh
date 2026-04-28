@@ -6,7 +6,7 @@ set -euo pipefail
 LOG=/Users/firas.gara/agentmesh/signals/events.log
 
 log_event() {
-  printf '%s\tdispatcher\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:--}" >> "$LOG"
+  printf '%s\tdispatcher   \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:--}" >> "$LOG"
 }
 
 echo "[dispatcher] started"
