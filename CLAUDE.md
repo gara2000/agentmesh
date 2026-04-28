@@ -189,6 +189,9 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
 2026-04-26T...  orchestrator    review-approved             WORK-xyz
 2026-04-26T...  orchestrator    review-feedback             WORK-xyz
+2026-04-26T...  orchestrator    plan-reviewer-spawned       WORK-xyz
+2026-04-26T...  orchestrator    reviewer-spawning           WORK-xyz
+2026-04-26T...  orchestrator    reviewer-spawned            WORK-xyz
 2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
 2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
