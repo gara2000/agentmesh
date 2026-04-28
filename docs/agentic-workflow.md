@@ -176,7 +176,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the orchestrator at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` and `.reviewed` flags.
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so the orchestrator can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.

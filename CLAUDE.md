@@ -54,7 +54,7 @@ Responsibilities:
   - Questions → write user answers to NoteCove, resume worker
   - Plan ready → user approves/rejects or requests plan reviewer (sets `In Review`, spawns plan-reviewer)
   - PR ready → user approves/rejects/provides feedback or requests PR reviewer (sets `In Review`, spawns pr-reviewer)
-  - Post-review → present review findings, await user decision
+  - Post-review (standard mode) → present review findings, await user decision; (auto-review mode) → pass review to worker automatically, resume worker
   - Planner completion → auto-ack, set Done, clean up
 - When all workers are done and no more Ready tasks exist: shut down dispatcher and exit
 
@@ -200,6 +200,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
 2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
+2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
