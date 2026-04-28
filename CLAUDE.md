@@ -129,8 +129,10 @@ Session: orchestrator       ← user attaches here only
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
-  window 0: WORK-pm4        ← /worker skill (Claude Code, yolo mode)
-  window 1: WORK-xyz        ← /worker skill (Claude Code, yolo mode)
+  window 0: WORK-pm4         ← /worker skill (Claude Code, yolo mode)
+  window 1: WORK-xyz         ← /worker skill (Claude Code, yolo mode)
+  window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
+  window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
 ```
 
@@ -200,6 +202,11 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
+2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
+2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
+2026-04-26T...  pr-reviewer     pr-review-started           WORK-xyz
+2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
 2026-04-26T...  worker          started                     WORK-xyz
 2026-04-26T...  worker          signaling-attention         WORK-xyz
 2026-04-26T...  worker          resumed                     WORK-xyz
