@@ -160,12 +160,14 @@ claude plugin update agentic-workflows@personal-claude-marketplace
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
+│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; worker slugs written here before signaling
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
+    ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
     ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
     └── events.log          # append-only TSV: timestamp, component, event_type, slug
 ```
@@ -227,6 +229,26 @@ Then create triage tasks using `${TRIAGE_FOLDER}`:
 ```bash
 notecove task create "<title>" \
   --folder ${TRIAGE_FOLDER} \
+  --project WORK \
+  --content-file - --content-format markdown --json
+```
+
+An automated triage process will eventually process these tasks. Workers should file them immediately rather than batching.
+
+---
+
+## Proactive Issue Reporting
+
+Workers are expected to file triage tasks for anything noteworthy they observe during their work — bugs, inconsistencies, missing tests, documentation gaps, security concerns — **even if unrelated to their assigned task**.
+
+All triage tasks go into the **Triage** folder at the root of the NoteCove storage directory:
+
+- **Folder ID**: `2d8043jdrnf6hth7n2mwhspw1v`
+- **Folder path**: `Triage`
+
+```bash
+notecove task create "<title>" \
+  --folder 2d8043jdrnf6hth7n2mwhspw1v \
   --project WORK \
   --content-file - --content-format markdown --json
 ```
