@@ -11,6 +11,7 @@ Session: orchestrator          ← user attaches here only
   window 0: main               ← /orchestrator skill (Claude Code)
   window 1: dispatcher         ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog           ← scripts/watchdog.sh (bash loop)
+  window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
@@ -181,6 +182,7 @@ flowchart TD
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
+7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 
 Usage:
 ```bash
@@ -240,6 +242,33 @@ sequenceDiagram
 ```
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
+
+---
+
+## Folder Cleanup
+
+The folder cleanup daemon (`scripts/folder-cleanup.sh`) moves task subfolders for terminal tasks into the adjacent `Done` folder — asynchronously, without requiring the orchestrator to call a folder-move helper inline.
+
+```mermaid
+sequenceDiagram
+    participant FC as Folder Cleanup (every 60s)
+    participant NC as NoteCove
+
+    loop every 60 seconds
+        FC->>NC: task list --json (all tasks)
+        FC->>NC: folder list --json (all folders)
+        loop for each terminal task (Done / Won't Do)
+            FC->>FC: Find task's named subfolder in parent folder
+            alt subfolder exists AND not already in Done folder
+                FC->>NC: folder move <subfolder-id> <done-folder-id>
+            end
+        end
+    end
+```
+
+This replaces the inline `move_task_folder_to_done` helper that was previously called in each terminal path of the orchestrator skill, removing ~25 lines of repeated shell/Python from the skill.
+
+**Idempotent**: the daemon checks whether the subfolder is already under a `Done` folder before attempting a move, so repeated poll cycles are safe.
 
 ---
 

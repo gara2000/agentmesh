@@ -117,6 +117,18 @@ WORK-xyz WORK-xyz
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
+### Folder Cleanup
+
+**One instance.** Runs in the `orchestrator` session, window `folder-cleanup`. Pure bash, no Claude.
+
+Responsibilities:
+- Poll every 60 seconds for tasks in any terminal state (Done, Won't Do)
+- For each such task, move its named subfolder from the task's parent folder into the adjacent `Done` folder
+- Skip folders already under a `Done` folder (idempotent)
+- Handles all terminal states automatically — the orchestrator no longer needs to call a `move_task_folder_to_done` helper inline
+
+The folder-cleanup window is killed by the orchestrator at shutdown.
+
 ---
 
 ## tmux Layout
@@ -126,6 +138,7 @@ Session: orchestrator       ← user attaches here only
   window 0: main            ← /orchestrator skill (Claude Code)
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
+  window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
@@ -162,9 +175,10 @@ claude plugin update agentic-workflows@personal-claude-marketplace
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
-│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog
+│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog + folder-cleanup
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
+│   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; worker slugs written here before signaling
@@ -202,6 +216,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
 2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
 2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz

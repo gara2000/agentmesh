@@ -65,4 +65,10 @@ tmux list-windows -t orchestrator | grep -q watchdog || {
   tmux send-keys -t orchestrator:watchdog "bash $SCRIPTS/watchdog.sh" Enter
 }
 
-echo "[bootstrap] complete — dispatcher and watchdog running"
+# 0f. Launch folder-cleanup daemon in a background window
+tmux list-windows -t orchestrator | grep -q folder-cleanup || {
+  tmux new-window -t orchestrator -n folder-cleanup
+  tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
+}
+
+echo "[bootstrap] complete — dispatcher, watchdog, and folder-cleanup running"
