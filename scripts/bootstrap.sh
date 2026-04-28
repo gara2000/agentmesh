@@ -7,6 +7,9 @@ AGENTMESH=/Users/firas.gara/agentmesh
 SCRIPTS=$AGENTMESH/scripts
 SIGNALS=$AGENTMESH/signals
 
+# notecove is a shell function (not a binary), so call the CLI directly
+NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
+
 # Parse arguments
 PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
@@ -26,7 +29,7 @@ fi
 
 # 0a. Init NoteCove
 cd "$AGENTMESH"
-notecove init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
+$NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
 
 # 0b. Create signals directory, empty queue, registry, and log; clear stale merged flags
 mkdir -p "$SIGNALS"
@@ -38,7 +41,7 @@ rm -f "$SIGNALS/"*.merged
 LOG="$SIGNALS/events.log"
 
 # Resolve and persist Triage folder ID so agents can use it without re-querying
-TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "
+TRIAGE_FOLDER=$($NOTECOVE folder list --json | python3 -c "
 import sys, json
 folders = json.load(sys.stdin)
 print(next(f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None))")
