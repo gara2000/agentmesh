@@ -14,7 +14,7 @@ LOG=/Users/firas.gara/agentmesh/signals/events.log
 MERGED_FLAG="/Users/firas.gara/agentmesh/signals/${SLUG}.merged"
 
 log_event() {
-  printf '%s\tpr-monitor\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$SLUG" >> "$LOG"
+  printf '%s\tpr-monitor   \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$SLUG" >> "$LOG"
 }
 
 echo "[pr-monitor] started for $SLUG ($PR_URL), polling every ${INTERVAL}s"
