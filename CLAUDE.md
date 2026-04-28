@@ -160,6 +160,7 @@ claude plugin update agentic-workflows@personal-claude-marketplace
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
+│   ├── detect-agent-type.sh # keyword-based agent type detection: prints brainstormer|planner|worker
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs

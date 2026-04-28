@@ -60,15 +60,18 @@ In `auto-review` mode the reviewer verdict is not read by the orchestrator — t
 
 ### Task Pickup
 
+Agent type is determined by `scripts/detect-agent-type.sh`, which checks the task title and description for keywords and prints `brainstormer`, `planner`, or `worker`.
+
 ```mermaid
 flowchart TD
     A([NoteCove: Ready tasks]) --> B{Orchestrator picks up\nup to max-workers tasks}
     B --> C[Mark task Doing]
-    C --> D{Worker type?}
-    D -->|simple task| E[Spawn /worker]
-    D -->|complex / multi-PR task| F[Spawn /planner]
-    E & F --> G[Register in signals/workers]
-    G --> H([Enter event loop])
+    C --> D{detect-agent-type.sh}
+    D -->|worker| E[Spawn /worker]
+    D -->|planner| F[Spawn /planner]
+    D -->|brainstormer| G[Spawn /brainstormer]
+    E & F & G --> H[Register in signals/workers]
+    H --> I([Enter event loop])
 ```
 
 ### Signal Protocol
