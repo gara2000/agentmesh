@@ -3,6 +3,11 @@
 # Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>
 set -euo pipefail
 
+if [[ $# -ne 5 ]]; then
+  echo "Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>" >&2
+  exit 1
+fi
+
 SESSION=$1
 WINDOW=$2
 SKILL=$3
