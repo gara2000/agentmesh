@@ -175,7 +175,7 @@ flowchart TD
     F -->|No - more feedback| D
     F -->|Yes| G["Create SELECTION note\ncheckboxes + proposed deps\nSignal Attention\nBlock"]
     G --> H{Ideas checked?}
-    H -->|None| I[Comment: no tasks created\nMark parent Done\nSignal completion\nBlock]
+    H -->|None| I["Comment: no tasks created\nSignal Attention completion\nBlock (orchestrator marks Done)"]
     H -->|Some| J[Create child tasks\nIndependent → Ready\nBlocked → Blocked]
     J --> K[Establish blocking links]
     K --> L[Mark parent Done]
