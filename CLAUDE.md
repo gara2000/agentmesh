@@ -244,26 +244,6 @@ An automated triage process will eventually process these tasks. Workers should 
 
 ---
 
-## Proactive Issue Reporting
-
-Workers are expected to file triage tasks for anything noteworthy they observe during their work — bugs, inconsistencies, missing tests, documentation gaps, security concerns — **even if unrelated to their assigned task**.
-
-All triage tasks go into the **Triage** folder at the root of the NoteCove storage directory:
-
-- **Folder ID**: `2d8043jdrnf6hth7n2mwhspw1v`
-- **Folder path**: `Triage`
-
-```bash
-notecove task create "<title>" \
-  --folder 2d8043jdrnf6hth7n2mwhspw1v \
-  --project WORK \
-  --content-file - --content-format markdown --json
-```
-
-An automated triage process will eventually process these tasks. Workers should file them immediately rather than batching.
-
----
-
 ## Starting the Orchestrator
 
 ```bash
