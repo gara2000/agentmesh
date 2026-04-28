@@ -20,20 +20,22 @@ echo "[folder-cleanup] started"
 while true; do
   sleep "$POLL_INTERVAL"
 
-  # Fetch all folders and tasks in one shot
-  all_folders=$($NOTECOVE folder list --json 2>/dev/null) || continue
-  all_tasks=$($NOTECOVE task list --json 2>/dev/null) || continue
+  # Fetch all folders and tasks into temp files to avoid shell metacharacter
+  # injection when passing JSON to Python (folder/task names may contain $, `, \)
+  folders_file=$(mktemp)
+  tasks_file=$(mktemp)
+  $NOTECOVE folder list --json > "$folders_file" 2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
+  $NOTECOVE task list --json   > "$tasks_file"   2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
 
   # Find moves needed: for each terminal task, check if its named subfolder
   # still lives in the task's parent folder (not yet moved to Done).
   # Output: one line per move — "<slug>\t<subfolder-id>\t<done-folder-id>"
-  moves=$(python3 - <<PYEOF
+  moves=$(python3 - "$folders_file" "$tasks_file" <<'PYEOF'
 import sys, json
 
-folders = json.loads("""$all_folders""")
-tasks   = json.loads("""$all_tasks""")
+folders = json.load(open(sys.argv[1]))
+tasks   = json.load(open(sys.argv[2]))
 
-folder_by_id           = {f['id']: f for f in folders}
 folder_by_name_parent  = {(f['name'], f.get('parentId')): f for f in folders}
 done_folder_ids        = {f['id'] for f in folders if f['name'] == 'Done'}
 
@@ -58,7 +60,8 @@ for task in tasks:
 
     print(f"{slug}\t{subfolder['id']}\t{done_folder['id']}")
 PYEOF
-) || continue
+  )
+  rm -f "$folders_file" "$tasks_file"
 
   [ -z "$moves" ] && continue
 
