@@ -31,12 +31,13 @@ fi
 cd "$AGENTMESH"
 $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
 
-# 0b. Create signals directory, empty queue, registry, and log; clear stale merged flags
+# 0b. Create signals directory, empty queue, registry, and log; clear stale runtime flags
 mkdir -p "$SIGNALS"
 : > "$SIGNALS/queue"
 : > "$SIGNALS/workers"
 : > "$SIGNALS/events.log"
 rm -f "$SIGNALS/"*.merged
+rm -f "$SIGNALS/"*.reviewed
 
 LOG="$SIGNALS/events.log"
 

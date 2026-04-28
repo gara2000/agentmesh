@@ -50,9 +50,9 @@ The orchestrator supports two modes set via `--mode`:
 | Mode | Plan reviews | PR reviews | User interrupted for |
 |---|---|---|---|
 | `standard` (default) | User decides: approve, spawn reviewer, or give feedback | User decides: approve, spawn reviewer, feedback, or abort | All Attention events |
-| `auto-review` | Plan-reviewer spawns automatically; review passed to worker | PR-reviewer spawns automatically; user sees review result | Questions + post-PR-review only |
+| `auto-review` | Plan-reviewer spawns automatically; review passed to worker | PR-reviewer spawns automatically; review passed to worker; user approves final PR | Questions + final PR approval only |
 
-In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. The reviewer posts its findings directly to the GitHub PR; the worker reads the PR comments to understand the feedback and decides how to proceed. This keeps the orchestrator simple and avoids adding conditional logic based on review content.
+In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. For plan reviews, the worker reads the REVIEW note and decides how to proceed before implementing. For PR reviews, the reviewer posts its findings to the GitHub PR; the orchestrator passes the review back to the worker (sets task `Doing`), and the worker reads the PR comments, applies any fixes, and re-signals when ready. On the worker's next PR-ready signal, the orchestrator presents the PR to the user for final approval (no second auto-review). This keeps the orchestrator simple and avoids infinite review cycles.
 
 ---
 
@@ -176,7 +176,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the orchestrator at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` and `.reviewed` flags.
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so the orchestrator can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.

@@ -54,7 +54,7 @@ Responsibilities:
   - Questions → write user answers to NoteCove, resume worker
   - Plan ready → user approves/rejects or requests plan reviewer (sets `In Review`, spawns plan-reviewer)
   - PR ready → user approves/rejects/provides feedback or requests PR reviewer (sets `In Review`, spawns pr-reviewer)
-  - Post-review → present review findings, await user decision
+  - Post-review (standard mode) → present review findings, await user decision; (auto-review mode) → pass review to worker automatically, resume worker
   - Planner completion → auto-ack, set Done, clean up
 - When all workers are done and no more Ready tasks exist: shut down dispatcher and exit
 
@@ -171,6 +171,7 @@ agentmesh/
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
     ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
+    ├── <slug>.reviewed     # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
     └── events.log          # append-only TSV: timestamp, component, event_type, slug
 ```
 
@@ -181,42 +182,43 @@ The `signals/` directory and its contents are runtime artifacts — created fres
 `events.log` is a tab-separated file with four fields per line:
 
 ```
-timestamp       component         event_type                  slug
-2026-04-26T...  dispatcher        worker-any-event-received   -
-2026-04-26T...  dispatcher        orchestrator-event-fired    -
-2026-04-26T...  watchdog          crash-detected              WORK-xyz
-2026-04-26T...  watchdog          worker-exited-clean         WORK-xyz
-2026-04-26T...  orchestrator      bootstrap-complete          -
-2026-04-26T...  orchestrator      task-picked-up              WORK-xyz
-2026-04-26T...  orchestrator      worker-spawned              WORK-xyz
-2026-04-26T...  orchestrator      event-received:attention    WORK-xyz
-2026-04-26T...  orchestrator      attention-resumed           WORK-xyz
-2026-04-26T...  orchestrator      review-approved             WORK-xyz
-2026-04-26T...  orchestrator      review-feedback             WORK-xyz
-2026-04-26T...  orchestrator      plan-reviewer-spawned       WORK-xyz
-2026-04-26T...  orchestrator      reviewer-spawning           WORK-xyz
-2026-04-26T...  orchestrator      reviewer-spawned            WORK-xyz
-2026-04-26T...  orchestrator      worker-crash-requeued       WORK-xyz
-2026-04-26T...  orchestrator      pr-monitor-spawned          WORK-xyz
-2026-04-26T...  orchestrator      pr-auto-approved            WORK-xyz
-2026-04-26T...  orchestrator      shutdown                    -
-2026-04-26T...  pr-monitor        started                     WORK-xyz
-2026-04-26T...  pr-monitor        pr-merged-detected          WORK-xyz
-2026-04-26T...  plan-reviewer     plan-review-started         WORK-xyz
-2026-04-26T...  plan-reviewer     error-no-plan               WORK-xyz
-2026-04-26T...  plan-reviewer     plan-review-complete        WORK-xyz
-2026-04-26T...  pr-reviewer       pr-review-started           WORK-xyz
-2026-04-26T...  pr-reviewer       pr-review-complete          WORK-xyz
-2026-04-26T...  worker            started                     WORK-xyz
-2026-04-26T...  worker            signaling-attention         WORK-xyz
-2026-04-26T...  worker            resumed                     WORK-xyz
-2026-04-26T...  worker            signaling-plan              WORK-xyz
-2026-04-26T...  worker            resumed-from-plan           WORK-xyz
-2026-04-26T...  worker            implementing                WORK-xyz
-2026-04-26T...  worker            pr-created                  WORK-xyz
-2026-04-26T...  worker            signaling-attention-pr-ready WORK-xyz
-2026-04-26T...  worker            approved                    WORK-xyz
-2026-04-26T...  worker            feedback-received           WORK-xyz
+timestamp       component       event_type                  slug
+2026-04-26T...  dispatcher      worker-any-event-received   -
+2026-04-26T...  dispatcher      orchestrator-event-fired    -
+2026-04-26T...  watchdog        crash-detected              WORK-xyz
+2026-04-26T...  watchdog        worker-exited-clean         WORK-xyz
+2026-04-26T...  orchestrator    bootstrap-complete          -
+2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
+2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
+2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
+2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
+2026-04-26T...  orchestrator    review-approved             WORK-xyz
+2026-04-26T...  orchestrator    review-feedback             WORK-xyz
+2026-04-26T...  orchestrator    plan-reviewer-spawned       WORK-xyz
+2026-04-26T...  orchestrator    reviewer-spawning           WORK-xyz
+2026-04-26T...  orchestrator    reviewer-spawned            WORK-xyz
+2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
+2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
+2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
+2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
+2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  pr-monitor      started                     WORK-xyz
+2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
+2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
+2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
+2026-04-26T...  pr-reviewer     pr-review-started           WORK-xyz
+2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
+2026-04-26T...  worker          started                     WORK-xyz
+2026-04-26T...  worker          signaling-attention         WORK-xyz
+2026-04-26T...  worker          resumed                     WORK-xyz
+2026-04-26T...  worker          signaling-plan              WORK-xyz
+2026-04-26T...  worker          resumed-from-plan           WORK-xyz
+2026-04-26T...  worker          implementing                WORK-xyz
+2026-04-26T...  worker          pr-created                  WORK-xyz
+2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
+2026-04-26T...  worker          approved                    WORK-xyz
+2026-04-26T...  worker          feedback-received           WORK-xyz
 ```
 
 ---
@@ -262,12 +264,12 @@ Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
 | Mode | Behavior |
 |---|---|
 | `standard` (default) | User manually reviews plans and PRs; reviewers spawn only on explicit user request |
-| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; user is only interrupted for questions and post-PR-review approval |
+| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; review is passed back to workers automatically; user only approves the final PR |
 
 **`auto-review` mode flow:**
 1. When a plan is ready → plan-reviewer spawns automatically, review passed back to worker (no user prompt)
-2. When a PR is ready → pr-reviewer spawns automatically, review posted to NoteCove and GitHub PR
-3. After PR review → user sees the review findings and approves or gives feedback
+2. When a PR is ready → pr-reviewer spawns automatically, review passed back to worker (no user prompt); worker applies fixes and re-signals when ready
+3. After worker re-signals PR-ready (post-review) → user sees the final PR and approves or gives feedback
 4. Worker questions → user is always asked (no automation for Q&A)
 
 Example:
