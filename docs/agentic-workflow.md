@@ -52,7 +52,7 @@ The orchestrator supports two modes set via `--mode`:
 | `standard` (default) | User decides: approve, spawn reviewer, or give feedback | User decides: approve, spawn reviewer, feedback, or abort | All Attention events |
 | `auto-review` | Plan-reviewer spawns automatically; review passed to worker | PR-reviewer spawns automatically; user sees review result | Questions + post-PR-review only |
 
-In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker always receives the REVIEW note and decides how to proceed. This keeps the orchestrator simple and avoids adding conditional logic based on review content.
+In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. The reviewer posts its findings directly to the GitHub PR; the worker reads the PR comments to understand the feedback and decides how to proceed. This keeps the orchestrator simple and avoids adding conditional logic based on review content.
 
 ---
 
