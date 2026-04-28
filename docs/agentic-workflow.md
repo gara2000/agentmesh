@@ -171,6 +171,24 @@ flowchart TD
 
 ---
 
+## Bootstrap
+
+`scripts/bootstrap.sh` is called once by the orchestrator at startup. It encapsulates all Phase 0 setup:
+
+1. **NoteCove init** — connects to the project and notes database.
+2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` flags.
+3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so the orchestrator can reference it without a repeated lookup.
+4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
+5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
+6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
+
+Usage:
+```bash
+bash /Users/firas.gara/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>]
+```
+
+---
+
 ## Dispatcher
 
 The dispatcher is a minimal bash loop (`scripts/dispatcher.sh`) that provides **fan-in from many workers to the single orchestrator**:
