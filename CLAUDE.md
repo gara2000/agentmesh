@@ -242,3 +242,23 @@ claude
 ```
 
 The orchestrator handles everything from there.
+
+### Running Modes
+
+Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
+
+| Mode | Behavior |
+|---|---|
+| `standard` (default) | User manually reviews plans and PRs; reviewers spawn only on explicit user request |
+| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; user is only interrupted for questions and post-PR-review approval |
+
+**`auto-review` mode flow:**
+1. When a plan is ready → plan-reviewer spawns automatically, review passed back to worker (no user prompt)
+2. When a PR is ready → pr-reviewer spawns automatically, review posted to NoteCove and GitHub PR
+3. After PR review → user sees the review findings and approves or gives feedback
+4. Worker questions → user is always asked (no automation for Q&A)
+
+Example:
+```bash
+/orchestrator --project WORK --mode auto-review
+```

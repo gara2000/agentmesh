@@ -37,11 +37,22 @@ flowchart LR
 
 Workflow from the user's perspective:
 
-1. Run `/orchestrator --project WORK` to start.
+1. Run `/orchestrator --project WORK` to start (add `--mode auto-review` to enable automatic reviewing).
 2. The orchestrator picks up `Ready` tasks and dispatches agents automatically.
 3. When a worker needs input or has a completed PR (both signaled as `Attention`), the orchestrator surfaces it.
 4. The user responds in the orchestrator session — answering questions, approving or giving feedback.
 5. The orchestrator relays everything to the worker and resumes it.
+
+### Running Modes
+
+The orchestrator supports two modes set via `--mode`:
+
+| Mode | Plan reviews | PR reviews | User interrupted for |
+|---|---|---|---|
+| `standard` (default) | User decides: approve, spawn reviewer, or give feedback | User decides: approve, spawn reviewer, feedback, or abort | All Attention events |
+| `auto-review` | Plan-reviewer spawns automatically; review passed to worker | PR-reviewer spawns automatically; user sees review result | Questions + post-PR-review only |
+
+In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker always receives the REVIEW note and decides how to proceed. This keeps the orchestrator simple and avoids adding conditional logic based on review content.
 
 ---
 
