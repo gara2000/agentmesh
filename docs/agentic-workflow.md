@@ -11,6 +11,7 @@ Session: orchestrator          ← user attaches here only
   window 0: main               ← /orchestrator skill (Claude Code)
   window 1: dispatcher         ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog           ← scripts/watchdog.sh (bash loop)
+  window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
   window 0: WORK-42            ← /worker skill (Claude Code, yolo mode)
@@ -213,6 +214,41 @@ sequenceDiagram
 
 ---
 
+## PR Monitor
+
+The pr-monitor (`scripts/pr-monitor.sh`) polls a PR's state and triggers auto-approval when it is merged — removing the need for the user to manually approve.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant O as Orchestrator
+    participant PM as PR Monitor
+    participant GH as GitHub
+
+    W->>O: Signal Attention (PR ready)
+    O->>PM: Spawn pr-mon-WORK-42 window
+    O->>O: Present PR options to user
+
+    loop every 60 seconds
+        PM->>GH: gh pr view --json state
+        alt state = MERGED
+            PM->>PM: Write signals/WORK-42.merged
+            PM->>O: Append slug to queue, fire worker-any-event
+            PM->>PM: Exit
+        end
+    end
+
+    O->>O: Process event for WORK-42
+    O->>O: Detect .merged flag
+    O->>O: Auto-approve (set Done, clean up)
+```
+
+**Auto-approval latency**: up to 60 seconds after the PR is merged (one poll cycle).
+
+**Known limitation**: if the PR merges while the user is actively reviewing the PR-ready prompt, the auto-approval is deferred to the next event loop iteration. In practice this is harmless — whichever action completes first wins.
+
+---
+
 ## End-to-End Example Workflow
 
 ```mermaid
@@ -258,11 +294,14 @@ sequenceDiagram
     W->>O: Signal
     W->>W: Block on WORK-42-resume-3
 
+    O->>O: Spawn pr-mon-WORK-42 window
     O->>U: "WORK-42 has a PR — review and approve"
-    U->>O: "approve"
+    Note over O,U: PR #17 is merged on GitHub
+    O->>O: pr-monitor detects merge, writes .merged flag
+    O->>O: Detects .merged flag on next event, auto-approves
     O->>NC: Set WORK-42 → Done
     O->>W: Fire WORK-42-resume-3
-    O->>O: Kill workers:WORK-42 window
+    O->>O: Kill workers:WORK-42, pr-mon-WORK-42 windows
 
     Note over O: Check for newly unblocked tasks
     O->>NC: Fetch Blocked tasks in project

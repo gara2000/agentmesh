@@ -82,6 +82,19 @@ Responsibilities:
 - Forward each event to the orchestrator via `tmux wait-for -S orchestrator-event`
 - Enables fan-in: multiple workers can signal concurrently without the orchestrator missing events
 
+### PR Monitor
+
+**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned by the orchestrator when a worker signals PR-ready.
+
+Responsibilities:
+- Poll `gh pr view <pr-url>` every 60 seconds
+- When the PR state is `MERGED`: write a `signals/<slug>.merged` flag file, append slug to the queue, fire `worker-any-event`, and exit
+- The orchestrator checks the merged flag at the start of each PR-ready Attention event and auto-approves if set
+
+The pr-monitor window is killed by the orchestrator in all PR resolution paths (approve, feedback, abort) and at shutdown.
+
+**Known limitation**: if the PR merges while the orchestrator is actively presenting the PR-ready prompt to the user, the auto-approval does not interrupt that interaction. The merged flag will be picked up on the next event loop cycle.
+
 ### Watchdog
 
 **One instance.** Runs in the `orchestrator` session, window `watchdog`. Pure bash, no Claude.
@@ -113,6 +126,7 @@ Session: orchestrator       ← user attaches here only
   window 0: main            ← /orchestrator skill (Claude Code)
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
+  window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
   window 0: WORK-pm4        ← /worker skill (Claude Code, yolo mode)
@@ -147,10 +161,12 @@ agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
-│   └── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
+│   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
+│   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; worker slugs written here before signaling
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
+    ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
     └── events.log          # append-only TSV: timestamp, component, event_type, slug
 ```
 
@@ -174,7 +190,11 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    review-approved             WORK-xyz
 2026-04-26T...  orchestrator    review-feedback             WORK-xyz
 2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
+2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
+2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  pr-monitor      started                     WORK-xyz
+2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
 2026-04-26T...  worker          started                     WORK-xyz
 2026-04-26T...  worker          signaling-attention         WORK-xyz
 2026-04-26T...  worker          resumed                     WORK-xyz
