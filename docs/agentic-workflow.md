@@ -55,6 +55,7 @@ flowchart TD
     C --> D{Worker type?}
     D -->|simple task| E[Spawn /worker]
     D -->|complex / multi-PR task| F[Spawn /planner]
+    D -->|open-ended ideation| FB[Spawn /brainstormer]
     E & F --> G[Register in signals/workers]
     G --> H([Enter event loop])
 ```
@@ -155,6 +156,32 @@ flowchart TD
     G --> H[Mark parent task Done]
     H --> I["Signal Attention completion<br/>Block"]
     I --> J([Exit after orchestrator ack])
+```
+
+### Brainstormer
+
+Spawned for open-ended ideation tasks — when there is no concrete implementation yet, only a topic to explore. The brainstormer generates structured ideas in multi-round dialogue with the user, lets the user select which ideas to create as tasks, and establishes dependencies between them.
+
+```mermaid
+flowchart TD
+    A([Start]) --> B[Read task & explore codebase]
+    B --> C{Ambiguous?}
+    C -->|Yes| Q[Create QUESTIONS-N note\nSignal Attention\nBlock]
+    Q --> R[Read ANSWER-N note]
+    R --> C
+    C -->|No| D[Research topic\nGenerate ideas]
+    D --> E["Create IDEAS-N note\nSignal Attention\nBlock"]
+    E --> F{User says 'select'?}
+    F -->|No - more feedback| D
+    F -->|Yes| G["Create SELECTION note\ncheckboxes + proposed deps\nSignal Attention\nBlock"]
+    G --> H{Ideas checked?}
+    H -->|None| I[Comment: no tasks created\nMark parent Done\nSignal completion\nBlock]
+    H -->|Some| J[Create child tasks\nIndependent → Ready\nBlocked → Blocked]
+    J --> K[Establish blocking links]
+    K --> L[Mark parent Done]
+    L --> M["Signal Attention completion\nBlock"]
+    M --> N([Exit after orchestrator ack])
+    I --> N
 ```
 
 ---

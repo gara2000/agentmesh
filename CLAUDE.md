@@ -32,7 +32,7 @@ The orchestrator does not use separate status files. After unblocking, it reads 
 
 | NoteCove Task State | Meaning |
 |---|---|
-| `Attention` | Worker/planner needs user input — questions, plan ready, or PR ready |
+| `Attention` | Worker/planner/brainstormer needs user input — questions, plan ready, PR ready, ideas, or selection |
 | `In Review` | A reviewer agent is currently running (set by orchestrator only) |
 | `Done` | Set by orchestrator after user approves — triggers worker exit |
 
@@ -50,13 +50,30 @@ Responsibilities:
 - Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel)
 - Spawn a worker per task
 - Block on `orchestrator-event` and drain the queue after each unblock
-- Handle `Attention` events: determine the event type (questions, plan ready, PR ready, or post-review), surface to the user, resume the worker
+- Handle `Attention` events: determine the event type (questions, plan ready, PR ready, post-review, brainstormer ideation, brainstormer selection, brainstormer completion), surface to the user, resume the agent
   - Questions → write user answers to NoteCove, resume worker
   - Plan ready → user approves/rejects or requests plan reviewer (sets `In Review`, spawns plan-reviewer)
   - PR ready → user approves/rejects/provides feedback or requests PR reviewer (sets `In Review`, spawns pr-reviewer)
   - Post-review → present review findings, await user decision
   - Planner completion → auto-ack, set Done, clean up
+  - Brainstormer ideation → surface IDEAS note to user, relay feedback, resume brainstormer
+  - Brainstormer selection → present SELECTION note to user, wait for 'continue', resume brainstormer
+  - Brainstormer completion → auto-ack, set Done, clean up
 - When all workers are done and no more Ready tasks exist: shut down dispatcher and exit
+
+### Brainstormer
+
+**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug, spawned with `claude --dangerously-skip-permissions`. The orchestrator spawns a brainstormer for open-ended ideation tasks.
+
+Responsibilities:
+- Pick up the assigned brainstorming task from NoteCove
+- Research the topic using codebase context and domain knowledge
+- Generate structured ideas in `IDEAS-<N>` notes, signal `Attention`, and iterate based on user feedback
+- When the user says "select", create a `SELECTION` note with checkboxes and proposed dependencies
+- Signal `Attention`, wait for user to check ideas and say 'continue'
+- Create tasks for selected ideas (with proper dependencies), mark parent Done, signal completion
+- Never interact with the user directly
+- Never mark its own task `Done` (except after creating tasks — parent is Done as planning is complete)
 
 ### Worker
 
@@ -130,6 +147,7 @@ Skills live in the `agentic-workflows` plugin in the personal Claude marketplace
 |---|---|---|
 | `/orchestrator` | User (manually) | `~/personal/claude-marketplace/plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
 | `/worker` | Orchestrator (via `tmux send-keys`) | `~/personal/claude-marketplace/plugins/agentic-workflows/skills/worker/SKILL.md` |
+| `/brainstormer` | Orchestrator (via `tmux send-keys`) | `~/personal/claude-marketplace/plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
 
 After editing a skill, bump the version in `.claude-plugin/plugin.json`, commit, push, then run:
 
@@ -169,11 +187,14 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    bootstrap-complete          -
 2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
 2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
+2026-04-26T...  orchestrator    planner-spawned             WORK-xyz
+2026-04-26T...  orchestrator    brainstormer-spawned        WORK-xyz
 2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
 2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
 2026-04-26T...  orchestrator    review-approved             WORK-xyz
 2026-04-26T...  orchestrator    review-feedback             WORK-xyz
 2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
+2026-04-26T...  orchestrator    brainstormer-completion-ack WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  worker          started                     WORK-xyz
 2026-04-26T...  worker          signaling-attention         WORK-xyz
@@ -185,6 +206,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  worker          approved                    WORK-xyz
 2026-04-26T...  worker          feedback-received           WORK-xyz
+2026-04-26T...  worker          signaling-attention-completion WORK-xyz
 ```
 
 ---
