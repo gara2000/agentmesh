@@ -36,6 +36,21 @@ The orchestrator does not use separate status files. After unblocking, it reads 
 | `In Review` | A reviewer agent is currently running (set by orchestrator only) |
 | `Done` | Set by orchestrator after user approves — triggers worker exit |
 
+### Event Tag Dispatch
+
+When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a machine-readable `event:<type>` comment as the final comment before signaling `Attention`. The orchestrator extracts the tag and dispatches via a clean `case` statement — no string-content heuristics.
+
+| Event Tag | Fired by | Meaning |
+|---|---|---|
+| `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
+| `event:plan-ready` | Worker | Plan note written, awaiting review |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>`, awaiting approval |
+| `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
+| `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
+| `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
+| `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
+| `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+
 ---
 
 ## Roles
