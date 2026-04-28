@@ -307,6 +307,18 @@ sequenceDiagram
 
 ---
 
+## Agent Spawner
+
+`scripts/spawn-agent.sh` is a helper that encapsulates the repeated four-line pattern for launching a Claude agent in a new tmux window:
+
+```bash
+bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>
+```
+
+It runs `new-window`, starts Claude in yolo mode, waits 3 seconds for the shell to initialize, then sends the skill invocation. Used by the orchestrator to spawn workers, planners, brainstormers, plan-reviewers, and pr-reviewers.
+
+---
+
 ## End-to-End Example Workflow
 
 ```mermaid
