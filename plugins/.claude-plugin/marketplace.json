@@ -1,0 +1,17 @@
+{
+  "name": "agentmesh",
+  "owner": {
+    "name": "Firas Gara"
+  },
+  "metadata": {
+    "description": "AgentMesh in-repo agentic workflow plugins",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agentic-workflows",
+      "source": "./agentic-workflows",
+      "description": "Agentic workflows with NoteCove integration for brainstorming, task decomposition, planning, and implementation"
+    }
+  ]
+}
