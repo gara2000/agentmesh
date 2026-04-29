@@ -319,7 +319,7 @@ class Orchestrator:
         # Check 3: stale worker registry entry (slug in workers file but window gone)
         workers_file = SIGNALS / "workers"
         if workers_file.exists():
-            live_windows = set(windows_result.stdout.splitlines())
+            live_windows = set(w.strip() for w in windows_result.stdout.splitlines())
             for line in workers_file.read_text().splitlines():
                 if not line.strip() or line.startswith("#"):
                     continue
@@ -512,6 +512,7 @@ class Orchestrator:
         notecove(f'task comments add {slug} --user "Orchestrator" "Worker crashed — restarting automatically."')
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
+        (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         task_done(slug, self.project)
         notecove(f"task change {slug} --state Doing")
         spawn_agent("workers", slug, "/worker", slug, self.project)
