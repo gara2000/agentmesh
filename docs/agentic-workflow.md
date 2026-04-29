@@ -1,6 +1,6 @@
 # AgentMesh — Agentic Workflow
 
-AgentMesh is a synchronous multi-agent orchestration system. It picks up tasks from NoteCove, assigns them to autonomous worker agents, and routes all user interaction through a single orchestrator. Workers are never talked to directly by the user.
+AgentMesh is a synchronous multi-agent orchestration system. It picks up tasks from NoteCove, assigns them to autonomous worker agents, and routes all user interaction through the Spokesman. Workers are never talked to directly by the user.
 
 ---
 
@@ -8,15 +8,18 @@ AgentMesh is a synchronous multi-agent orchestration system. It picks up tasks f
 
 ```
 Session: orchestrator          ← user attaches here only
-  window 0: main               ← /orchestrator skill (Claude Code)
+  window 0: main               ← /spokesman skill (Claude Code) — user-interaction layer
   window 1: dispatcher         ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog           ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
+  window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
   window 0: WORK-42            ← /worker skill (Claude Code, yolo mode)
   window 1: WORK-57            ← /worker skill (Claude Code, yolo mode)
+  window N: plan-rev-WORK-42   ← /plan-reviewer skill (Claude Code, one per plan under review)
+  window N: pr-rev-WORK-42     ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
 ```
 
@@ -24,25 +27,27 @@ Session: workers
 
 ## How the User Interacts
 
-The user only ever interacts with the **orchestrator** — the single Claude Code session in the `orchestrator` tmux session.
+The user only ever interacts with the **Spokesman** — the single Claude Code session in the `orchestrator` tmux session. Behind it, the `orchestrator.py` daemon handles all event routing and worker lifecycle management automatically.
 
 ```mermaid
 flowchart LR
-    User -->|talks to| Orchestrator
-    Orchestrator -->|spawns & manages| Workers
-    Workers -->|signal events| Orchestrator
-    Orchestrator -->|surfaces questions & PRs| User
-    User -->|answers & approvals| Orchestrator
+    User -->|talks to| Spokesman
+    Spokesman -->|bootstraps & commands| OrchestratorPy[orchestrator.py]
+    OrchestratorPy -->|spawns & manages| Workers
+    Workers -->|signal events| OrchestratorPy
+    OrchestratorPy -->|user-attention events| Spokesman
+    Spokesman -->|surfaces questions & PRs| User
+    User -->|answers & approvals| Spokesman
     Workers -. never talk to .-> User
 ```
 
 Workflow from the user's perspective:
 
-1. Run `/orchestrator --project WORK` to start (add `--mode auto-review` to enable automatic reviewing).
-2. The orchestrator picks up `Ready` tasks and dispatches agents automatically.
-3. When a worker needs input or has a completed PR (both signaled as `Attention`), the orchestrator surfaces it.
-4. The user responds in the orchestrator session — answering questions, approving or giving feedback.
-5. The orchestrator relays everything to the worker and resumes it.
+1. Run `/spokesman --project WORK` to start (add `--mode auto-review` to enable automatic reviewing).
+2. The Spokesman bootstraps the system; orchestrator.py picks up `Ready` tasks and dispatches agents automatically.
+3. When a worker needs input or has a completed PR, orchestrator.py forwards the event to the Spokesman.
+4. The Spokesman presents the event; the user responds — answering questions, approving or giving feedback.
+5. The Spokesman relays the decision to orchestrator.py, which resumes the worker.
 
 ### Running Modes
 
@@ -80,25 +85,39 @@ All coordination is synchronous — no polling or idle token consumption.
 sequenceDiagram
     participant W as Worker
     participant D as Dispatcher
-    participant O as Orchestrator
+    participant OP as orchestrator.py
+    participant SP as Spokesman
     participant NC as NoteCove
 
-    W->>NC: Set task state (always Attention)
+    W->>NC: Set task state (Attention) + add event comment
     W->>W: Increment SIGNAL_SEQ, write to signals/<slug>.seq
-    W->>W: Append slug to signals/queue
+    W->>W: Append <slug>:<event-type> to signals/queue
     W->>D: tmux wait-for -S worker-any-event
-    D->>O: tmux wait-for -S orchestrator-event
-    O->>O: Drain queue, read slug
-    O->>NC: Read task state
-    Note over O: Handle event (see below)
-    O->>NC: Update task state
-    O->>W: tmux wait-for -S <slug>-resume-<seq>
+    D->>OP: tmux wait-for -S orchestrator-event
+    OP->>OP: Drain queue, parse <slug>:<event-type>
+
+    alt Auto-handled event (completion, pr-merged, auto-review)
+        OP->>NC: Update task state
+        OP->>W: tmux wait-for -S <slug>-resume-<seq>
+    else User-attention event (questions, plan-ready, pr-ready, post-review)
+        OP->>OP: Append <slug>:<event-type> to signals/spokesman-queue
+        OP->>SP: tmux wait-for -S spokesman-event
+        SP->>SP: Drain spokesman-queue, present to user
+        SP->>NC: Update task state
+        SP->>SP: Append <slug>|resume to signals/orchestrator-cmds
+        SP->>OP: tmux wait-for -S orchestrator-cmd-event
+        OP->>OP: Drain commands
+        OP->>W: tmux wait-for -S <slug>-resume-<seq>
+    end
+
     W->>W: Unblock, verify state, continue
 ```
 
 **Fan-in via dispatcher**: multiple workers can fire `worker-any-event` concurrently without losing events. The dispatcher serialises them into `orchestrator-event` one at a time.
 
 **Sequenced resume signals** (`<slug>-resume-<N>`): each round uses a unique name, so a stale signal from round N-1 can never accidentally unblock round N.
+
+**Queue format**: workers write `<slug>:<event-type>` (e.g. `WORK-abc:event:plan-ready`) so orchestrator.py knows the event type without reading NoteCove comments.
 
 ### Event Tag Dispatch
 
@@ -189,19 +208,20 @@ flowchart TD
 
 ## Bootstrap
 
-`scripts/bootstrap.sh` is called once by the orchestrator at startup. It encapsulates all Phase 0 setup:
+`scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, worker registry, and event log, and removes stale `.merged` and `.reviewed` flags.
-3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so the orchestrator can reference it without a repeated lookup.
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, and removes stale `.merged` and `.reviewed` flags.
+3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
+8. **Orchestrator daemon** — launches `scripts/orchestrator.py` in `orchestrator:orchestrator`.
 
 Usage:
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>]
+bash /Users/firas.gara/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>] [--mode <mode>] [--max-workers <n>]
 ```
 
 ---
@@ -245,7 +265,7 @@ sequenceDiagram
         loop for each registered worker
             WD->>WD: Check if tmux window still exists
             alt window gone AND state = doing
-                WD->>Q: Append slug
+                WD->>Q: Append <slug>:event:crash-detected
                 WD->>O: tmux wait-for -S worker-any-event
                 Note over O: Orchestrator re-queues task\nand spawns fresh worker
             else window gone AND state ≠ doing
@@ -306,7 +326,7 @@ sequenceDiagram
         PM->>GH: gh pr view --json state
         alt state = MERGED
             PM->>PM: Write signals/WORK-42.merged
-            PM->>O: Append slug to queue, fire worker-any-event
+            PM->>O: Append WORK-42:event:pr-merged to queue, fire worker-any-event
             PM->>PM: Exit
         end
     end
@@ -358,61 +378,68 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant O as Orchestrator
+    participant SP as Spokesman
+    participant OP as orchestrator.py
     participant NC as NoteCove
     participant W as Worker (WORK-42)
 
-    U->>O: /orchestrator --project WORK
-    O->>NC: Fetch Ready tasks
-    NC-->>O: WORK-42 "Add rate limiting"
-    O->>NC: Set WORK-42 → Doing
-    O->>W: Spawn /worker --task WORK-42
+    U->>SP: /spokesman --project WORK
+    SP->>SP: bootstrap.sh (starts orchestrator.py + daemons)
+    OP->>NC: Fetch Ready tasks
+    NC-->>OP: WORK-42 "Add rate limiting"
+    OP->>NC: Set WORK-42 → Doing
+    OP->>W: Spawn /worker --task WORK-42
 
     W->>W: Read task, explore codebase
-    W->>NC: Create QUESTIONS-1 note
-    W->>NC: Set WORK-42 → Attention
-    W->>O: Signal (via dispatcher)
+    W->>NC: Create QUESTIONS-1 note, set Attention
+    W->>W: Write WORK-42:event:questions → queue, fire worker-any-event
     W->>W: Block on WORK-42-resume-1
 
-    O->>U: "WORK-42 needs input — open NoteCove"
+    OP->>OP: Drain queue, parse event:questions
+    OP->>SP: Forward to spokesman-queue, fire spokesman-event
+    SP->>U: "WORK-42 needs input — open NoteCove"
     U->>NC: Read QUESTIONS-1, write ANSWER-1
-    U->>O: "continue"
-    O->>NC: Set WORK-42 → Doing
-    O->>W: Fire WORK-42-resume-1
+    U->>SP: "continue"
+    SP->>NC: Set WORK-42 → Doing
+    SP->>OP: Send WORK-42|resume via orchestrator-cmds
+    OP->>W: Fire WORK-42-resume-1
 
-    W->>NC: Create PLAN note
-    W->>NC: Set WORK-42 → Attention
-    W->>O: Signal
+    W->>NC: Create PLAN note, set Attention
+    W->>W: Write WORK-42:event:plan-ready → queue, fire worker-any-event
     W->>W: Block on WORK-42-resume-2
 
-    O->>U: "WORK-42 has a plan — review in NoteCove"
+    OP->>OP: Drain queue, parse event:plan-ready
+    OP->>SP: Forward to spokesman-queue, fire spokesman-event
+    SP->>U: "WORK-42 has a plan — review in NoteCove"
     U->>NC: Read PLAN, approve
-    U->>O: "continue"
-    O->>NC: Set WORK-42 → Doing
-    O->>W: Fire WORK-42-resume-2
+    U->>SP: "continue"
+    SP->>NC: Set WORK-42 → Doing
+    SP->>OP: Send WORK-42|resume via orchestrator-cmds
+    OP->>W: Fire WORK-42-resume-2
 
     W->>W: Create worktree, implement, write tests
     W->>W: Push branch, open PR #17
-    W->>NC: Create COMPLETION note
-    W->>NC: Set WORK-42 → Attention
-    W->>O: Signal
+    W->>NC: Create COMPLETION note, set Attention
+    W->>W: Write WORK-42:event:pr-ready:https://github.com/.../pull/17 → queue
     W->>W: Block on WORK-42-resume-3
 
-    O->>O: Spawn pr-mon-WORK-42 window
-    O->>U: "WORK-42 has a PR — review and approve"
-    Note over O,U: PR #17 is merged on GitHub
-    O->>O: pr-monitor detects merge, writes .merged flag
-    O->>O: Detects .merged flag on next event, auto-approves
-    O->>NC: Set WORK-42 → Done
-    O->>W: Fire WORK-42-resume-3
-    O->>O: Kill workers:WORK-42, pr-mon-WORK-42 windows
+    OP->>OP: Drain queue, parse event:pr-ready
+    OP->>SP: Forward to spokesman-queue, fire spokesman-event
+    SP->>SP: Spawn pr-mon-WORK-42 (via orchestrator-cmds)
+    SP->>U: "WORK-42 has a PR — review and approve"
+    Note over OP,U: PR #17 is merged on GitHub
+    OP->>OP: pr-monitor detects merge, writes .merged flag, fires event:pr-merged
+    OP->>OP: Auto-approves (no spokesman involved)
+    OP->>NC: Set WORK-42 → Done
+    OP->>W: Fire WORK-42-resume-3
+    OP->>OP: Kill workers:WORK-42, pr-mon-WORK-42 windows
 
-    Note over O: Check for newly unblocked tasks
-    O->>NC: Fetch Blocked tasks in project
+    Note over OP: Check for newly unblocked tasks
+    OP->>NC: Fetch Blocked tasks in project
     loop for each blocked task
-        O->>NC: Check if all remaining blockers are Done
+        OP->>NC: Check if all remaining blockers are Done
         alt only blocker was WORK-42
-            O->>NC: Set dependent task → Ready
+            OP->>NC: Set dependent task → Ready
         end
     end
 

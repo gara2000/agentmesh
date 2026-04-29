@@ -23,9 +23,9 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE={{AGENTMESH}}/signals/queue
-SEQ_FILE={{AGENTMESH}}/signals/<slug>.seq
-LOG={{AGENTMESH}}/signals/events.log
+QUEUE=/Users/firas.gara/agentmesh/signals/queue
+SEQ_FILE=/Users/firas.gara/agentmesh/signals/<slug>.seq
+LOG=/Users/firas.gara/agentmesh/signals/events.log
 ```
 
 ---
@@ -39,7 +39,7 @@ This guarantees every resume signal is unique across all rounds — a stale stor
 Initialize at startup:
 ```bash
 SIGNAL_SEQ=0
-LOG={{AGENTMESH}}/signals/events.log
+LOG=/Users/firas.gara/agentmesh/signals/events.log
 ```
 
 ---
@@ -56,9 +56,9 @@ Set task state *before* signaling — the orchestrator reads it immediately afte
 # 1. Set task state (always Attention) before this step
 # 2. Increment sequence counter and publish it
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
-# 3. Append slug to queue
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+# 3. Append slug with event type to queue (format: <slug>:<event-type>)
+echo "<slug>:<event-type>" >> /Users/firas.gara/agentmesh/signals/queue
 # 4. Fire fan-in signal
 tmux wait-for -S worker-any-event
 # 5. Block until resumed — loop handles Bash tool timeout spurious wakeups
@@ -83,7 +83,7 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 Initialize the signal sequence counter and resolve the Triage folder:
 ```bash
 SIGNAL_SEQ=0
-LOG={{AGENTMESH}}/signals/events.log
+LOG=/Users/firas.gara/agentmesh/signals/events.log
 TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 printf '%s	worker       	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
@@ -176,10 +176,10 @@ Set task to Attention and signal:
 printf '%s	worker       	signaling-attention	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Worker" "event:questions"
 notecove task change <slug> --state Attention
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+echo "<slug>:event:questions" >> /Users/firas.gara/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
@@ -241,7 +241,7 @@ EOF
 
 ## Shared Critical Rules
 
-- **Always define `LOG={{AGENTMESH}}/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=/Users/firas.gara/agentmesh/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:pr-ready:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
@@ -275,10 +275,10 @@ Set task to Attention and signal for plan review:
 ```bash
 printf '%s\tworker       \tsignaling-plan\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Worker" "event:plan-ready"
 notecove task change <slug> --state Attention
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+echo "<slug>:event:plan-ready" >> /Users/firas.gara/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
@@ -430,10 +430,10 @@ Signal `Attention` (PR ready):
 printf '%s\tworker       \tpr-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 printf '%s\tworker       \tsignaling-attention-pr-ready\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
 notecove task change <slug> --state Attention
 notecove task comments add <slug> --user "Worker" "event:pr-ready:<PR-URL>"
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+echo "<slug>:event:pr-ready:<PR-URL>" >> /Users/firas.gara/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 # Break on either 'done' (approved) or 'doing' (feedback given)
