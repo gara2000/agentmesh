@@ -156,17 +156,21 @@ class Orchestrator:
 
     def _write_heartbeat(self) -> None:
         """Write current UTC timestamp to signals/orchestrator.heartbeat."""
-        ts = subprocess.run(
-            ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
-            capture_output=True, text=True
-        ).stdout.strip()
-        (SIGNALS / "orchestrator.heartbeat").write_text(ts)
+        try:
+            ts = subprocess.run(
+                ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            (SIGNALS / "orchestrator.heartbeat").write_text(ts)
+        except Exception:
+            pass
 
     def _heartbeat_loop(self) -> None:
         """Background thread: refresh heartbeat file every 30 seconds."""
         while not self._stop.is_set():
-            self._write_heartbeat()
             self._stop.wait(30)
+            if not self._stop.is_set():
+                self._write_heartbeat()
 
     # -----------------------------------------------------------------------
     # Event loops

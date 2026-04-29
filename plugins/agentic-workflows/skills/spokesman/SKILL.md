@@ -107,7 +107,7 @@ if [ -n "$RESTART_CMD" ] && [ -f "$HEARTBEAT" ]; then
     tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
     sleep 1
     tmux new-window -t orchestrator -n orchestrator
-    tmux send-keys -t orchestrator:orchestrator "cd ~/agentmesh && $RESTART_CMD" Enter
+    tmux send-keys -t orchestrator:orchestrator "$RESTART_CMD" Enter
     echo "Orchestrator restarted. Continuing..."
   fi
 fi
