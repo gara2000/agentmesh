@@ -324,6 +324,14 @@ An automated triage process will eventually process these tasks. Workers should 
 
 ---
 
+## Path Conventions
+
+All documentation and scripts refer to the repo root as `~/agentmesh` (not as an absolute path). Scripts that need the absolute path at runtime derive it dynamically — e.g. `AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)` in bash, or `Path(__file__).parent.parent` in Python.
+
+> The only place absolute paths intentionally appear is in the **built** plugin skill files, where `build.sh` expands the `{{AGENTMESH}}` build variable to the machine-specific absolute path. Do not add hardcoded absolute paths elsewhere.
+
+---
+
 ## First-time Setup (new machine)
 
 After cloning the repo, register the marketplace and install the plugin:

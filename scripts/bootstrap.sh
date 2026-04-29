@@ -3,7 +3,7 @@
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>]
 set -euo pipefail
 
-AGENTMESH=/Users/firas.gara/agentmesh
+AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPTS=$AGENTMESH/scripts
 SIGNALS=$AGENTMESH/signals
 
