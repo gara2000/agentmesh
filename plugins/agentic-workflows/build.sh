@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# build.sh — Resolves 'extends' in skill frontmatter and refreshes BASE-AGENT marker blocks.
+# build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
+#            and expands the {{AGENTMESH}} path variable in all skill files.
 #
 # Usage:
 #   ./build.sh              # refresh all skills with 'extends' frontmatter
@@ -10,6 +11,10 @@
 #   2. Resolves the path relative to the skill directory.
 #   3. Replaces the content between <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END -->
 #      with the content of the referenced base file.
+#   4. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
+#
+# The {{AGENTMESH}} placeholder allows skill source files to stay portable across
+# machines — run ./build.sh after cloning to stamp the correct absolute path.
 #
 # To add a new role that inherits the shared base:
 #   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-agent.md' in frontmatter.
@@ -22,6 +27,11 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$PLUGIN_DIR/skills"
 FILTER="${1:-}"
+
+# Resolve the agentmesh repo root — always the main worktree, not a linked worktree.
+# Using 'worktree list' instead of 'rev-parse --show-toplevel' so that build.sh
+# works correctly even when invoked from inside a git worktree.
+AGENTMESH_PATH="$(git -C "$PLUGIN_DIR" worktree list --porcelain | awk '/^worktree/{print $2; exit}')"
 
 updated=0
 skipped=0
@@ -94,5 +104,22 @@ if [ "$updated" -eq 0 ] && [ "$skipped" -eq 0 ]; then
     exit 1
 fi
 
+# Expand {{AGENTMESH}} in all skill files (covers both 'extends' skills and standalone ones)
+expanded=0
+for skill_md in "$SKILLS_DIR"/*/SKILL.md; do
+    skill_name="$(basename "$(dirname "$skill_md")")"
+
+    # Apply filter if provided
+    if [ -n "$FILTER" ] && [ "$skill_name" != "$FILTER" ]; then
+        continue
+    fi
+
+    if grep -q '{{AGENTMESH}}' "$skill_md" 2>/dev/null; then
+        sed -i '' "s|{{AGENTMESH}}|$AGENTMESH_PATH|g" "$skill_md"
+        echo "  ✓ $skill_name — expanded {{AGENTMESH}} → $AGENTMESH_PATH"
+        expanded=$((expanded + 1))
+    fi
+done
+
 echo ""
-echo "Done. $updated skill(s) updated, $skipped skill(s) skipped (no 'extends')."
+echo "Done. $updated skill(s) updated, $skipped skill(s) skipped (no 'extends'), $expanded skill(s) path-expanded."
