@@ -247,7 +247,7 @@ agentmesh/
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
     ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
     ├── orchestrator-cmds   # append-only; Spokesman writes <cmd-seq>|<slug>|<cmd>[|<args>] typed commands for orchestrator.py
-    ├── spokesman-acks      # append-only; orchestrator.py writes <cmd-seq>|<slug>|confirm|<cmd> ACKs after each command
+    ├── spokesman-acks      # append-only; orchestrator.py writes <cmd-seq>|<slug>|confirm|<cmd> ACKs after each command (cleared on bootstrap)
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
     ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
