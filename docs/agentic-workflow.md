@@ -518,3 +518,21 @@ When a worker signals `Attention` with a `QUESTIONS-N` note, the user has two wa
 - **Inline in the QUESTIONS note** — edit the note directly in NoteCove, writing answers beneath each question. The worker reads the updated note after being resumed.
 
 The inline approach keeps questions and answers together in one place, making the conversation easy to review later.
+
+---
+
+## Reliability — Orchestrator Heartbeat
+
+To protect against a silently crashed orchestrator, `orchestrator.py` writes a **heartbeat file** (`signals/orchestrator.heartbeat`) every 30 seconds and on every event it processes. The Spokesman checks this file's modification time after each `spokesman-event` wakeup.
+
+**Staleness threshold:** 90 seconds (3 missed heartbeat intervals).
+
+If the heartbeat is stale, the Spokesman:
+1. Logs `spokesman:orchestrator-restarted` to `events.log`
+2. Kills the `orchestrator:orchestrator` tmux window
+3. Re-creates the window and re-runs the exact launch command stored in `signals/orchestrator-restart-cmd`
+4. Informs the user that the orchestrator was restarted
+
+`signals/orchestrator-restart-cmd` is written by `bootstrap.sh` on every bootstrap and contains the full `python3 scripts/orchestrator.py --project ... --mode ... --max-workers ... --profile ...` command used to launch orchestrator.py.
+
+The Spokesman does not require user confirmation to restart — the restart is automatic, non-blocking, and transparent. The worker event queue is persistent (append-only files), so in-flight events are not lost on restart.

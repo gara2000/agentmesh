@@ -239,9 +239,11 @@ agentmesh/
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
     ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
     ├── <slug>.seq          # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
-    ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
-    ├── <slug>.reviewed     # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
-    └── events.log          # append-only TSV: timestamp, component, event_type, slug
+    ├── <slug>.merged           # flag file written by pr-monitor when PR is merged
+    ├── <slug>.reviewed         # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
+    ├── orchestrator.heartbeat  # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
+    ├── orchestrator-restart-cmd # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
+    └── events.log              # append-only TSV: timestamp, component, event_type, slug
 ```
 
 The `signals/` directory and its contents are runtime artifacts — created fresh each time the orchestrator bootstraps.
@@ -282,6 +284,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  spokesman       review-feedback             WORK-xyz
 2026-04-26T...  spokesman       review-rejected             WORK-xyz
 2026-04-26T...  spokesman       review-aborted              WORK-xyz
+2026-04-26T...  spokesman       orchestrator-restarted      -
 2026-04-26T...  spokesman       shutdown                    -
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz

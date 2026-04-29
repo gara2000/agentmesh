@@ -89,6 +89,34 @@ Then block:
 tmux wait-for spokesman-event
 ```
 
+### 1a.5. Check orchestrator heartbeat
+
+After each wakeup, verify that orchestrator.py is still alive. If the heartbeat file is stale (not updated in >90 seconds), auto-restart orchestrator.py and inform the user.
+
+```bash
+HEARTBEAT=~/agentmesh/signals/orchestrator.heartbeat
+RESTART_CMD=$(cat ~/agentmesh/signals/orchestrator-restart-cmd 2>/dev/null || echo "")
+
+if [ -n "$RESTART_CMD" ] && [ -f "$HEARTBEAT" ]; then
+  last_modified=$(stat -f %m "$HEARTBEAT" 2>/dev/null || stat -c %Y "$HEARTBEAT" 2>/dev/null)
+  now=$(date +%s)
+  age=$((now - last_modified))
+  if [ "$age" -gt 90 ]; then
+    printf '%s\tspokesman    \torchestrator-restarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+    echo "⚠  Orchestrator heartbeat stale (${age}s). Restarting orchestrator.py..."
+    tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
+    sleep 1
+    tmux new-window -t orchestrator -n orchestrator
+    tmux send-keys -t orchestrator:orchestrator "cd ~/agentmesh && $RESTART_CMD" Enter
+    echo "Orchestrator restarted. Continuing..."
+  fi
+fi
+```
+
+The `orchestrator-restart-cmd` file is written by `bootstrap.sh` and contains the exact command used to launch orchestrator.py (with the same project, mode, max-workers, and profile arguments).
+
+If `$HEARTBEAT` does not exist (e.g., shortly after bootstrap before orchestrator.py writes its first heartbeat), the check is silently skipped.
+
 ### 1b. Drain spokesman-queue
 
 ```bash
