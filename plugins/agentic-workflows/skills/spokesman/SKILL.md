@@ -52,9 +52,10 @@ CMD_SEQ=$((CMD_SEQ + 1))
 echo "${CMD_SEQ}|<slug>|<cmd>" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 # Wait for ACK — confirms orchestrator.py executed the command
+# IMPORTANT: call this Bash block with timeout=600000 to avoid spurious wakeups
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -278,7 +279,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -292,7 +293,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -320,7 +321,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -332,7 +333,7 @@ echo "${CMD_SEQ}|<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -348,7 +349,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -397,14 +398,14 @@ echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmd
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 CMD_SEQ=$((CMD_SEQ + 1))
 echo "${CMD_SEQ}|<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -420,14 +421,14 @@ echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmd
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 CMD_SEQ=$((CMD_SEQ + 1))
 echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -440,14 +441,14 @@ echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmd
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 CMD_SEQ=$((CMD_SEQ + 1))
 echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -540,7 +541,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 # Kill plan-reviewer window
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
@@ -556,7 +557,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
@@ -571,7 +572,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
@@ -630,7 +631,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
@@ -644,7 +645,7 @@ echo "${CMD_SEQ}|<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-c
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -659,14 +660,14 @@ echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmd
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 CMD_SEQ=$((CMD_SEQ + 1))
 echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 ```
@@ -810,7 +811,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -836,7 +837,7 @@ echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 while true; do
   tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-  grep -q "^${CMD_SEQ}|" ~/agentmesh/signals/spokesman-acks 2>/dev/null && break
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
 done
 ```
 
@@ -904,7 +905,7 @@ tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mo
 done
 rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
 rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
-rm -f ~/agentmesh/signals/spokesman-acks
+rm -f "$SPOKESMAN_ACKS"
 rm -f ~/agentmesh/signals/*.merged
 rm -f ~/agentmesh/signals/*.reviewed
 rm -f ~/agentmesh/signals/*.review-start
