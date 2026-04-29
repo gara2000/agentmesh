@@ -283,6 +283,7 @@ class Orchestrator:
             with open(SIGNALS / "workers", "a") as f:
                 f.write(f"{slug} {slug}\n")
             log("orchestrator ", f"{agent_type}-spawned", slug)
+            # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
             tmux_signal(resume_sig)
@@ -439,7 +440,7 @@ class Orchestrator:
         workers_file = SIGNALS / "workers"
         active_count = 0
         if workers_file.exists():
-            lines = [l for l in workers_file.read_text().splitlines() if l.strip()]
+            lines = [l for l in workers_file.read_text().splitlines() if l.strip() and not l.startswith("#")]
             active_count = len(lines)
 
         slots = self.max_workers - active_count - len(self._in_flight)
