@@ -276,6 +276,17 @@ An automated triage process will eventually process these tasks. Workers should 
 
 ---
 
+## First-time Setup (new machine)
+
+After cloning the repo, register the marketplace and install the plugin:
+
+```bash
+cd ~/agentmesh
+bash scripts/setup.sh
+```
+
+This is idempotent — safe to run again if anything changes.
+
 ## Starting the Orchestrator
 
 ```bash
