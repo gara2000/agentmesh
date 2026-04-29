@@ -344,10 +344,12 @@ class Orchestrator:
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
         log("orchestrator ", "reviewer-spawned", slug)
-        # Spawn pr-monitor
-        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
-        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
-        log("orchestrator ", "pr-monitor-spawned", slug)
+        # pr-monitor is intentionally NOT spawned here. In auto-review mode the PR is
+        # passed back to the worker for fixes before being presented to the user. Spawning
+        # a monitor now would (a) leave a stale pr-mon-{slug} window that prevents the
+        # Spokesman from creating a fresh one later, and (b) risk premature auto-approval
+        # if the PR is merged while the reviewer is still running. The Spokesman spawns the
+        # pr-monitor when it surfaces the final event:pr-ready to the user.
 
     def _auto_pass_pr_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "pr-review-passed-to-worker", slug)
@@ -360,6 +362,8 @@ class Orchestrator:
         (SIGNALS / f"{slug}.reviewed").touch()
         tmux_signal(resume_sig)
         tmux(f"kill-window -t workers:pr-rev-{slug} 2>/dev/null || true")
+        # Defensive cleanup: kill pr-monitor if one was left over from a prior session.
+        tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
 
     # -----------------------------------------------------------------------
     # Other event handlers
