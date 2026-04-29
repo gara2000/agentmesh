@@ -129,7 +129,8 @@ case "$event_rest" in
   event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
-  event:pr-ready:*)       → PR-ready attention
+  event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
+  event:pr-ready:*)       → PR validated (auto-review mode, post-review): ready for final user approval
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
   event:ideas-ready)      → brainstormer ideation
@@ -269,9 +270,12 @@ tmux wait-for -S orchestrator-cmd-event
 
 ---
 
-### Event: `event:pr-ready:<pr-url>` — PR ready for approval
+### Event: `event:pr-submitted:<pr-url>` — PR submitted, needs user decision (standard mode)
 
-Extract PR URL from event: `pr_url=${event_rest#event:pr-ready:}`
+Fired by the orchestrator in standard mode when a worker signals PR-ready for the first time.
+The PR has not yet been reviewed — the user can approve directly, spawn a reviewer, give feedback, or abort.
+
+Extract PR URL from event: `pr_url=${event_rest#event:pr-submitted:}`
 
 Spawn pr-monitor before showing prompt:
 ```bash
@@ -280,13 +284,13 @@ tmux wait-for -S orchestrator-cmd-event
 ```
 
 ```
-── PR Ready ─────────────────────────────────────
+── PR Submitted ─────────────────────────────────
 Task: <slug> — <title>
-The worker believes the task is complete.
+The worker has submitted a PR and is awaiting your decision.
 PR: <pr_url>
 Note: a background monitor is running — if the PR is merged, it will be auto-approved.
 Options:
-  • 'approve'  — accept the PR
+  • 'approve'  — accept the PR as-is
   • 'review'   — spawn an AI reviewer to review the PR on your behalf
   • feedback   — provide feedback for the worker to act on
   • 'abort'    — mark the task Won't Do
@@ -313,6 +317,65 @@ tmux wait-for -S orchestrator-cmd-event
 ```
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
+
+**If feedback provided:**
+```bash
+printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Spokesman" "<feedback>"
+notecove task change <slug> --state Doing
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+**If 'abort':**
+```bash
+printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task change <slug> --state "Won't Do"
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+---
+
+### Event: `event:pr-ready:<pr-url>` — PR validated, ready for final approval (auto-review mode)
+
+Fired by the orchestrator in auto-review mode after the PR has already been reviewed by an AI reviewer
+and the worker has applied any requested fixes. The PR is validated — no reviewer option is shown.
+
+Extract PR URL from event: `pr_url=${event_rest#event:pr-ready:}`
+
+Spawn pr-monitor before showing prompt:
+```bash
+echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+```
+── PR Ready (reviewed) ──────────────────────────
+Task: <slug> — <title>
+The worker's PR has been reviewed and is ready for your final approval.
+PR: <pr_url>
+Note: a background monitor is running — if the PR is merged, it will be auto-approved.
+Options:
+  • 'approve'  — accept the PR
+  • feedback   — provide feedback for the worker to act on
+  • 'abort'    — mark the task Won't Do
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'approve':**
+```bash
+printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task change <slug> --state Done
+echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
 
 **If feedback provided:**
 ```bash

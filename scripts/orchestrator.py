@@ -223,10 +223,13 @@ class Orchestrator:
             reviewed_flag = SIGNALS / f"{slug}.reviewed"
             if self.mode == "auto-review" and not reviewed_flag.exists():
                 self._auto_spawn_pr_reviewer(slug, pr_url)
-            else:
-                if reviewed_flag.exists():
-                    reviewed_flag.unlink()
+            elif reviewed_flag.exists():
+                # Auto-review mode, post-review: PR has been validated — forward as pr-ready
+                reviewed_flag.unlink()
                 self._forward_to_spokesman(slug, event_type)
+            else:
+                # Standard mode: worker submitted PR, needs user decision (review or approve)
+                self._forward_to_spokesman(slug, f"event:pr-submitted:{pr_url}")
         elif event_type == "event:pr-review-complete":
             if self.mode == "auto-review":
                 self._auto_pass_pr_review(slug, resume_sig)

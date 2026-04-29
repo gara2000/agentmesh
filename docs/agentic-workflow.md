@@ -60,6 +60,17 @@ The orchestrator supports two modes set via `--mode`:
 
 In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. For plan reviews, the worker reads the REVIEW note and decides how to proceed before implementing. For PR reviews, the reviewer posts its findings to the GitHub PR; the orchestrator passes the review back to the worker (sets task `Doing`), and the worker reads the PR comments, applies any fixes, and re-signals when ready. On the worker's next PR-ready signal, the orchestrator presents the PR to the user for final approval (no second auto-review). This keeps the orchestrator simple and avoids infinite review cycles.
 
+### PR Event Translation
+
+Workers always signal `event:pr-ready:<url>`. The orchestrator translates this into one of two Spokesman events depending on mode and context:
+
+| Spokesman event | When | What the Spokesman shows |
+|---|---|---|
+| `event:pr-submitted:<url>` | Standard mode, first worker signal | "PR submitted" — options: approve, spawn reviewer, feedback, abort |
+| `event:pr-ready:<url>` | Auto-review mode, post-review worker re-signal | "PR validated" — options: approve, feedback, abort (no reviewer option) |
+
+This means `event:pr-ready` reaching the Spokesman always indicates the PR has already been reviewed and validated; no reviewer spawn is offered at that point.
+
 ---
 
 ## Orchestrator — Worker Relationship
@@ -127,12 +138,14 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 |---|---|---|
 | `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
 | `event:plan-ready` | Worker | Plan note written, awaiting review |
-| `event:pr-ready:<url>` | Worker | PR created at `<url>`, awaiting approval |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>`, signaling readiness to orchestrator |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+
+The orchestrator translates `event:pr-ready:<url>` from the worker into `event:pr-submitted:<url>` (standard mode, needs decision) or keeps it as `event:pr-ready:<url>` (auto-review mode, post-review, already validated) before forwarding to the Spokesman.
 
 ### Task State as the Only Message
 
@@ -423,8 +436,8 @@ sequenceDiagram
     W->>W: Write WORK-42:event:pr-ready:https://github.com/.../pull/17 → queue
     W->>W: Block on WORK-42-resume-3
 
-    OP->>OP: Drain queue, parse event:pr-ready
-    OP->>SP: Forward to spokesman-queue, fire spokesman-event
+    OP->>OP: Drain queue, parse event:pr-ready (standard mode → translate to event:pr-submitted)
+    OP->>SP: Forward event:pr-submitted to spokesman-queue, fire spokesman-event
     SP->>SP: Spawn pr-mon-WORK-42 (via orchestrator-cmds)
     SP->>U: "WORK-42 has a PR — review and approve"
     Note over OP,U: PR #17 is merged on GitHub
