@@ -362,8 +362,6 @@ class Orchestrator:
         (SIGNALS / f"{slug}.reviewed").touch()
         tmux_signal(resume_sig)
         tmux(f"kill-window -t workers:pr-rev-{slug} 2>/dev/null || true")
-        # Defensive cleanup: kill pr-monitor if one was left over from a prior session.
-        tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
 
     # -----------------------------------------------------------------------
     # Other event handlers
