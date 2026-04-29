@@ -123,6 +123,7 @@ Dispatch on event type:
 
 ```
 case "$event_rest" in
+  event:task-ready)       → task triage (auto, decide agent type, spawn)
   event:completion)       → completion announcement (auto, no user input)
   event:pr-merged-auto-approved) → PR auto-merge announcement (auto, no user input)
   event:shutdown)         → all tasks complete, run Exit phase and stop
@@ -136,6 +137,33 @@ case "$event_rest" in
   *)                      → unknown (log and tell user)
 esac
 ```
+
+---
+
+### Event: `event:task-ready` — new task needs triage
+
+Auto-handle — no user input needed. Read the full task and decide which agent type to spawn.
+
+```bash
+task_json=$(notecove task show <slug> --json)
+task_md=$(notecove task show <slug> --format markdown-with-comments)
+title=$(echo "$task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
+```
+
+Decide agent type using your judgment — you have access to the full task title, description, and any linked context:
+
+- **brainstormer**: the task explicitly asks to generate ideas, explore options, brainstorm approaches, or produce a menu of possibilities for the user to choose from
+- **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
+- **worker**: any other concrete, well-defined implementation task (the default)
+
+Then dispatch:
+```bash
+printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+echo "<slug>|spawn|<agent-type>" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
 
 ---
 
