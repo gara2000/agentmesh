@@ -8,6 +8,7 @@ Receives and executes commands from Spokesman via orchestrator-cmds.
 
 Usage: python3 orchestrator.py --project <key> [--mode standard|auto-review]
                                  [--max-workers <n>] [--profile <id>]
+                                 [--review-limit <n>]
 """
 import argparse
 import json
@@ -110,11 +111,12 @@ def append_spokesman_queue(slug: str, event_type: str) -> None:
 # ---------------------------------------------------------------------------
 
 class Orchestrator:
-    def __init__(self, project: str, mode: str, max_workers: int, profile: str) -> None:
+    def __init__(self, project: str, mode: str, max_workers: int, profile: str, review_limit: int) -> None:
         self.project = project
         self.mode = mode
         self.max_workers = max_workers
         self.profile = profile
+        self.review_limit = review_limit
         # Lock protects shared signal files and active-worker state
         self._lock = threading.Lock()
         # Set when orchestrator should stop (all workers done, no Ready tasks)
@@ -129,7 +131,7 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def run(self) -> None:
-        print(f"[orchestrator] project={self.project} mode={self.mode} max-workers={self.max_workers}", flush=True)
+        print(f"[orchestrator] project={self.project} mode={self.mode} max-workers={self.max_workers} review-limit={self.review_limit}", flush=True)
         log("orchestrator ", "bootstrap-complete")
 
         # Write initial heartbeat immediately so Spokesman sees a fresh timestamp on startup
@@ -402,6 +404,7 @@ class Orchestrator:
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
+            self._clear_review_counts(slug)
             self.pick_up_ready_tasks()
         elif cmd == "spawn-plan-reviewer":
             notecove(f"task change {slug} --state 'In Review'")
@@ -420,6 +423,29 @@ class Orchestrator:
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
+
+    # -----------------------------------------------------------------------
+    # Review counter helpers
+    # -----------------------------------------------------------------------
+
+    def _get_review_count(self, slug: str, review_type: str) -> int:
+        """Return the current review cycle count for this slug and review type (0 if no file)."""
+        counter_file = SIGNALS / f"{slug}.{review_type}-review-count"
+        try:
+            return int(counter_file.read_text().strip())
+        except (FileNotFoundError, ValueError):
+            return 0
+
+    def _increment_review_count(self, slug: str, review_type: str) -> int:
+        """Increment and persist the review cycle counter. Returns the new count."""
+        count = self._get_review_count(slug, review_type) + 1
+        (SIGNALS / f"{slug}.{review_type}-review-count").write_text(str(count))
+        return count
+
+    def _clear_review_counts(self, slug: str) -> None:
+        """Remove both plan and PR review counter files for slug (terminal cleanup)."""
+        (SIGNALS / f"{slug}.plan-review-count").unlink(missing_ok=True)
+        (SIGNALS / f"{slug}.pr-review-count").unlink(missing_ok=True)
 
     # -----------------------------------------------------------------------
     # Auto-review handlers
@@ -441,9 +467,16 @@ class Orchestrator:
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
         (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
         (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
+        self._clear_review_counts(slug)
         self.pick_up_ready_tasks()
 
     def _auto_spawn_plan_reviewer(self, slug: str) -> None:
+        count = self._increment_review_count(slug, "plan")
+        if count > self.review_limit:
+            log("orchestrator ", "review-limit-reached:plan", slug)
+            print(f"[orchestrator] review-limit-reached:plan count={count} slug={slug}", flush=True)
+            self._forward_to_spokesman(slug, "event:review-limit-reached:plan")
+            return
         log("orchestrator ", "plan-reviewer-spawned", slug)
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
@@ -462,6 +495,12 @@ class Orchestrator:
         (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
 
     def _auto_spawn_pr_reviewer(self, slug: str, pr_url: str) -> None:
+        count = self._increment_review_count(slug, "pr")
+        if count > self.review_limit:
+            log("orchestrator ", "review-limit-reached:pr", slug)
+            print(f"[orchestrator] review-limit-reached:pr count={count} slug={slug}", flush=True)
+            self._forward_to_spokesman(slug, f"event:review-limit-reached:pr:{pr_url}")
+            return
         log("orchestrator ", "reviewer-spawning", slug)
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
@@ -492,6 +531,7 @@ class Orchestrator:
         log("orchestrator ", "agent-completion-ack", slug)
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
+        self._clear_review_counts(slug)
         # Notify spokesman for display purposes
         append_spokesman_queue(slug, "event:completion")
         tmux_signal("spokesman-event")
@@ -512,7 +552,9 @@ class Orchestrator:
         notecove(f'task comments add {slug} --user "Orchestrator" "Worker crashed — restarting automatically."')
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
+        (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
         (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
+        self._clear_review_counts(slug)
         task_done(slug, self.project)
         notecove(f"task change {slug} --state Doing")
         spawn_agent("workers", slug, "/worker", slug, self.project)
@@ -617,6 +659,8 @@ def main() -> None:
     parser.add_argument("--mode", default="standard", choices=["standard", "auto-review"])
     parser.add_argument("--max-workers", type=int, default=5)
     parser.add_argument("--profile", default="kmq9h71tepf95rac2b59xdbsq2")
+    parser.add_argument("--review-limit", type=int, default=3,
+                        help="Max auto-review cycles per task before escalating to Spokesman (default: 3)")
     args = parser.parse_args()
 
     orch = Orchestrator(
@@ -624,6 +668,7 @@ def main() -> None:
         mode=args.mode,
         max_workers=args.max_workers,
         profile=args.profile,
+        review_limit=args.review_limit,
     )
     orch.run()
 

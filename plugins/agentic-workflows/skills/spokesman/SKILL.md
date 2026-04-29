@@ -3,7 +3,7 @@ name: spokesman
 description: Thin user-interaction layer for the AgentMesh agentic workflow. Bootstraps the system (starts orchestrator.py daemon), then surfaces worker events to the user and relays decisions back to the orchestrator.
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *)
-hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard)"
+hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard), --review-limit <n> (default 3)"
 ---
 
 # Spokesman — AgentMesh User-Interaction Layer
@@ -17,6 +17,7 @@ Parse arguments:
 - `--mode <mode>` — optional, running mode, defaults to `standard`
   - `standard` — user reviews plans and PRs manually; reviewers spawn only on explicit request
   - `auto-review` — plan-reviewers and PR-reviewers spawn automatically; user only approves final PR
+- `--review-limit <n>` — optional, max auto-review cycles per task before escalating to user, defaults to `3`
 
 If `--project` is not provided, stop and ask the user.
 
@@ -37,7 +38,7 @@ MODE_FILE=~/agentmesh/signals/mode
 ## Phase 0: Bootstrap
 
 ```bash
-bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers>
+bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers> --review-limit <review-limit>
 LOG=~/agentmesh/signals/events.log
 # Persist mode to file so it survives Spokesman restarts
 echo "<mode>" > ~/agentmesh/signals/mode
@@ -161,6 +162,8 @@ case "$event_rest" in
   event:pr-ready:*)       → PR validated (auto-review mode, post-review): ready for final user approval
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
+  event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
+  event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
   event:ideas-ready)      → brainstormer ideation
   event:selection-ready)  → brainstormer selection
   *)                      → unknown (log and tell user)
@@ -538,6 +541,121 @@ tmux wait-for -S orchestrator-cmd-event
 echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
+```
+
+---
+
+### Event: `event:review-limit-reached:plan` — plan auto-review limit reached
+
+The orchestrator has hit the auto-review cycle limit for plan reviews and is escalating to the user.
+
+```
+── Auto-review limit reached (plan) ─────────────
+Task: <slug> — <title>
+Auto-review limit reached — the plan has been reviewed <n> times automatically.
+Manual review required.
+Open NoteCove to read the PLAN note and any REVIEW notes, then say 'continue'.
+(Or say 'spawn reviewer' to run one additional plan reviewer.)
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If user says 'continue':**
+```bash
+printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task change <slug> --state Doing
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+**If user says 'spawn reviewer':**
+```bash
+printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+echo "<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
+
+**If user provides feedback (plan revision):**
+```bash
+printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Spokesman" "<feedback>"
+notecove task change <slug> --state Doing
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+---
+
+### Event: `event:review-limit-reached:pr:*` — PR auto-review limit reached
+
+Extract PR URL from event: `pr_url=${event_rest#event:review-limit-reached:pr:}`
+
+The orchestrator has hit the auto-review cycle limit for PR reviews and is escalating to the user.
+
+Spawn pr-monitor before showing prompt:
+```bash
+echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+```
+── Auto-review limit reached (PR) ───────────────
+Task: <slug> — <title>
+Auto-review limit reached — the PR has been reviewed automatically the maximum number of times.
+Manual review required.
+PR: <pr_url>
+Note: a background monitor is running — if the PR is merged, it will be auto-approved.
+Options:
+  • 'approve'  — accept the PR
+  • 'review'   — spawn one additional AI reviewer
+  • feedback   — provide feedback for the worker to act on
+  • 'abort'    — mark the task Won't Do
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'approve':**
+```bash
+printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task change <slug> --state Done
+echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+**If 'review' — spawn pr-reviewer:**
+```bash
+printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
+
+**If feedback provided:**
+```bash
+printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Spokesman" "<feedback>"
+notecove task change <slug> --state Doing
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+```
+
+**If 'abort':**
+```bash
+printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task change <slug> --state "Won't Do"
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
 ```
 
 ---
