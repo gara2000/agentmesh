@@ -586,6 +586,29 @@ tmux wait-for -S orchestrator-cmd-event
 
 ---
 
+### Event: `event:anomaly-detected:*` — orchestrator anomaly alert
+
+Auto-acknowledge — no user input required (unless the user wants to investigate).
+
+Extract the anomaly description: `anomaly=${event_rest#event:anomaly-detected:}`
+
+```bash
+printf '%s\tspokesman    \tanomaly-detected\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+Display a warning to the user:
+
+```
+⚠ Orchestrator anomaly detected
+Anomaly: <anomaly>
+The orchestrator has logged this to events.log.
+No action required unless you want to investigate.
+```
+
+Continue draining the queue without waiting for user input.
+
+---
+
 ### Unknown event
 
 ```bash
@@ -627,6 +650,7 @@ rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
 rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
 rm -f ~/agentmesh/signals/*.merged
 rm -f ~/agentmesh/signals/*.reviewed
+rm -f ~/agentmesh/signals/*.review-start
 rm -f ~/agentmesh/signals/triage_folder
 rm -f ~/agentmesh/signals/mode
 ```

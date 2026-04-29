@@ -224,7 +224,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, and removes stale `.merged` and `.reviewed` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, and removes stale `.merged`, `.reviewed`, and `.review-start` flags.
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
@@ -290,6 +290,23 @@ sequenceDiagram
 ```
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
+
+---
+
+## Anomaly Detection
+
+`orchestrator.py` runs 4 lightweight invariant checks after every event it processes. New violations are logged to `events.log` with the `anomaly-detected:<key>` event type and escalated to the Spokesman for user notification. When a violation clears, an `anomaly-resolved:<key>` entry is logged.
+
+| Check | Anomaly key | Condition |
+|---|---|---|
+| 1 | `reviewer-stuck:<slug>` | `signals/<slug>.review-start` exists and is older than 15 minutes |
+| 2 | `orphaned-reviewer:<slug>:<window>` | A `plan-rev-*` or `pr-rev-*` window exists but the task is not in `in-review` state |
+| 3 | `stale-registry:<slug>` | Slug is in `signals/workers` but its tmux window no longer exists |
+| 4 | `contradictory-flags:<slug>` | Both `signals/<slug>.reviewed` and `signals/<slug>.merged` exist simultaneously |
+
+**De-duplication**: the orchestrator tracks active anomalies in memory; each anomaly is reported only once when first detected and again only if it reappears after clearing.
+
+**Review-start tracking**: `orchestrator.py` touches `signals/<slug>.review-start` whenever it spawns a reviewer (plan or PR) and removes it when the review completes or the reviewer is killed. Bootstrap clears any stale `.review-start` files from prior runs.
 
 ---
 
