@@ -100,6 +100,21 @@ sequenceDiagram
 
 **Sequenced resume signals** (`<slug>-resume-<N>`): each round uses a unique name, so a stale signal from round N-1 can never accidentally unblock round N.
 
+### Event Tag Dispatch
+
+When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a short `event:<type>` comment as the final comment before signaling. The orchestrator extracts this tag and dispatches via a `case` statement — no content heuristics.
+
+| Event Tag | Fired by | Meaning |
+|---|---|---|
+| `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
+| `event:plan-ready` | Worker | Plan note written, awaiting review |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>`, awaiting approval |
+| `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
+| `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
+| `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
+| `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
+| `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+
 ### Task State as the Only Message
 
 The orchestrator never reads worker notes — **task state is the only coordination channel**.
