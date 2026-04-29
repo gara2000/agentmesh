@@ -47,8 +47,7 @@ rm -f "$SIGNALS/"*.reviewed
 rm -f "$SIGNALS/orchestrator.heartbeat"
 
 # Persist orchestrator launch command so Spokesman can restart it on stale heartbeat
-echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" \
-  > "$SIGNALS/orchestrator-restart-cmd"
+echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" > "$SIGNALS/orchestrator-restart-cmd"
 
 LOG="$SIGNALS/events.log"
 
