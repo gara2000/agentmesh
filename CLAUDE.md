@@ -236,6 +236,7 @@ agentmesh/
     ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
+    ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
     ├── <slug>.seq          # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
     ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
     ├── <slug>.reviewed     # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution

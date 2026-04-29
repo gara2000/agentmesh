@@ -60,7 +60,10 @@ for _slug in $_attention_slugs; do
   # Derive event type from last event:* comment on the task
   _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
     grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "")
-  [ -n "$_last_event" ] && echo "${_slug}:${_last_event}" >> ~/agentmesh/signals/spokesman-queue
+  # Dedup guard: skip if already queued (prevents double-entry race with orchestrator.py)
+  if [ -n "$_last_event" ] && ! grep -q "^${_slug}:" ~/agentmesh/signals/spokesman-queue 2>/dev/null; then
+    echo "${_slug}:${_last_event}" >> ~/agentmesh/signals/spokesman-queue
+  fi
 done
 ```
 
