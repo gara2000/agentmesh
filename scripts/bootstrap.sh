@@ -60,19 +60,19 @@ printf '%s\torchestrator \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%
 tmux new-session -d -s workers 2>/dev/null || true
 
 # 0d. Launch dispatcher in a background window
-tmux list-windows -t orchestrator | grep -q dispatcher || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "dispatcher" || {
   tmux new-window -t orchestrator -n dispatcher
   tmux send-keys -t orchestrator:dispatcher "bash $SCRIPTS/dispatcher.sh" Enter
 }
 
 # 0e. Launch watchdog in a background window
-tmux list-windows -t orchestrator | grep -q watchdog || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "watchdog" || {
   tmux new-window -t orchestrator -n watchdog
   tmux send-keys -t orchestrator:watchdog "bash $SCRIPTS/watchdog.sh" Enter
 }
 
 # 0f. Launch folder-cleanup daemon in a background window
-tmux list-windows -t orchestrator | grep -q folder-cleanup || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup" || {
   tmux new-window -t orchestrator -n folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }

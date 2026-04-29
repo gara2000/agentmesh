@@ -61,14 +61,18 @@ def tmux_signal(signal_name: str) -> None:
 
 
 def get_task_state(slug: str) -> str:
-    """Return the task's state name, lowercased (e.g. 'doing', 'attention', 'in review')."""
+    """Return the task's state name, lowercased (e.g. 'doing', 'attention', 'in review').
+
+    Prefers the nested state.name field; falls back to stateName (flat string always
+    present in notecove --json output) so the function is robust to schema changes.
+    """
     result = run_bash(f"{NOTECOVE_BIN} task show {slug} --json")
     try:
         data = json.loads(result.stdout)
         state_obj = data.get("state", {})
-        if isinstance(state_obj, dict):
-            return state_obj.get("name", "").lower()
-        return data.get("stateId", "").lower()
+        if isinstance(state_obj, dict) and state_obj.get("name"):
+            return state_obj["name"].lower()
+        return data.get("stateName", "").lower()
     except (json.JSONDecodeError, AttributeError):
         return ""
 
@@ -112,6 +116,8 @@ class Orchestrator:
         self.profile = profile
         # Lock protects shared signal files and active-worker state
         self._lock = threading.Lock()
+        # Set when orchestrator should stop (all workers done, no Ready tasks)
+        self._stop = threading.Event()
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -132,22 +138,26 @@ class Orchestrator:
         t_cmd = threading.Thread(target=self._cmd_event_loop, daemon=True, name="spokesman-cmds")
         t_cmd.start()
 
-        t_worker.join()
-        t_cmd.join()
+        # Block until _stop is set (by _maybe_shutdown or shutdown command)
+        self._stop.wait()
 
     # -----------------------------------------------------------------------
     # Event loops
     # -----------------------------------------------------------------------
 
     def _worker_event_loop(self) -> None:
-        while True:
+        while not self._stop.is_set():
             subprocess.run(["tmux", "wait-for", "orchestrator-event"])
+            if self._stop.is_set():
+                break
             with self._lock:
                 self._drain_worker_queue()
 
     def _cmd_event_loop(self) -> None:
-        while True:
+        while not self._stop.is_set():
             subprocess.run(["tmux", "wait-for", "orchestrator-cmd-event"])
+            if self._stop.is_set():
+                break
             with self._lock:
                 self._drain_commands()
 
@@ -379,6 +389,36 @@ class Orchestrator:
             f.write(f"{slug} {slug}\n")
 
     # -----------------------------------------------------------------------
+    # Shutdown detection
+    # -----------------------------------------------------------------------
+
+    def _maybe_shutdown(self) -> None:
+        """Signal Spokesman and stop if no active workers and no Ready tasks remain."""
+        workers_file = SIGNALS / "workers"
+        active = 0
+        if workers_file.exists():
+            active = sum(
+                1 for l in workers_file.read_text().splitlines()
+                if l.strip() and not l.startswith("#")
+            )
+        if active > 0:
+            return
+
+        result = run_bash(
+            f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit 1 --json"
+        )
+        try:
+            if json.loads(result.stdout):
+                return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        log("orchestrator ", "shutdown")
+        append_spokesman_queue("-", "event:shutdown")
+        tmux_signal("spokesman-event")
+        self._stop.set()
+
+    # -----------------------------------------------------------------------
     # Task pickup
     # -----------------------------------------------------------------------
 
@@ -415,6 +455,8 @@ class Orchestrator:
             with open(SIGNALS / "workers", "a") as f:
                 f.write(f"{slug} {slug}\n")
             log("orchestrator ", f"{agent_type}-spawned", slug)
+
+        self._maybe_shutdown()
 
     # -----------------------------------------------------------------------
     # Helpers

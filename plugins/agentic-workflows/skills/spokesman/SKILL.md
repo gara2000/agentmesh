@@ -90,6 +90,7 @@ Dispatch on event type:
 case "$event_rest" in
   event:completion)       → completion announcement (auto, no user input)
   event:pr-merged-auto-approved) → PR auto-merge announcement (auto, no user input)
+  event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
   event:pr-ready:*)       → PR-ready attention
@@ -120,6 +121,16 @@ Tell the user: "Agent task `<slug> — <title>` completed successfully."
 Auto-acknowledge — no user input needed.
 
 Tell the user: "PR for `<slug> — <title>` was merged automatically — approved."
+
+---
+
+### Event: `event:shutdown` — all tasks complete
+
+Received from orchestrator.py when active worker count is zero and no Ready tasks remain.
+
+Tell the user: "All tasks complete. Shutting down."
+
+Run the Exit phase immediately (see below).
 
 ---
 
