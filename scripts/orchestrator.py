@@ -360,6 +360,8 @@ class Orchestrator:
             f'and the GitHub PR comments. Apply any needed fixes and re-signal when ready."'
         )
         notecove(f"task change {slug} --state Doing")
+        # Kill pr-monitor now so the Spokesman can spawn a fresh one on the worker's next PR signal
+        tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.reviewed").touch()
         tmux_signal(resume_sig)
         tmux(f"kill-window -t workers:pr-rev-{slug} 2>/dev/null || true")
