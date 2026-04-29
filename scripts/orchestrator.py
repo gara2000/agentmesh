@@ -118,6 +118,8 @@ class Orchestrator:
         self._lock = threading.Lock()
         # Set when orchestrator should stop (all workers done, no Ready tasks)
         self._stop = threading.Event()
+        # Slugs forwarded to Spokesman for triage but not yet spawned
+        self._in_flight: set[str] = set()
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -273,7 +275,17 @@ class Orchestrator:
 
         log("orchestrator ", f"executing-cmd:{cmd}", slug)
 
-        if cmd == "resume":
+        if cmd == "spawn":
+            # Spokesman has triaged the task and decided the agent type
+            agent_type = args if args in ("worker", "planner", "brainstormer") else "worker"
+            self._in_flight.discard(slug)
+            spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
+            with open(SIGNALS / "workers", "a") as f:
+                f.write(f"{slug} {slug}\n")
+            log("orchestrator ", f"{agent_type}-spawned", slug)
+            # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
+            self.pick_up_ready_tasks()
+        elif cmd == "resume":
             tmux_signal(resume_sig)
         elif cmd == "done":
             task_done(slug, self.project, resume_sig)
@@ -393,7 +405,9 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def _maybe_shutdown(self) -> None:
-        """Signal Spokesman and stop if no active workers and no Ready tasks remain."""
+        """Signal Spokesman and stop if no active workers, no in-flight tasks, and no Ready tasks remain."""
+        if self._in_flight:
+            return
         workers_file = SIGNALS / "workers"
         active = 0
         if workers_file.exists():
@@ -426,10 +440,10 @@ class Orchestrator:
         workers_file = SIGNALS / "workers"
         active_count = 0
         if workers_file.exists():
-            lines = [l for l in workers_file.read_text().splitlines() if l.strip()]
+            lines = [l for l in workers_file.read_text().splitlines() if l.strip() and not l.startswith("#")]
             active_count = len(lines)
 
-        slots = self.max_workers - active_count
+        slots = self.max_workers - active_count - len(self._in_flight)
         if slots <= 0:
             return
 
@@ -441,6 +455,10 @@ class Orchestrator:
         except (json.JSONDecodeError, ValueError):
             return
 
+        if not tasks:
+            self._maybe_shutdown()
+            return
+
         for task in tasks:
             slug_obj = task.get("slug", {})
             slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
@@ -449,36 +467,15 @@ class Orchestrator:
 
             notecove(f"task change {slug} --state Doing")
             log("orchestrator ", "task-picked-up", slug)
+            self._in_flight.add(slug)
+            append_spokesman_queue(slug, "event:task-ready")
+            log("orchestrator ", "task-triage-forwarded", slug)
 
-            agent_type = self._decide_agent_type(task)
-            spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
-            with open(SIGNALS / "workers", "a") as f:
-                f.write(f"{slug} {slug}\n")
-            log("orchestrator ", f"{agent_type}-spawned", slug)
-
-        self._maybe_shutdown()
+        tmux_signal("spokesman-event")
 
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
-
-    def _decide_agent_type(self, task: dict) -> str:
-        title = task.get("title", "").lower()
-        desc = (task.get("contentPreview") or "").lower()
-        combined = title + " " + desc
-
-        brainstorm_kw = [
-            "brainstorm", "ideate", "come up with", "explore options",
-            "think through", "ideas for", "options for", "what should we",
-        ]
-        if any(kw in combined for kw in brainstorm_kw):
-            return "brainstormer"
-
-        planner_kw = ["multiple", "several", "and also", "as well as", "in addition", "various"]
-        if any(kw in combined for kw in planner_kw):
-            return "planner"
-
-        return "worker"
 
     def _event_type_from_comments(self, slug: str) -> str:
         """Legacy: derive event type from last task comment (no queue event type)."""

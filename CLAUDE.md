@@ -76,6 +76,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 Responsibilities:
 - Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
 - Block on `spokesman-event` and drain `spokesman-queue` after each unblock
+- Triage new tasks (`event:task-ready`): decide agent type (worker/planner/brainstormer) using LLM judgment and send `spawn` command back to orchestrator.py
 - Present user-attention events to the user (questions, plan ready, PR ready, review results)
 - Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
 - When all tasks complete: tell orchestrator.py to shut down and exit
@@ -85,7 +86,7 @@ Responsibilities:
 **One instance.** Runs in the `orchestrator` tmux session, window `orchestrator`. Pure Python, always running — never blocked by user interaction.
 
 Responsibilities:
-- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel) and spawn agents
+- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel), mark as `Doing`, and forward to Spokesman for agent-type triage via `spokesman-queue`
 - Block on `orchestrator-event` (from dispatcher); drain `signals/queue` on each unblock
 - Block on `orchestrator-cmd-event` (from Spokesman); drain `signals/orchestrator-cmds` on each unblock
 - Auto-handle events that don't require user input:
@@ -257,6 +258,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  watchdog        worker-exited-clean         WORK-xyz
 2026-04-26T...  orchestrator    bootstrap-complete          -
 2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
+2026-04-26T...  orchestrator    task-triage-forwarded       WORK-xyz
+2026-04-26T...  spokesman       task-triaged                WORK-xyz
 2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
 2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
 2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
