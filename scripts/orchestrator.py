@@ -106,6 +106,14 @@ def append_spokesman_queue(slug: str, event_type: str) -> None:
         f.write(entry)
 
 
+def append_spokesman_ack(cmd_seq: int, slug: str, cmd: str) -> None:
+    """Write ACK to spokesman-acks and fire the sequenced ACK signal."""
+    entry = f"{cmd_seq}|{slug}|confirm|{cmd}\n"
+    with open(SIGNALS / "spokesman-acks", "a") as f:
+        f.write(entry)
+    tmux_signal(f"spokesman-ack-{cmd_seq}")
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -372,11 +380,24 @@ class Orchestrator:
         self._run_anomaly_checks()
 
     def _execute_command(self, cmd_line: str) -> None:
-        """Execute '<slug>|<cmd>[|<args>]' command from Spokesman."""
-        parts = cmd_line.split("|", 2)
-        slug = parts[0].strip()
-        cmd = parts[1].strip() if len(parts) > 1 else ""
-        args = parts[2].strip() if len(parts) > 2 else ""
+        """Execute '<cmd-seq>|<slug>|<cmd>[|<args>]' command from Spokesman.
+
+        New format (4 parts, first is numeric): <cmd-seq>|<slug>|<cmd>[|<args>]
+        Legacy format (2-3 parts):              <slug>|<cmd>[|<args>]
+        """
+        parts = cmd_line.split("|", 3)
+        if len(parts) >= 3 and parts[0].strip().isdigit():
+            # New typed-command format with ACK sequence
+            cmd_seq: int | None = int(parts[0].strip())
+            slug = parts[1].strip()
+            cmd = parts[2].strip()
+            args = parts[3].strip() if len(parts) > 3 else ""
+        else:
+            # Backward-compatible: old <slug>|<cmd>[|<args>] format
+            cmd_seq = None
+            slug = parts[0].strip()
+            cmd = parts[1].strip() if len(parts) > 1 else ""
+            args = parts[2].strip() if len(parts) > 2 else ""
 
         seq = get_task_seq(slug)
         resume_sig = f"{slug}-resume-{seq}"
@@ -423,6 +444,10 @@ class Orchestrator:
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
+
+        # Send ACK back to Spokesman (new typed-command protocol)
+        if cmd_seq is not None:
+            append_spokesman_ack(cmd_seq, slug, cmd)
 
     # -----------------------------------------------------------------------
     # Review counter helpers
