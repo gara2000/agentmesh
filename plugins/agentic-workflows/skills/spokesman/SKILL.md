@@ -29,6 +29,7 @@ AGENTMESH=~/agentmesh
 SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ORCHESTRATOR_CMDS=~/agentmesh/signals/orchestrator-cmds
 LOG=~/agentmesh/signals/events.log
+MODE_FILE=~/agentmesh/signals/mode
 ```
 
 ---
@@ -38,7 +39,8 @@ LOG=~/agentmesh/signals/events.log
 ```bash
 bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers>
 LOG=~/agentmesh/signals/events.log
-MODE=<mode>
+# Persist mode to file so it survives Spokesman restarts
+echo "<mode>" > ~/agentmesh/signals/mode
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
@@ -46,9 +48,39 @@ Announce to the user: "Spokesman ready. Orchestrator running. Picking up Ready t
 
 ---
 
+## Phase 0.5: Startup Recovery
+
+After bootstrap, scan for any tasks currently in `Attention` state. These represent events that were fired before this Spokesman session started (e.g., from a previous session that crashed). Re-queue them so the event loop surfaces them to the user.
+
+```bash
+_attention_slugs=$(notecove task list --project <PROJECT> --state Attention --json | \
+  python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]" 2>/dev/null || echo "")
+
+for _slug in $_attention_slugs; do
+  # Derive event type from last event:* comment on the task
+  _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
+    grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "")
+  [ -n "$_last_event" ] && echo "${_slug}:${_last_event}" >> ~/agentmesh/signals/spokesman-queue
+done
+```
+
+If any entries were added to the spokesman-queue by the recovery scan, process them directly (jump to step 1b) before entering the normal event loop wait. If the queue is empty, proceed to the main event loop.
+
+---
+
 ## Phase 1: Event Loop
 
 ### 1a. Wait for event
+
+Re-read all runtime state from files at the top of each wakeup cycle — the Spokesman holds zero in-memory state across cycles:
+
+```bash
+MODE=$(cat ~/agentmesh/signals/mode 2>/dev/null || echo "standard")
+TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder 2>/dev/null || echo "")
+LOG=~/agentmesh/signals/events.log
+```
+
+Then block:
 
 ```bash
 tmux wait-for spokesman-event
@@ -461,7 +493,7 @@ Wait for user response and act accordingly.
 
 ### 1d. Loop back
 
-After draining the queue, go back to Step 1a.
+After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles.
 
 ---
 
@@ -489,6 +521,7 @@ rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
 rm -f ~/agentmesh/signals/*.merged
 rm -f ~/agentmesh/signals/*.reviewed
 rm -f ~/agentmesh/signals/triage_folder
+rm -f ~/agentmesh/signals/mode
 ```
 
 Tell the user: "All tasks complete. Spokesman shutting down."
@@ -503,3 +536,4 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **Always drain the full spokesman-queue** before going back to wait.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
+- **Zero in-memory state across wakeup cycles** — `MODE`, `TRIAGE_FOLDER`, and `LOG` are re-read from `signals/mode`, `signals/triage_folder`, and a fixed path at the top of every wakeup cycle. No bash variable set in one cycle is relied upon in the next. This makes the Spokesman fully restartable: a new session picks up from NoteCove state with no data loss.
