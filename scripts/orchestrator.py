@@ -239,8 +239,13 @@ class Orchestrator:
         cmds_file = SIGNALS / "orchestrator-cmds"
         if not cmds_file.exists() or cmds_file.stat().st_size == 0:
             return
-        content = cmds_file.read_text().strip()
-        cmds_file.write_text("")
+        tmp = cmds_file.with_suffix(".draining")
+        try:
+            os.rename(cmds_file, tmp)
+        except FileNotFoundError:
+            return
+        content = tmp.read_text().strip()
+        tmp.unlink(missing_ok=True)
         for line in content.splitlines():
             line = line.strip()
             if line:

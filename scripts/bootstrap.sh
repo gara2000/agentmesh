@@ -78,7 +78,7 @@ tmux list-windows -t orchestrator | grep -q folder-cleanup || {
 }
 
 # 0g. Launch orchestrator.py daemon (handles all event routing and worker spawning)
-tmux list-windows -t orchestrator | grep -q "^orchestrator$" || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" || {
   tmux new-window -t orchestrator -n orchestrator
   tmux send-keys -t orchestrator:orchestrator \
     "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" \

@@ -60,8 +60,11 @@ tmux wait-for spokesman-event
 SPOKESMAN_QUEUE=/Users/firas.gara/agentmesh/signals/spokesman-queue
 
 while [ -s "$SPOKESMAN_QUEUE" ]; do
-  entries=$(cat "$SPOKESMAN_QUEUE")
-  : > "$SPOKESMAN_QUEUE"
+  # Atomic drain: rename so orchestrator.py can append to a fresh file concurrently
+  TMP_QUEUE="${SPOKESMAN_QUEUE}.draining"
+  mv "$SPOKESMAN_QUEUE" "$TMP_QUEUE" 2>/dev/null || break
+  entries=$(cat "$TMP_QUEUE")
+  rm -f "$TMP_QUEUE"
 
   for entry in $entries; do
     # Handle event: <slug>:<event-type>[:<data>]
