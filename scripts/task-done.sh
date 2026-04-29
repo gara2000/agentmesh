@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # task-done.sh <slug> <PROJECT> [<resume-sig>]
 #
 # Unblock dependents, clean up worker windows, unregister from the worker
@@ -15,6 +15,7 @@ SLUG="${1:?Usage: task-done.sh <slug> <PROJECT> [<resume-sig>]}"
 PROJECT="${2:?Usage: task-done.sh <slug> <PROJECT> [<resume-sig>]}"
 RESUME_SIG="${3:-}"
 AGENTMESH=/Users/firas.gara/agentmesh
+NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
 # 1. Fire resume signal if the worker is blocked waiting
 if [ -n "$RESUME_SIG" ]; then
@@ -39,13 +40,13 @@ sleep 2
 _attempt=0
 while [ $_attempt -lt 3 ]; do
   _attempt=$((_attempt + 1))
-  _blocked_json=$(notecove task list --project "$PROJECT" --state Blocked --limit 100 --json)
+  _blocked_json=$($NOTECOVE task list --project "$PROJECT" --state Blocked --limit 100 --json)
   _blocked_slugs=$(echo "$_blocked_json" | python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]")
   # On the final attempt, process even if empty (no blocked tasks is a valid result)
   if [ -n "$_blocked_slugs" ] || [ $_attempt -eq 3 ]; then
     echo "$_blocked_slugs" | while read -r dep_slug; do
       [ -z "$dep_slug" ] && continue
-      dep_json=$(notecove task show "$dep_slug" --json)
+      dep_json=$($NOTECOVE task show "$dep_slug" --json)
       should_unblock=$(echo "$dep_json" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
@@ -60,7 +61,7 @@ if not remaining:
     print('yes')
 " 2>/dev/null)
       if [ "$should_unblock" = "yes" ]; then
-        notecove task change "$dep_slug" --state Ready
+        $NOTECOVE task change "$dep_slug" --state Ready
       fi
     done
     break
