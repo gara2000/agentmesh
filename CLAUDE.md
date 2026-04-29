@@ -204,7 +204,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
 | `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
-| `/pr-reviewer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
+| `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
 After editing a skill, run:
 

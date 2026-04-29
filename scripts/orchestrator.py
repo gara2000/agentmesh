@@ -11,11 +11,10 @@ Usage: python3 orchestrator.py --project <key> [--mode standard|auto-review]
 """
 import argparse
 import json
+import os
 import re
 import subprocess
-import sys
 import threading
-import time
 from pathlib import Path
 
 AGENTMESH = Path(__file__).parent.parent
@@ -44,6 +43,8 @@ def notecove(args: str) -> str:
         f"{NOTECOVE_BIN} {args}",
         shell=True, capture_output=True, text=True
     )
+    if result.returncode != 0:
+        log("orchestrator ", f"notecove-error: {result.stderr.strip()[:120]}")
     return result.stdout.strip()
 
 
@@ -60,9 +61,14 @@ def tmux_signal(signal_name: str) -> None:
 
 
 def get_task_state(slug: str) -> str:
+    """Return the task's state name, lowercased (e.g. 'doing', 'attention', 'in review')."""
     result = run_bash(f"{NOTECOVE_BIN} task show {slug} --json")
     try:
-        return json.loads(result.stdout).get("stateId", "")
+        data = json.loads(result.stdout)
+        state_obj = data.get("state", {})
+        if isinstance(state_obj, dict):
+            return state_obj.get("name", "").lower()
+        return data.get("stateId", "").lower()
     except (json.JSONDecodeError, AttributeError):
         return ""
 
@@ -152,8 +158,14 @@ class Orchestrator:
     def _drain_worker_queue(self) -> None:
         queue_file = SIGNALS / "queue"
         while queue_file.exists() and queue_file.stat().st_size > 0:
-            content = queue_file.read_text().strip()
-            queue_file.write_text("")
+            # Atomic drain: rename queue so new worker appends go to a fresh file
+            tmp = queue_file.with_suffix(".draining")
+            try:
+                os.rename(queue_file, tmp)
+            except FileNotFoundError:
+                break
+            content = tmp.read_text().strip()
+            tmp.unlink(missing_ok=True)
             for entry in content.splitlines():
                 entry = entry.strip()
                 if entry:
@@ -164,12 +176,7 @@ class Orchestrator:
         if ":" in entry:
             # Format: <slug>:event:<rest>  or  <slug>:event:pr-ready:<url>
             slug, _, rest = entry.partition(":")
-            event_type = f"event:{rest}" if not rest.startswith("event:") else rest
-            # Normalise: entry may already be 'slug:event:xyz'
-            if rest.startswith("event:"):
-                event_type = rest
-            else:
-                event_type = f"event:{rest}"
+            event_type = rest if rest.startswith("event:") else f"event:{rest}"
         else:
             # Legacy bare slug — fall back to reading task comments
             slug = entry
@@ -342,7 +349,7 @@ class Orchestrator:
 
     def _handle_pr_merged(self, slug: str, resume_sig: str) -> None:
         state = get_task_state(slug)
-        if state not in ("attention", "in-review"):
+        if state not in ("attention", "in review"):
             return
         log("orchestrator ", "pr-auto-approved", slug)
         notecove(f"task change {slug} --state Done")
