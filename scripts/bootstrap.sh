@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog
-# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>]
+# bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog, orchestrator.py
+# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>]
 set -euo pipefail
 
-AGENTMESH=/Users/firas.gara/agentmesh
+AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPTS=$AGENTMESH/scripts
 SIGNALS=$AGENTMESH/signals
 
@@ -13,11 +13,15 @@ NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 # Parse arguments
 PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+MODE="standard"
+MAX_WORKERS="5"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT="$2"; shift 2 ;;
     --profile) PROFILE="$2"; shift 2 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --max-workers) MAX_WORKERS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -36,6 +40,8 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/queue"
 : > "$SIGNALS/workers"
 : > "$SIGNALS/events.log"
+: > "$SIGNALS/spokesman-queue"
+: > "$SIGNALS/orchestrator-cmds"
 rm -f "$SIGNALS/"*.merged
 rm -f "$SIGNALS/"*.reviewed
 
@@ -54,21 +60,29 @@ printf '%s\torchestrator \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%
 tmux new-session -d -s workers 2>/dev/null || true
 
 # 0d. Launch dispatcher in a background window
-tmux list-windows -t orchestrator | grep -q dispatcher || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "dispatcher" || {
   tmux new-window -t orchestrator -n dispatcher
   tmux send-keys -t orchestrator:dispatcher "bash $SCRIPTS/dispatcher.sh" Enter
 }
 
 # 0e. Launch watchdog in a background window
-tmux list-windows -t orchestrator | grep -q watchdog || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "watchdog" || {
   tmux new-window -t orchestrator -n watchdog
   tmux send-keys -t orchestrator:watchdog "bash $SCRIPTS/watchdog.sh" Enter
 }
 
 # 0f. Launch folder-cleanup daemon in a background window
-tmux list-windows -t orchestrator | grep -q folder-cleanup || {
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup" || {
   tmux new-window -t orchestrator -n folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }
 
-echo "[bootstrap] complete — dispatcher, watchdog, and folder-cleanup running"
+# 0g. Launch orchestrator.py daemon (handles all event routing and worker spawning)
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" || {
+  tmux new-window -t orchestrator -n orchestrator
+  tmux send-keys -t orchestrator:orchestrator \
+    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" \
+    Enter
+}
+
+echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"

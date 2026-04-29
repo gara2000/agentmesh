@@ -48,8 +48,8 @@ while true; do
       echo "[watchdog] crash detected: $slug (window '$window' gone, state=doing)"
       log_event "crash-detected" "$slug"
 
-      # Wake orchestrator
-      echo "$slug" >> "$QUEUE"
+      # Wake orchestrator with event type in queue entry
+      echo "$slug:event:crash-detected" >> "$QUEUE"
       tmux wait-for -S worker-any-event
     else
       echo "[watchdog] $slug window gone but state=$state — no action needed"

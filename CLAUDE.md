@@ -12,19 +12,33 @@ All coordination is synchronous — no polling, no idle token consumption.
 
 - **`tmux wait-for -S <signal>`** — fires a named signal (non-blocking)
 - **`tmux wait-for <signal>`** — blocks until the signal is fired
-- **`signals/queue`** — append-only file; workers write their task slug before signaling, orchestrator drains it after unblocking
+- **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
+- **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
+- **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
 - **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
 
 ### Signal Protocol
 
 | Signal | Direction | Trigger |
 |---|---|---|
-| `worker-any-event` | Worker → Dispatcher | Worker needs to notify orchestrator |
-| `orchestrator-event` | Dispatcher → Orchestrator | Relayed fan-in signal |
-| `<task-slug>-event` | Worker → Orchestrator | (reserved, direct path if needed) |
-| `<task-slug>-resume` | Orchestrator → Worker | Resume blocked worker |
+| `worker-any-event` | Worker → Dispatcher | Worker needs to notify orchestrator.py |
+| `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
+| `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
+| `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
+| `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
 
 Task slugs (e.g. `WORK-pm4`) are used as signal names — globally unique, safe for tmux (alphanumeric + hyphens).
+
+### Queue Format
+
+Workers write `<slug>:<event-type>` to `signals/queue`. The event type is the same tag as the `event:*` comment written to NoteCove — the queue is the source of truth so orchestrator.py never needs to parse task comments for routing.
+
+Examples:
+- `WORK-abc:event:plan-ready`
+- `WORK-abc:event:pr-ready:https://github.com/foo/bar/pull/1`
+- `WORK-abc:event:questions`
+- `WORK-abc:event:crash-detected` (written by watchdog.sh)
+- `WORK-abc:event:pr-merged` (written by pr-monitor.sh)
 
 ### Task State as Event Type
 
@@ -55,23 +69,36 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 
 ## Roles
 
-### Orchestrator
+### Spokesman
 
-**One instance.** Runs in the `orchestrator` tmux session, window `main`. This is the only session the user attaches to.
+**One instance.** Runs in the `orchestrator` tmux session, window `main`. This is the only session the user attaches to. The Spokesman is a thin user-interaction layer — it never spawns workers directly.
 
 Responsibilities:
-- Initialize NoteCove for the project
-- Bootstrap the `workers` tmux session and launch `dispatcher.sh`
-- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel)
-- Spawn a worker per task
-- Block on `orchestrator-event` and drain the queue after each unblock
-- Handle `Attention` events: determine the event type (questions, plan ready, PR ready, or post-review), surface to the user, resume the worker
-  - Questions → write user answers to NoteCove, resume worker
-  - Plan ready → user approves/rejects or requests plan reviewer (sets `In Review`, spawns plan-reviewer)
-  - PR ready → user approves/rejects/provides feedback or requests PR reviewer (sets `In Review`, spawns pr-reviewer)
-  - Post-review (standard mode) → present review findings, await user decision; (auto-review mode) → pass review to worker automatically, resume worker
-  - Planner completion → auto-ack, set Done, clean up
-- When all workers are done and no more Ready tasks exist: shut down dispatcher and exit
+- Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
+- Block on `spokesman-event` and drain `spokesman-queue` after each unblock
+- Present user-attention events to the user (questions, plan ready, PR ready, review results)
+- Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
+- When all tasks complete: tell orchestrator.py to shut down and exit
+
+### Orchestrator Daemon (orchestrator.py)
+
+**One instance.** Runs in the `orchestrator` tmux session, window `orchestrator`. Pure Python, always running — never blocked by user interaction.
+
+Responsibilities:
+- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel) and spawn agents
+- Block on `orchestrator-event` (from dispatcher); drain `signals/queue` on each unblock
+- Block on `orchestrator-cmd-event` (from Spokesman); drain `signals/orchestrator-cmds` on each unblock
+- Auto-handle events that don't require user input:
+  - `auto-review` mode: spawn reviewers automatically, pass results back to workers
+  - Planner/brainstormer completion: auto-ack, set Done, clean up
+  - PR merged: auto-approve, clean up
+  - Worker crash: re-queue task, spawn new worker
+- Forward user-attention events to `spokesman-queue` + fire `spokesman-event`
+- Execute commands from Spokesman: fire resume signals, spawn agents, clean up
+
+### Legacy Orchestrator
+
+**Kept for compatibility.** The original `/orchestrator` Claude Code skill (`plugins/agentic-workflows/skills/orchestrator/SKILL.md`) remains unchanged. Use `/spokesman` as the new entry point for the Spokesman + orchestrator.py architecture.
 
 ### Worker
 
@@ -99,16 +126,14 @@ Responsibilities:
 
 ### PR Monitor
 
-**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned by the orchestrator when a worker signals PR-ready.
+**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned by orchestrator.py (in auto-review mode) or by Spokesman (in standard mode) when a worker signals PR-ready.
 
 Responsibilities:
 - Poll `gh pr view <pr-url>` every 60 seconds
-- When the PR state is `MERGED`: write a `signals/<slug>.merged` flag file, append slug to the queue, fire `worker-any-event`, and exit
-- The orchestrator checks the merged flag at the start of each PR-ready Attention event and auto-approves if set
+- When the PR state is `MERGED`: write a `signals/<slug>.merged` flag file, append `<slug>:event:pr-merged` to the queue, fire `worker-any-event`, and exit
+- orchestrator.py detects the merge event and auto-approves (sets Done, fires resume, cleans up)
 
-The pr-monitor window is killed by the orchestrator in all PR resolution paths (approve, feedback, abort) and at shutdown.
-
-**Known limitation**: if the PR merges while the orchestrator is actively presenting the PR-ready prompt to the user, the auto-approval does not interrupt that interaction. The merged flag will be picked up on the next event loop cycle.
+The pr-monitor window is killed by orchestrator.py in all PR resolution paths (approve, feedback, abort) and at shutdown.
 
 ### Watchdog
 
@@ -117,11 +142,11 @@ The pr-monitor window is killed by the orchestrator in all PR resolution paths (
 Responsibilities:
 - Poll the worker registry (`signals/workers`) every 30 seconds
 - For each registered worker, check if its tmux window still exists
-- If a window is gone and the task state is still `doing` → crash detected: append slug to queue and fire `worker-any-event` to wake the orchestrator
+- If a window is gone and the task state is still `doing` → crash detected: append `<slug>:event:crash-detected` to queue and fire `worker-any-event` to wake orchestrator.py
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the task state is anything other than `doing` (e.g. `done`, `attention`) → worker finished cleanly before being unregistered; no action
 
-The orchestrator handles the crash case in its event loop: when it drains a slug whose task state is `doing`, it re-queues the task to `Ready` and spawns a new worker.
+orchestrator.py handles the crash case: when it drains a `crash-detected` event, it re-queues the task to `Ready` and spawns a new worker.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the orchestrator:
 ```
@@ -150,10 +175,11 @@ The folder-cleanup window is killed by the orchestrator at shutdown.
 
 ```
 Session: orchestrator       ← user attaches here only
-  window 0: main            ← /orchestrator skill (Claude Code)
+  window 0: main            ← /spokesman skill (Claude Code) — user-interaction layer
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
+  window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
@@ -172,12 +198,13 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 
 | Skill | Invoked by | Source |
 |---|---|---|
-| `/orchestrator` | User (manually) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
-| `/worker` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/worker/SKILL.md` |
-| `/planner` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
-| `/brainstormer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
-| `/plan-reviewer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
-| `/pr-reviewer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
+| `/spokesman` | User (manually) | `plugins/agentic-workflows/skills/spokesman/SKILL.md` |
+| `/orchestrator` | User (manually, legacy) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
+| `/worker` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/worker/SKILL.md` |
+| `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
+| `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
+| `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
+| `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
 After editing a skill, run:
 
@@ -197,15 +224,19 @@ claude plugin update agentic-workflows@agentmesh
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
-│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog + folder-cleanup
+│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog + folder-cleanup + orchestrator.py
+│   ├── orchestrator.py     # orchestrator daemon: event routing, worker spawning, lifecycle management
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 └── signals/                # runtime directory, created on orchestrator bootstrap
-    ├── queue               # append-only; worker slugs written here before signaling
+    ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
+    ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
+    ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
+    ├── <slug>.seq          # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
     ├── <slug>.merged       # flag file written by pr-monitor when PR is merged
     ├── <slug>.reviewed     # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
     └── events.log          # append-only TSV: timestamp, component, event_type, slug
@@ -238,6 +269,16 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
 2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz
+2026-04-26T...  spokesman       attention-resumed           WORK-xyz
+2026-04-26T...  spokesman       attention-feedback          WORK-xyz
+2026-04-26T...  spokesman       plan-reviewer-requested     WORK-xyz
+2026-04-26T...  spokesman       reviewer-requested          WORK-xyz
+2026-04-26T...  spokesman       review-approved             WORK-xyz
+2026-04-26T...  spokesman       review-feedback             WORK-xyz
+2026-04-26T...  spokesman       review-rejected             WORK-xyz
+2026-04-26T...  spokesman       review-aborted              WORK-xyz
+2026-04-26T...  spokesman       shutdown                    -
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
@@ -283,6 +324,18 @@ An automated triage process will eventually process these tasks. Workers should 
 
 ---
 
+## Path Conventions
+
+All documentation, scripts, and skill files refer to the repo root as `~/agentmesh` (not as an absolute path like `/Users/<username>/agentmesh`).
+
+- In bash scripts, use `~/agentmesh/...` or derive dynamically: `AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)`
+- In Python scripts, use `Path(__file__).parent.parent` to locate the repo root at runtime
+- In skill source files, use the `{{AGENTMESH}}` build variable — `build.sh` expands it to `~/agentmesh`
+
+Do not add hardcoded absolute paths anywhere.
+
+---
+
 ## First-time Setup (new machine)
 
 After cloning the repo, register the marketplace and install the plugin:
@@ -294,16 +347,16 @@ bash scripts/setup.sh
 
 This is idempotent — safe to run again if anything changes.
 
-## Starting the Orchestrator
+## Starting the System
 
 ```bash
 cd ~/agentmesh
 tmux new-session -s orchestrator
 claude
-/orchestrator --project WORK
+/spokesman --project WORK
 ```
 
-The orchestrator handles everything from there.
+The Spokesman bootstraps the entire system (orchestrator.py daemon + dispatcher + watchdog + folder-cleanup) and handles all user interaction from there.
 
 ### Running Modes
 
@@ -322,5 +375,9 @@ Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
 
 Example:
 ```bash
-/orchestrator --project WORK --mode auto-review
+/spokesman --project WORK --mode auto-review
 ```
+
+### Legacy Entry Point
+
+The original `/orchestrator` skill is kept for compatibility but is no longer the recommended entry point. Use `/spokesman` for the new Spokesman + orchestrator.py architecture.

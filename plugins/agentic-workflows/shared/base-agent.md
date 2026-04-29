@@ -43,8 +43,8 @@ Set task state *before* signaling — the orchestrator reads it immediately afte
 # 2. Increment sequence counter and publish it
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
 echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
-# 3. Append slug to queue
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+# 3. Append slug with event type to queue (format: <slug>:<event-type>)
+echo "<slug>:<event-type>" >> {{AGENTMESH}}/signals/queue
 # 4. Fire fan-in signal
 tmux wait-for -S worker-any-event
 # 5. Block until resumed — loop handles Bash tool timeout spurious wakeups
@@ -163,7 +163,7 @@ SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
 echo "$SIGNAL_SEQ" > {{AGENTMESH}}/signals/<slug>.seq
 notecove task comments add <slug> --user "Worker" "event:questions"
 notecove task change <slug> --state Attention
-echo "<slug>" >> {{AGENTMESH}}/signals/queue
+echo "<slug>:event:questions" >> {{AGENTMESH}}/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do

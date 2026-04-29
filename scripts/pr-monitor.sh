@@ -27,7 +27,7 @@ while true; do
     echo "[pr-monitor] PR merged for $SLUG — firing auto-approval"
     log_event "pr-merged-detected"
     touch "$MERGED_FLAG"
-    echo "$SLUG" >> "$QUEUE"
+    echo "$SLUG:event:pr-merged" >> "$QUEUE"
     tmux wait-for -S worker-any-event
     exit 0
   fi
