@@ -168,18 +168,25 @@ Session: workers
 
 ## Skills
 
-Skills live in the `agentic-workflows` plugin in the personal Claude marketplace. Agents can read and improve them directly.
+Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read and improve them directly.
 
 | Skill | Invoked by | Source |
 |---|---|---|
-| `/orchestrator` | User (manually) | `~/personal/claude-marketplace/plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
-| `/worker` | Orchestrator (via `tmux send-keys`) | `~/personal/claude-marketplace/plugins/agentic-workflows/skills/worker/SKILL.md` |
+| `/orchestrator` | User (manually) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
+| `/worker` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/worker/SKILL.md` |
+| `/planner` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
+| `/brainstormer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
+| `/plan-reviewer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
+| `/pr-reviewer` | Orchestrator (via `tmux send-keys`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
-After editing a skill, bump the version in `.claude-plugin/plugin.json`, commit, push, then run:
+After editing a skill, run:
 
 ```bash
-cd ~/.claude/plugins/marketplaces/personal-claude-marketplace && git pull
-claude plugin update agentic-workflows@personal-claude-marketplace
+# If the skill extends shared/base-agent.md, rebuild it first:
+./plugins/agentic-workflows/build.sh
+
+# Reload the plugin (no version bump or git push required):
+claude plugin update agentic-workflows@agentmesh
 ```
 
 ---
