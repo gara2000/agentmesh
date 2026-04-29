@@ -25,10 +25,10 @@ If `--project` is not provided, stop and ask the user.
 ## Paths (fixed)
 
 ```
-AGENTMESH=/Users/firas.gara/agentmesh
-SPOKESMAN_QUEUE=/Users/firas.gara/agentmesh/signals/spokesman-queue
-ORCHESTRATOR_CMDS=/Users/firas.gara/agentmesh/signals/orchestrator-cmds
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+AGENTMESH=~/agentmesh
+SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
+ORCHESTRATOR_CMDS=~/agentmesh/signals/orchestrator-cmds
+LOG=~/agentmesh/signals/events.log
 ```
 
 ---
@@ -36,10 +36,10 @@ LOG=/Users/firas.gara/agentmesh/signals/events.log
 ## Phase 0: Bootstrap
 
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers>
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers>
+LOG=~/agentmesh/signals/events.log
 MODE=<mode>
-TRIAGE_FOLDER=$(cat /Users/firas.gara/agentmesh/signals/triage_folder)
+TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
 Announce to the user: "Spokesman ready. Orchestrator running. Picking up Ready tasks..."
@@ -57,7 +57,7 @@ tmux wait-for spokesman-event
 ### 1b. Drain spokesman-queue
 
 ```bash
-SPOKESMAN_QUEUE=/Users/firas.gara/agentmesh/signals/spokesman-queue
+SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 
 while [ -s "$SPOKESMAN_QUEUE" ]; do
   # Atomic drain: rename so orchestrator.py can append to a fresh file concurrently
@@ -81,7 +81,7 @@ Fetch task title for display:
 ```bash
 task_info=$(notecove task show <slug> --json)
 title=$(echo "$task_info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
-seq=$(cat /Users/firas.gara/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
+seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 ```
 
 Dispatch on event type:
@@ -139,7 +139,7 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -148,7 +148,7 @@ tmux wait-for -S orchestrator-cmd-event
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -171,14 +171,14 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
 **If user says 'spawn reviewer':**
 ```bash
 printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|spawn-plan-reviewer" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -189,7 +189,7 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -201,7 +201,7 @@ Extract PR URL from event: `pr_url=${event_rest#event:pr-ready:}`
 
 Spawn pr-monitor before showing prompt:
 ```bash
-echo "<slug>|spawn-pr-monitor|<pr_url>" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -225,16 +225,16 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Done
-echo "<slug>|done" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
 **If 'review' — spawn pr-reviewer:**
 ```bash
 printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|kill-pr-monitor" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|spawn-pr-reviewer" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -245,9 +245,9 @@ Tell the user: "PR reviewer spawned. It will signal when the review is complete 
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|kill-pr-monitor" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -255,9 +255,9 @@ tmux wait-for -S orchestrator-cmd-event
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -293,7 +293,7 @@ Wait for the user to respond.
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "Plan accepted after review."
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 # Kill plan-reviewer window
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
@@ -304,7 +304,7 @@ tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \treview-rejected\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "Plan review rejected by user. Continuing with original plan."
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
@@ -314,7 +314,7 @@ tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
@@ -353,7 +353,7 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Done
-echo "<slug>|done" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 # Kill pr-reviewer window
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
@@ -364,7 +364,7 @@ tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
@@ -373,7 +373,7 @@ tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 **If 're-review':**
 ```bash
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-echo "<slug>|spawn-pr-reviewer" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -383,9 +383,9 @@ Tell the user: "New PR reviewer spawned."
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 ```
@@ -409,7 +409,7 @@ Wait for the user to respond. Write response as ANSWER note or task comment, set
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<user-response>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -430,7 +430,7 @@ Wait for the user to say 'continue', then:
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> /Users/firas.gara/agentmesh/signals/orchestrator-cmds
+echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -473,11 +473,11 @@ tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
 tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mon-" | while read _win; do
   tmux kill-window -t "orchestrator:${_win}" 2>/dev/null || true
 done
-rm -f /Users/firas.gara/agentmesh/signals/queue /Users/firas.gara/agentmesh/signals/workers
-rm -f /Users/firas.gara/agentmesh/signals/spokesman-queue /Users/firas.gara/agentmesh/signals/orchestrator-cmds
-rm -f /Users/firas.gara/agentmesh/signals/*.merged
-rm -f /Users/firas.gara/agentmesh/signals/*.reviewed
-rm -f /Users/firas.gara/agentmesh/signals/triage_folder
+rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
+rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
+rm -f ~/agentmesh/signals/*.merged
+rm -f ~/agentmesh/signals/*.reviewed
+rm -f ~/agentmesh/signals/triage_folder
 ```
 
 Tell the user: "All tasks complete. Spokesman shutting down."

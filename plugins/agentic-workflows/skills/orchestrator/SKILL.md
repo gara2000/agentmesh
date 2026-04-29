@@ -25,7 +25,7 @@ If `--project` is not provided, stop and ask the user.
 ## Paths (fixed)
 
 ```
-AGENTMESH=/Users/firas.gara/agentmesh
+AGENTMESH=~/agentmesh
 QUEUE=$AGENTMESH/signals/queue
 WORKERS=$AGENTMESH/signals/workers
 DISPATCHER=$AGENTMESH/scripts/dispatcher.sh
@@ -39,10 +39,10 @@ LOG=$AGENTMESH/signals/events.log
 ## Phase 0: Bootstrap
 
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile>
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile>
+LOG=~/agentmesh/signals/events.log
 MODE=<mode>  # set from --mode argument, default "standard"
-TRIAGE_FOLDER=$(cat /Users/firas.gara/agentmesh/signals/triage_folder)
+TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
 Announce to the user: "Orchestrator bootstrapped. Dispatcher and watchdog running."
@@ -91,24 +91,24 @@ When in doubt between planner and worker → use worker (decomposition should on
 ### Spawning a worker
 
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers <task-slug> /worker <task-slug> <PROJECT>
-echo "<task-slug> <task-slug>" >> /Users/firas.gara/agentmesh/signals/workers
+bash ~/agentmesh/scripts/spawn-agent.sh workers <task-slug> /worker <task-slug> <PROJECT>
+echo "<task-slug> <task-slug>" >> ~/agentmesh/signals/workers
 printf '%s\torchestrator \tworker-spawned\t<task-slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 ### Spawning a planner
 
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers <task-slug> /planner <task-slug> <PROJECT>
-echo "<task-slug> <task-slug>" >> /Users/firas.gara/agentmesh/signals/workers
+bash ~/agentmesh/scripts/spawn-agent.sh workers <task-slug> /planner <task-slug> <PROJECT>
+echo "<task-slug> <task-slug>" >> ~/agentmesh/signals/workers
 printf '%s\torchestrator \tplanner-spawned\t<task-slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 ### Spawning a brainstormer
 
 ```bash
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers <task-slug> /brainstormer <task-slug> <PROJECT>
-echo "<task-slug> <task-slug>" >> /Users/firas.gara/agentmesh/signals/workers
+bash ~/agentmesh/scripts/spawn-agent.sh workers <task-slug> /brainstormer <task-slug> <PROJECT>
+echo "<task-slug> <task-slug>" >> ~/agentmesh/signals/workers
 printf '%s\torchestrator \tbrainstormer-spawned\t<task-slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -145,8 +145,8 @@ Used after a PR is approved or aborted. Kill the pr-monitor window, remove PR si
 
 ```bash
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
-rm -f /Users/firas.gara/agentmesh/signals/<slug>.merged
-rm -f /Users/firas.gara/agentmesh/signals/<slug>.reviewed
+rm -f ~/agentmesh/signals/<slug>.merged
+rm -f ~/agentmesh/signals/<slug>.reviewed
 bash $AGENTMESH/scripts/task-done.sh <slug> <PROJECT> ${resume_sig}
 ```
 
@@ -165,7 +165,7 @@ tmux wait-for orchestrator-event
 ### 2b. Drain queue (loop until empty)
 
 ```bash
-QUEUE=/Users/firas.gara/agentmesh/signals/queue
+QUEUE=~/agentmesh/signals/queue
 
 while [ -s "$QUEUE" ]; do
   slugs=$(cat "$QUEUE")
@@ -184,7 +184,7 @@ After processing all slugs, check the queue again before going back to `tmux wai
 Read task state and the worker's current sequence number:
 ```bash
 state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin).get('stateId',''))")
-seq=$(cat /Users/firas.gara/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
+seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 resume_sig="<slug>-resume-${seq}"
 printf '%s\torchestrator \tevent-received:%s\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state" >> "$LOG"
 ```
@@ -243,7 +243,7 @@ A pr-reviewer has finished reviewing the PR and set this task to Attention. The 
 printf '%s\torchestrator \tpr-review-passed-to-worker\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Orchestrator" "PR review complete (auto-review mode). Read the reviewer's comment and the GitHub PR comments. Apply any needed fixes and re-signal when ready."
 notecove task change <slug> --state Doing
-touch /Users/firas.gara/agentmesh/signals/<slug>.reviewed
+touch ~/agentmesh/signals/<slug>.reviewed
 tmux wait-for -S ${resume_sig}
 # Clean up the pr-reviewer window
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
@@ -282,7 +282,7 @@ Wait for the user to respond.
   tmux wait-for -S ${resume_sig}
   # Kill pr-monitor — a fresh one spawns when the worker re-signals PR-ready
   tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
-  rm -f /Users/firas.gara/agentmesh/signals/<slug>.merged
+  rm -f ~/agentmesh/signals/<slug>.merged
   ```
 - **If 're-review':** same as the PR-ready 'review' flow below (set `In Review`, spawn pr-reviewer, re-enter event loop).
 - **If 'abort':** handle exactly like the **PR abort** path below.
@@ -357,7 +357,7 @@ The worker has created a PR and is waiting for user action. `_pr_url` is extract
 
 **First, check if the PR was already merged** (flag set by pr-monitor, or the PR merged before the orchestrator processed this event):
 ```bash
-if [ -f "/Users/firas.gara/agentmesh/signals/<slug>.merged" ]; then
+if [ -f "~/agentmesh/signals/<slug>.merged" ]; then
   printf '%s\torchestrator \tpr-auto-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   notecove task change <slug> --state Done
 fi
@@ -368,7 +368,7 @@ If the merged flag was set: Announce: "PR for <slug> — <title> was merged auto
 **If `MODE=auto-review`** and the merged flag was not set: check whether a review has already been done for this task.
 
 ```bash
-_reviewed_flag="/Users/firas.gara/agentmesh/signals/<slug>.reviewed"
+_reviewed_flag="~/agentmesh/signals/<slug>.reviewed"
 ```
 
 **If `_reviewed_flag` exists** (review was already passed back to the worker): remove the flag and fall through to **standard mode** below — the user gets the final approval opportunity now.
@@ -383,7 +383,7 @@ rm -f "$_reviewed_flag"
 # auto-review mode: spawn pr-reviewer immediately
 printf '%s\torchestrator \treviewer-spawning\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "In Review"
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers pr-rev-<slug> /pr-reviewer <slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers pr-rev-<slug> /pr-reviewer <slug> <PROJECT>
 printf '%s\torchestrator \treviewer-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -393,7 +393,7 @@ printf '%s\torchestrator \treviewer-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%
 ```bash
 printf '%s\torchestrator \tpr-monitor-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 tmux new-window -t orchestrator -n pr-mon-<slug> 2>/dev/null || true
-tmux send-keys -t "orchestrator:pr-mon-<slug>" "bash /Users/firas.gara/agentmesh/scripts/pr-monitor.sh <slug> <_pr_url>" Enter
+tmux send-keys -t "orchestrator:pr-mon-<slug>" "bash ~/agentmesh/scripts/pr-monitor.sh <slug> <_pr_url>" Enter
 ```
 
 Tell the user:
@@ -422,7 +422,7 @@ printf '%s\torchestrator \treviewer-spawning\t<slug>\n' "$(date -u +%Y-%m-%dT%H:
 notecove task change <slug> --state "In Review"
 
 # Spawn reviewer in its own temporary window
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers pr-rev-<slug> /pr-reviewer <slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers pr-rev-<slug> /pr-reviewer <slug> <PROJECT>
 printf '%s\torchestrator \treviewer-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -446,7 +446,7 @@ notecove task change <slug> --state Doing
 tmux wait-for -S ${resume_sig}
 # Kill pr-monitor — a fresh one spawns when the worker re-signals PR-ready
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
-rm -f /Users/firas.gara/agentmesh/signals/<slug>.merged
+rm -f ~/agentmesh/signals/<slug>.merged
 ```
 
 **If aborted (user says 'abort' or 'won't do'):** (**PR abort path** — also used by post-PR-review abort above)
@@ -469,7 +469,7 @@ The worker has finished writing the PLAN note and is waiting for review/approval
 # auto-review mode: spawn plan-reviewer immediately
 printf '%s\torchestrator \tplan-reviewer-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "In Review"
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers plan-rev-<slug> /plan-reviewer <slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers plan-rev-<slug> /plan-reviewer <slug> <PROJECT>
 # Continue to the next slug in the queue drain loop — do NOT call tmux wait-for orchestrator-event; reviewer fires worker-any-event when done
 ```
 
@@ -500,7 +500,7 @@ Set the task to `In Review` (reviewer in progress), then spawn the plan reviewer
 ```bash
 printf '%s\torchestrator \tplan-reviewer-spawned\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "In Review"
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers plan-rev-<slug> /plan-reviewer <slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers plan-rev-<slug> /plan-reviewer <slug> <PROJECT>
 # Continue to the next slug in the queue drain loop — do NOT call tmux wait-for orchestrator-event; reviewer fires worker-any-event when done
 ```
 
@@ -643,7 +643,7 @@ Wait for the user to respond and act accordingly. Continue to the next slug in t
 
 ```bash
 printf '%s\torchestrator \ttask-wont-do\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-rm -f /Users/firas.gara/agentmesh/signals/<slug>.reviewed
+rm -f ~/agentmesh/signals/<slug>.reviewed
 ```
 
 Tell the user: "Task <slug> — <title> was marked Won't Do. Cleaning up."
@@ -663,7 +663,7 @@ printf '%s\torchestrator \tworker-crash-requeued\t<slug>\n' "$(date -u +%Y-%m-%d
 notecove task comments add <slug> --user "Orchestrator" "Worker crashed — restarting automatically."
 # Kill stale pr-monitor if running from a previous session
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
-rm -f /Users/firas.gara/agentmesh/signals/<slug>.merged
+rm -f ~/agentmesh/signals/<slug>.merged
 ```
 
 ```bash
@@ -673,8 +673,8 @@ bash $AGENTMESH/scripts/task-done.sh <slug> <PROJECT>
 ```bash
 # Spawn a fresh worker directly in the workers session
 notecove task change <slug> --state Doing
-bash /Users/firas.gara/agentmesh/scripts/spawn-agent.sh workers <slug> /worker <slug> <PROJECT>
-echo "<slug> <slug>" >> /Users/firas.gara/agentmesh/signals/workers
+bash ~/agentmesh/scripts/spawn-agent.sh workers <slug> /worker <slug> <PROJECT>
+echo "<slug> <slug>" >> ~/agentmesh/signals/workers
 ```
 
 ---
@@ -712,10 +712,10 @@ tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
 tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mon-" | while read _win; do
   tmux kill-window -t "orchestrator:${_win}" 2>/dev/null || true
 done
-rm -f /Users/firas.gara/agentmesh/signals/queue /Users/firas.gara/agentmesh/signals/workers
-rm -f /Users/firas.gara/agentmesh/signals/*.merged
-rm -f /Users/firas.gara/agentmesh/signals/*.reviewed
-rm -f /Users/firas.gara/agentmesh/signals/triage_folder
+rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
+rm -f ~/agentmesh/signals/*.merged
+rm -f ~/agentmesh/signals/*.reviewed
+rm -f ~/agentmesh/signals/triage_folder
 ```
 
 Tell the user: "All tasks complete. Orchestrator shutting down."

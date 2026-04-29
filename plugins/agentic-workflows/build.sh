@@ -28,10 +28,9 @@ PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$PLUGIN_DIR/skills"
 FILTER="${1:-}"
 
-# Resolve the agentmesh repo root — always the main worktree, not a linked worktree.
-# Using 'worktree list' instead of 'rev-parse --show-toplevel' so that build.sh
-# works correctly even when invoked from inside a git worktree.
-AGENTMESH_PATH="$(git -C "$PLUGIN_DIR" worktree list --porcelain | awk '/^worktree/{print $2; exit}')"
+# Use ~/agentmesh as the canonical path — portable across machines without hardcoding
+# the absolute home directory path. The shell expands ~ at runtime when the skill runs.
+AGENTMESH_PATH="~/agentmesh"
 
 updated=0
 skipped=0

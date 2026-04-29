@@ -23,9 +23,9 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE=/Users/firas.gara/agentmesh/signals/queue
-SEQ_FILE=/Users/firas.gara/agentmesh/signals/<slug>.seq
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+QUEUE=~/agentmesh/signals/queue
+SEQ_FILE=~/agentmesh/signals/<slug>.seq
+LOG=~/agentmesh/signals/events.log
 ```
 
 ---
@@ -39,7 +39,7 @@ This guarantees every resume signal is unique across all rounds — a stale stor
 Initialize at startup:
 ```bash
 SIGNAL_SEQ=0
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+LOG=~/agentmesh/signals/events.log
 ```
 
 ---
@@ -56,9 +56,9 @@ Set task state *before* signaling — the orchestrator reads it immediately afte
 # 1. Set task state (always Attention) before this step
 # 2. Increment sequence counter and publish it
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 # 3. Append slug with event type to queue (format: <slug>:<event-type>)
-echo "<slug>:<event-type>" >> /Users/firas.gara/agentmesh/signals/queue
+echo "<slug>:<event-type>" >> ~/agentmesh/signals/queue
 # 4. Fire fan-in signal
 tmux wait-for -S worker-any-event
 # 5. Block until resumed — loop handles Bash tool timeout spurious wakeups
@@ -83,7 +83,7 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 Initialize the signal sequence counter and resolve the Triage folder:
 ```bash
 SIGNAL_SEQ=0
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+LOG=~/agentmesh/signals/events.log
 TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 printf '%s	worker       	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
@@ -176,10 +176,10 @@ Set task to Attention and signal:
 printf '%s	worker       	signaling-attention	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Worker" "event:questions"
 notecove task change <slug> --state Attention
-echo "<slug>:event:questions" >> /Users/firas.gara/agentmesh/signals/queue
+echo "<slug>:event:questions" >> ~/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
@@ -241,7 +241,7 @@ EOF
 
 ## Shared Critical Rules
 
-- **Always define `LOG=/Users/firas.gara/agentmesh/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=~/agentmesh/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:pr-ready:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
@@ -304,10 +304,10 @@ Signal Attention (ideation round ready):
 ```bash
 printf '%s\tbrainstormer \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Brainstormer" "event:ideas-ready"
 notecove task change <slug> --state Attention
-echo "<slug>:event:ideas-ready" >> /Users/firas.gara/agentmesh/signals/queue
+echo "<slug>:event:ideas-ready" >> ~/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
@@ -364,10 +364,10 @@ Signal Attention (selection ready):
 ```bash
 printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Brainstormer" "event:selection-ready"
 notecove task change <slug> --state Attention
-echo "<slug>:event:selection-ready" >> /Users/firas.gara/agentmesh/signals/queue
+echo "<slug>:event:selection-ready" >> ~/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
@@ -391,8 +391,8 @@ notecove task comments add <slug> --user "Brainstormer" "event:completion"
 notecove task change <slug> --state Attention
 # Signal completion (orchestrator auto-acks brainstormer completion)
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
-echo "<slug>:event:completion" >> /Users/firas.gara/agentmesh/signals/queue
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
+echo "<slug>:event:completion" >> ~/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 while true; do
   tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
@@ -495,10 +495,10 @@ notecove task change <slug> --state Done
 ```bash
 printf '%s\tbrainstormer \tsignaling-attention-completion\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > /Users/firas.gara/agentmesh/signals/<slug>.seq
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Brainstormer" "event:completion"
 notecove task change <slug> --state Attention
-echo "<slug>:event:completion" >> /Users/firas.gara/agentmesh/signals/queue
+echo "<slug>:event:completion" >> ~/agentmesh/signals/queue
 tmux wait-for -S worker-any-event
 # Block until resumed — IMPORTANT: call with timeout=600000
 while true; do
