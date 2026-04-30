@@ -408,6 +408,25 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 
 ---
 
+## Event Handler Scripts
+
+`scripts/events/` contains one focused bash script per event type. `orchestrator.py` detects the event type from the queue entry and delegates to the right script — the dispatcher loop stays at ~30 lines.
+
+| Script | Event | What it does |
+|---|---|---|
+| `crash.sh <slug> <project>` | `event:crash-detected` | Comments task, kills stale flags, re-queues via task-done.sh, spawns fresh worker |
+| `pr-merged.sh <slug> <resume_sig> <project>` | `event:pr-merged` | Guards on task state, calls pr-approved.sh, notifies Spokesman |
+| `completion.sh <slug> <resume_sig> <project>` | `event:completion` | Marks Done, runs task-done.sh, clears review counts, notifies Spokesman |
+| `plan-ready.sh <slug> <mode> <review_limit> <project>` | `event:plan-ready` | Auto-review: spawns plan-reviewer (with cycle limit); Standard: forwards to Spokesman |
+| `plan-review-complete.sh <slug> <resume_sig> <mode>` | `event:plan-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
+| `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto (first): spawns pr-reviewer; Auto (post-review): forwards validated PR; Standard: forwards submitted PR |
+| `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
+| `pr-approved.sh <slug> <resume_sig> <project>` | shared helper | Marks Done, task-done cleanup, kills pr-mon, removes all signal flags |
+
+Shared utilities are in `scripts/events/lib.sh`: `log_event`, `forward_to_spokesman`, `get_review_count`, `increment_review_count`, `spawn_pr_monitor`.
+
+---
+
 ## End-to-End Example Workflow
 
 ```mermaid
