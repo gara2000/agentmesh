@@ -276,8 +276,12 @@ Wait for the user to respond.
 
 Both events offer the same three options (continue / spawn reviewer / feedback), differing only in display text. Set `_plan_mode` inside the `case` arm before reaching this handler:
 
-- `event:plan-ready` → `_plan_mode="normal"`
-- `event:review-limit-reached:plan` → `_plan_mode="limit"`
+```bash
+case "$event_rest" in
+  event:plan-ready)             _plan_mode="normal" ;;
+  event:review-limit-reached:plan) _plan_mode="limit" ;;
+esac
+```
 
 **Normal mode** (`_plan_mode="normal"`):
 ```
