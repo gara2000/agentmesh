@@ -255,6 +255,74 @@ EOF
 
 ---
 
+## Brainstormer Questions Phase (Always Required)
+
+> **Override:** The base-agent Phase 2 above is optional for most agents. For the Brainstormer, questions are **ALWAYS required** — skip them only if the task description explicitly provides complete answers to all points below. Do not assume clarity; ask first.
+
+Before generating any ideas, the Brainstormer must ask targeted questions to understand what the user actually wants. Without this context, ideas risk being off-target, too broad, or at the wrong level of abstraction.
+
+### What to ask
+
+Cover all points that are not already answered in the task description:
+
+- **Topic scope** — Is the brainstorm focused on a specific subsystem, feature area, or technology? Or is the whole product in scope?
+- **Goals and success criteria** — What would a great outcome look like? What problems should the ideas solve?
+- **Constraints** — Any technical constraints (language, platform, dependencies), time/effort limits, or non-goals?
+- **Existing context** — Are there prior decisions, related tasks, or existing implementations the brainstorm should build on or avoid duplicating?
+- **Desired output** — Should ideas be high-level directions, concrete implementation tasks, or somewhere in between? How many ideas is roughly useful?
+
+### QUESTIONS note
+
+Use the standard `<slug>/QUESTIONS-<N>` naming (starting at `N=1`):
+
+```bash
+QUESTIONS_ROUND=1
+notecove note create "<slug>/QUESTIONS-${QUESTIONS_ROUND}" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
+# Questions — Round <N>
+
+> **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
+
+## Q1: <topic scope question>
+
+**Answer:** _(write your answer here)_
+
+## Q2: <goals/constraints question>
+
+**Answer:** _(write your answer here)_
+
+## Q3: <any other clarifying question>
+
+**Answer:** _(write your answer here)_
+EOF
+```
+
+Signal Attention:
+```bash
+printf '%s\tbrainstormer \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
+notecove task comments add <slug> --user "Brainstormer" "event:questions"
+notecove task change <slug> --state Attention
+echo "<slug>:event:questions" >> ~/agentmesh/signals/queue
+tmux wait-for -S worker-any-event
+# Block until resumed — IMPORTANT: call with timeout=600000
+while true; do
+  tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
+  state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin)['stateId'])")
+  [ "$state" = "doing" ] && break
+done
+printf '%s\tbrainstormer \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+After confirmed resume:
+1. Read latest task comments: `notecove task show <slug> --format markdown-with-comments`
+2. Re-read the QUESTIONS note for inline answers: `notecove note show <questions-note-id> --format markdown`
+3. Check for any `<slug>/ANSWER-<N>` note the user may have written separately.
+4. If more questions remain, create `QUESTIONS-<N+1>` and repeat.
+5. Only proceed to Phase 3 when you have clear answers for scope, goals, and constraints.
+
+---
+
 ## Phase 3: Research & Ideation
 
 Research the brainstorming topic thoroughly:
