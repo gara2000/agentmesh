@@ -219,15 +219,19 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
 | `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
-After editing a skill, run:
+After editing a skill, bump the plugin version and reload it:
 
-```bash
-# If the skill extends shared/base-agent.md, rebuild it first:
-./plugins/agentic-workflows/build.sh
+1. **Bump the version** in `plugins/agentic-workflows/.claude-plugin/plugin.json` (increment the patch version, e.g. `2.11.0` → `2.11.1`).
+2. **Rebuild** (only if the skill extends `shared/base-agent.md`):
+   ```bash
+   ./plugins/agentic-workflows/build.sh
+   ```
+3. **Reload the plugin:**
+   ```bash
+   claude plugin update agentic-workflows@agentmesh
+   ```
 
-# Reload the plugin (no version bump or git push required):
-claude plugin update agentic-workflows@agentmesh
-```
+> Every plugin change — skill edits, new skills, script updates — must include a version bump so the installed plugin stays in sync with the repo.
 
 ---
 
