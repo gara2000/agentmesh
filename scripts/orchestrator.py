@@ -256,6 +256,9 @@ class Orchestrator:
         if event_type == "event:crash-detected":
             # crash.sh re-spawns the worker directly; no slot freed, no pick_up needed.
             subprocess.run(["bash", str(EVENTS / "crash.sh"), slug, self.project])
+        elif event_type == "event:crash-limit-reached":
+            subprocess.run(["bash", str(EVENTS / "crash-limit.sh"), slug, self.project])
+            self.pick_up_ready_tasks()
         elif event_type == "event:pr-merged":
             subprocess.run(["bash", str(EVENTS / "pr-merged.sh"), slug, resume_sig, self.project])
             self.pick_up_ready_tasks()
@@ -358,6 +361,7 @@ class Orchestrator:
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.plan-review-count").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.pr-review-count").unlink(missing_ok=True)
+            (SIGNALS / f"{slug}.crash-count").unlink(missing_ok=True)
             self.pick_up_ready_tasks()
         elif cmd == "spawn-plan-reviewer":
             notecove(f"task change {slug} --state 'In Review'")

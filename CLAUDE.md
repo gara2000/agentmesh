@@ -39,7 +39,8 @@ Examples:
 - `WORK-abc:event:plan-ready`
 - `WORK-abc:event:pr-ready:https://github.com/foo/bar/pull/1`
 - `WORK-abc:event:questions`
-- `WORK-abc:event:crash-detected` (written by watchdog.sh)
+- `WORK-abc:event:crash-detected` (written by watchdog.sh — with exponential backoff)
+- `WORK-abc:event:crash-limit-reached` (written by watchdog.sh after 3 consecutive crashes)
 - `WORK-abc:event:pr-merged` (written by pr-monitor.sh)
 
 ### Task State as Event Type
@@ -69,6 +70,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
 | `event:review-limit-reached:plan` | orchestrator.py | Auto-review cycle limit reached for plan reviews — escalated to Spokesman |
 | `event:review-limit-reached:pr:<url>` | orchestrator.py | Auto-review cycle limit reached for PR reviews — escalated to Spokesman |
+| `event:crash-limit-reached` | watchdog.sh | Worker crashed 3 consecutive times — task set to Blocked, escalated to Spokesman |
 
 The orchestrator translates `event:pr-ready:<url>` from the worker into one of two Spokesman events depending on mode and context:
 
@@ -155,11 +157,14 @@ The pr-monitor window is killed by orchestrator.py in all PR resolution paths (a
 Responsibilities:
 - Poll the worker registry (`signals/workers`) every 30 seconds
 - For each registered worker, check if its tmux window still exists
-- If a window is gone and the task state is still `doing` → crash detected: append `<slug>:event:crash-detected` to queue and fire `worker-any-event` to wake orchestrator.py
+- If a window is gone and the task state is still `doing` → crash detected:
+  - Read `signals/<slug>.crash-count` (default 0); increment
+  - If crash count < 3: write count to file, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), append `<slug>:event:crash-detected` to queue, fire `worker-any-event`
+  - If crash count ≥ 3: delete count file, set task to Blocked in NoteCove, append `<slug>:event:crash-limit-reached` to queue, fire `worker-any-event`
 - Remove the entry from the registry regardless (window gone = worker dead)
-- If the task state is anything other than `doing` (e.g. `done`, `attention`) → worker finished cleanly before being unregistered; no action
+- If the task state is anything other than `doing` (e.g. `done`, `attention`) → worker finished cleanly; reset crash count (`rm signals/<slug>.crash-count`)
 
-orchestrator.py handles the crash case: when it drains a `crash-detected` event, it re-queues the task to `Ready` and spawns a new worker.
+orchestrator.py handles the crash case: when it drains a `crash-detected` event, it re-queues the task to `Ready` and spawns a new worker. When it drains `crash-limit-reached`, it cleans up and escalates to the Spokesman for user notification.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the orchestrator:
 ```
@@ -262,6 +267,7 @@ agentmesh/
     ├── <slug>.review-start         # flag file touched by orchestrator when a reviewer is spawned; cleared when review completes or is killed; used by anomaly check 1
     ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
     ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state
+    ├── <slug>.crash-count          # consecutive crash counter; written by watchdog on each crash, reset on clean exit or at bootstrap
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug
@@ -278,6 +284,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  dispatcher      worker-any-event-received   -
 2026-04-26T...  dispatcher      orchestrator-event-fired    -
 2026-04-26T...  watchdog        crash-detected              WORK-xyz
+2026-04-26T...  watchdog        crash-limit-reached         WORK-xyz
 2026-04-26T...  watchdog        worker-exited-clean         WORK-xyz
 2026-04-26T...  orchestrator    bootstrap-complete          -
 2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
@@ -292,6 +299,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    reviewer-spawning           WORK-xyz
 2026-04-26T...  orchestrator    reviewer-spawned            WORK-xyz
 2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
+2026-04-26T...  orchestrator    crash-limit-reached         WORK-xyz
 2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
 2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
@@ -308,6 +316,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  spokesman       review-approved             WORK-xyz
 2026-04-26T...  spokesman       review-feedback             WORK-xyz
 2026-04-26T...  spokesman       anomaly-detected            WORK-xyz
+2026-04-26T...  spokesman       crash-limit-reached         WORK-xyz
 2026-04-26T...  spokesman       review-rejected             WORK-xyz
 2026-04-26T...  spokesman       review-aborted              WORK-xyz
 2026-04-26T...  spokesman       orchestrator-restarted      -
