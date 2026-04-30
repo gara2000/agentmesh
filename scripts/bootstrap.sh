@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog, orchestrator.py
-# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>]
+# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>] [--review-limit <n>]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -15,6 +15,7 @@ PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
 MODE="standard"
 MAX_WORKERS="5"
+REVIEW_LIMIT="3"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --profile) PROFILE="$2"; shift 2 ;;
     --mode) MODE="$2"; shift 2 ;;
     --max-workers) MAX_WORKERS="$2"; shift 2 ;;
+    --review-limit) REVIEW_LIMIT="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -46,9 +48,11 @@ rm -f "$SIGNALS/"*.merged
 rm -f "$SIGNALS/"*.reviewed
 rm -f "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start
+rm -f "$SIGNALS/"*.plan-review-count
+rm -f "$SIGNALS/"*.pr-review-count
 
 # Persist orchestrator launch command so Spokesman can restart it on stale heartbeat
-echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" > "$SIGNALS/orchestrator-restart-cmd"
+echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" > "$SIGNALS/orchestrator-restart-cmd"
 
 LOG="$SIGNALS/events.log"
 
@@ -86,7 +90,7 @@ tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" || {
   tmux new-window -t orchestrator -n orchestrator
   tmux send-keys -t orchestrator:orchestrator \
-    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS" \
+    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
     Enter
 }
 
