@@ -17,14 +17,17 @@ PROJECT=$5
 tmux new-window -t "$SESSION" -n "$WINDOW"
 tmux send-keys -t "$SESSION:$WINDOW" "cd /Users/firas.gara/agentmesh && claude --dangerously-skip-permissions" Enter
 
-# Wait for Claude REPL prompt to appear before sending the skill command
+# Wait for Claude REPL prompt to appear before sending the skill command.
+# Claude Code uses ❯ (U+276F) followed by NBSP (U+00A0) as its prompt.
+# Match that specific byte sequence to avoid false-positive on banner text.
+# _timeout=300 × sleep 0.2 s = 60 s real-time fallback.
 _elapsed=0
-_timeout=60
+_timeout=300
 while [ $_elapsed -lt $_timeout ]; do
-  if tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null | grep -qE '^\s*>\s*$'; then
+  if tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null | grep -q $'❯\xc2\xa0'; then
     break
   fi
-  sleep 1
+  sleep 0.2
   _elapsed=$((_elapsed + 1))
 done
 
