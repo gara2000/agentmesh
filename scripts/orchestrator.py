@@ -636,7 +636,7 @@ class Orchestrator:
             return
 
         result = run_bash(
-            f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit {slots} --json"
+            f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit 50 --json"
         )
         try:
             tasks = json.loads(result.stdout)
@@ -646,6 +646,11 @@ class Orchestrator:
         if not tasks:
             self._maybe_shutdown()
             return
+
+        # Sort by priority ascending so higher-priority tasks are picked first.
+        # Lower number = higher priority (P0 > P1 > P2 …); tasks with no priority go last.
+        tasks.sort(key=lambda t: t.get("priority") if t.get("priority") is not None else float("inf"))
+        tasks = tasks[:slots]
 
         for task in tasks:
             slug_obj = task.get("slug", {})
