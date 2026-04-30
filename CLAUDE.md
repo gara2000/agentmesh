@@ -327,6 +327,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  worker          resumed-from-plan           WORK-xyz
 2026-04-26T...  worker          implementing                WORK-xyz
 2026-04-26T...  worker          pr-created                  WORK-xyz
+2026-04-26T...  worker          ci-wait-start               WORK-xyz
+2026-04-26T...  worker          ci-wait-complete            WORK-xyz
 2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  worker          approved                    WORK-xyz
 2026-04-26T...  worker          feedback-received           WORK-xyz
