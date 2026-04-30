@@ -400,7 +400,7 @@ Keep looping until the user signals "select".
 
 Collect all ideas from all IDEAS notes into a single SELECTION note. Reason about which ideas logically depend on others, and also identify any ideas that would modify the same files — those must be serialized even without a logical dependency.
 
-For each idea, identify the specific files it is likely to modify (use Glob/Grep on the codebase if needed). Cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship listed in the Merge Conflict Analysis section.
+For each idea, identify the specific files it is likely to modify (use Glob/Grep on the codebase if needed). Cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship listed in the Merge Conflict Analysis section. When ordering a merge-conflict pair that has no logical dependency, prefer putting the simpler or more self-contained idea first.
 
 ### SELECTION note format
 
@@ -430,12 +430,12 @@ Check the boxes next to the ideas you want to create as tasks.
 
 ## Merge Conflict Analysis
 
-*(Two ideas that modify the same file must be serialized — one blocks the other, even without a logical dependency.
- If a pair already has a logical dependency, note "already covered by logical dependency" to avoid confusion.)*
+*(Derived from file-level analysis in Phase 4. Two ideas that modify the same file must be serialized —
+ one blocks the other, even without a logical dependency. If a pair already has a logical dependency,
+ note "already covered by logical dependency". Ideas with no shared files can be omitted.)*
 
 - Idea 1 and Idea 4 both modify `<file>` → Idea 4 blocked by Idea 1
 - Idea 2 depends on Idea 1 (already covered by logical dependency in Proposed Dependencies)
-- Idea 3 touches independent files → no conflict with other ideas
 ...
 EOF
 ```
