@@ -243,6 +243,7 @@ agentmesh/
 ├── scripts/
 │   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog + folder-cleanup + orchestrator.py
 │   ├── orchestrator.py     # orchestrator daemon: event routing, worker spawning, lifecycle management
+│   ├── anomaly_checks.py   # AnomalyChecker: 4 structural invariant checks, dedup, Spokesman escalation
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
