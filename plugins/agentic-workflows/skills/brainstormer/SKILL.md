@@ -330,7 +330,9 @@ Keep looping until the user signals "select".
 
 ## Phase 4: Selection
 
-Collect all ideas from all IDEAS notes into a single SELECTION note. Reason about which ideas logically depend on others.
+Collect all ideas from all IDEAS notes into a single SELECTION note. Reason about which ideas logically depend on others, and also identify any ideas that would modify the same files — those must be serialized even without a logical dependency.
+
+For each idea, identify the specific files it is likely to modify (use Glob/Grep on the codebase if needed). Cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship listed in the Merge Conflict Analysis section.
 
 ### SELECTION note format
 
@@ -341,7 +343,7 @@ notecove note create "<slug>/SELECTION" --folder <task-folder-id> --content-file
 Check the boxes next to the ideas you want to create as tasks.
 
 > **How to respond:** Edit this note — check `[x]` for ideas you want, then say "continue" to create the tasks.
-> You may also adjust the proposed dependencies below.
+> You may also adjust the proposed dependencies and merge conflict analysis below.
 
 ## Ideas
 
@@ -354,8 +356,16 @@ Check the boxes next to the ideas you want to create as tasks.
 
 *(Edit if needed — "Idea X depends on Idea Y" means X will be created as Blocked until Y is done)*
 
-- Idea 2 depends on Idea 1
+- Idea 2 depends on Idea 1 (logical dependency)
 - Idea 3 is independent
+...
+
+## Merge Conflict Analysis
+
+*(Two ideas that modify the same file must be serialized — one blocks the other, even without a logical dependency)*
+
+- Idea 1 and Idea 4 both modify `<file>` → Idea 4 blocked by Idea 1
+- Idea 2 modifies independent files → no conflict with other ideas
 ...
 EOF
 ```
@@ -402,7 +412,7 @@ done
 # Exit
 ```
 
-Also parse the **Proposed Dependencies** section for any adjustments the user made. These will be applied in Phase 5.
+Also parse the **Proposed Dependencies** and **Merge Conflict Analysis** sections for any adjustments the user made. Both sets of relationships will be applied as `--block` links in Phase 5.
 
 ---
 
@@ -471,12 +481,14 @@ notecove task change ${CHILD_SLUG} \
 
 **Step E — After all child tasks are created, establish dependency links:**
 
-For each dependency from the SELECTION note (where idea A must precede idea B):
+For each relationship from the SELECTION note — both **logical dependencies** (Proposed Dependencies section) and **merge conflict pairs** (Merge Conflict Analysis section) — create a `--block` link:
 ```bash
 notecove task change <blocked-slug> --block <blocker-slug>
 ```
 
 This sets the actual blocking relationship. The `--block <slug>` flag means "this task is blocked by `<slug>`", so it must be called on the *blocked* task with the *blocker* as the argument. Combined with the `Blocked` state set in Step A, this ensures the orchestrator will not dispatch blocked tasks before their prerequisites.
+
+Apply this for **every** pair in the Merge Conflict Analysis, not only logical dependencies. Sharing a file is sufficient reason to serialize two tasks.
 
 After creating all tasks and links, add a summary comment:
 ```bash
