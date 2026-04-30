@@ -263,7 +263,7 @@ Analyze the task and design the subtask breakdown. Consider:
 - **Size balance**: subtasks should be roughly PR-sized — not trivially small, not sprawling
 - **Merge conflict risk**: two subtasks that modify any of the same files must NOT run in parallel — add a sequential dependency between them (one blocks the other) even if there is no logical implementation dependency
 
-For each proposed subtask, identify the specific files it will likely modify (use Glob/Grep on the codebase if needed). Then cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship.
+For each proposed subtask, identify the specific files it will likely modify (use Glob/Grep on the codebase if needed). Then cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship. When ordering a merge-conflict pair that has no logical dependency, prefer putting the simpler or more self-contained subtask first.
 
 Create a DECOMPOSITION note proposing the subtasks:
 
@@ -293,11 +293,11 @@ notecove note create "<slug>/DECOMPOSITION" --folder <task-folder-id> --content-
 
 ## Merge Conflict Analysis
 
-For each pair of subtasks that share at least one file, list the shared file(s) and which task must go first:
+For each pair of subtasks that share at least one file, list the shared file(s) and which task must go first.
+Subtasks with no shared files can be omitted from this section to keep it concise.
 
 - Subtask 1 and Subtask 2 both modify `<file>` → Subtask 2 blocked by Subtask 1 (already covered by logical dependency)
 - Subtask 3 and Subtask 4 both modify `<file>` → Subtask 4 blocked by Subtask 3 (merge conflict risk — no logical dependency, but must be serialized)
-- Subtask 5 touches independent files → no conflicts with other subtasks
 
 ## Execution Order
 
