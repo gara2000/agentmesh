@@ -129,6 +129,9 @@ class Orchestrator:
         print(f"[orchestrator] project={self.project} mode={self.mode} max-workers={self.max_workers}", flush=True)
         log("orchestrator ", "bootstrap-complete")
 
+        # Write initial heartbeat immediately so Spokesman sees a fresh timestamp on startup
+        self._write_heartbeat()
+
         # Initial task pickup
         self.pick_up_ready_tasks()
 
@@ -140,8 +143,34 @@ class Orchestrator:
         t_cmd = threading.Thread(target=self._cmd_event_loop, daemon=True, name="spokesman-cmds")
         t_cmd.start()
 
+        # Heartbeat thread — writes timestamp every 30s so Spokesman can detect a dead orchestrator
+        t_heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
+        t_heartbeat.start()
+
         # Block until _stop is set (by _maybe_shutdown or shutdown command)
         self._stop.wait()
+
+    # -----------------------------------------------------------------------
+    # Heartbeat
+    # -----------------------------------------------------------------------
+
+    def _write_heartbeat(self) -> None:
+        """Write current UTC timestamp to signals/orchestrator.heartbeat."""
+        try:
+            ts = subprocess.run(
+                ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            (SIGNALS / "orchestrator.heartbeat").write_text(ts)
+        except Exception:
+            pass
+
+    def _heartbeat_loop(self) -> None:
+        """Background thread: refresh heartbeat file every 30 seconds."""
+        while not self._stop.is_set():
+            self._stop.wait(30)
+            if not self._stop.is_set():
+                self._write_heartbeat()
 
     # -----------------------------------------------------------------------
     # Event loops
@@ -168,6 +197,7 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def _drain_worker_queue(self) -> None:
+        self._write_heartbeat()
         queue_file = SIGNALS / "queue"
         while queue_file.exists() and queue_file.stat().st_size > 0:
             # Atomic drain: rename queue so new worker appends go to a fresh file
@@ -253,6 +283,7 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def _drain_commands(self) -> None:
+        self._write_heartbeat()
         cmds_file = SIGNALS / "orchestrator-cmds"
         if not cmds_file.exists() or cmds_file.stat().st_size == 0:
             return
