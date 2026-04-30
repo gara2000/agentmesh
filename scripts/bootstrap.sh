@@ -66,7 +66,8 @@ echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
 printf '%s\torchestrator \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
-# 0c. Create workers tmux session (if not already running)
+# 0c. Create orchestrator and workers tmux sessions (if not already running)
+tmux new-session -d -s orchestrator 2>/dev/null || true
 tmux new-session -d -s workers 2>/dev/null || true
 
 # 0d. Launch dispatcher in a background window
