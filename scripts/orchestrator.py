@@ -115,6 +115,11 @@ def append_spokesman_ack(cmd_seq: int, slug: str, cmd: str) -> None:
     tmux_signal(f"spokesman-ack-{cmd_seq}")
 
 
+def _print(msg: str) -> None:
+    """Print a [orchestrator]-prefixed message to stdout."""
+    print(f"[orchestrator] {msg}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -139,7 +144,7 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def run(self) -> None:
-        print(f"[orchestrator] project={self.project} mode={self.mode} max-workers={self.max_workers} review-limit={self.review_limit}", flush=True)
+        _print(f"project={self.project} mode={self.mode} max-workers={self.max_workers} review-limit={self.review_limit}")
         log("orchestrator ", "bootstrap-complete")
 
         # Write initial heartbeat immediately so Spokesman sees a fresh timestamp on startup
@@ -242,6 +247,7 @@ class Orchestrator:
         event_type = event_type.strip()
 
         log("orchestrator ", f"handling-event:{event_type}", slug)
+        _print(f"event {event_type} from {slug}")
 
         seq = get_task_seq(slug)
         resume_sig = f"{slug}-resume-{seq}"
@@ -289,6 +295,7 @@ class Orchestrator:
 
     def _forward_to_spokesman(self, slug: str, event_type: str) -> None:
         log("orchestrator ", f"forwarding-to-spokesman:{event_type}", slug)
+        _print(f"forwarding to spokesman: {event_type} ({slug})")
         append_spokesman_queue(slug, event_type)
         tmux_signal("spokesman-event")
 
@@ -338,6 +345,7 @@ class Orchestrator:
         resume_sig = f"{slug}-resume-{seq}"
 
         log("orchestrator ", f"executing-cmd:{cmd}", slug)
+        _print(f"cmd {cmd} ({slug})" + (f" args={args}" if args else ""))
 
         if cmd == "spawn":
             # Spokesman has triaged the task and decided the agent type
@@ -347,14 +355,17 @@ class Orchestrator:
             with open(SIGNALS / "workers", "a") as f:
                 f.write(f"{slug} {slug}\n")
             log("orchestrator ", f"{agent_type}-spawned", slug)
+            _print(f"spawned {agent_type} for {slug}")
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
+            _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
         elif cmd in ("done", "pr-approved"):
             log("orchestrator ", "review-approved", slug)
             self._handle_pr_approved(slug, resume_sig)
         elif cmd == "abort":
+            _print(f"aborting {slug}")
             task_done(slug, self.project)
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
@@ -366,21 +377,25 @@ class Orchestrator:
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
             log("orchestrator ", "plan-reviewer-spawned", slug)
+            _print(f"spawned plan-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
         elif cmd == "spawn-pr-reviewer":
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
+            _print(f"spawned pr-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
         elif cmd == "spawn-pr-monitor":
             self._spawn_pr_monitor(slug, args)
         elif cmd == "kill-pr-monitor":
+            _print(f"killing pr-monitor for {slug}")
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
+            _print(f"unknown cmd: {cmd} ({slug})")
 
         # Send ACK back to Spokesman (new typed-command protocol)
         if cmd_seq is not None:
@@ -417,12 +432,14 @@ class Orchestrator:
         tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
         tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
         log("orchestrator ", "pr-monitor-spawned", slug)
+        _print(f"spawned pr-monitor for {slug} ({pr_url})")
 
     def _handle_pr_approved(self, slug: str, resume_sig: str) -> None:
         """Shared cleanup for all PR approval paths (user-approved and pr-merged).
 
         Sets task state to Done internally — callers must not set it beforehand.
         """
+        _print(f"PR approved — marking {slug} done and resuming worker")
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
@@ -436,16 +453,18 @@ class Orchestrator:
         count = self._increment_review_count(slug, "plan")
         if count > self.review_limit:
             log("orchestrator ", "review-limit-reached:plan", slug)
-            print(f"[orchestrator] review-limit-reached:plan count={count} slug={slug}", flush=True)
+            _print(f"review-limit-reached:plan count={count} slug={slug}")
             self._forward_to_spokesman(slug, "event:review-limit-reached:plan")
             return
         log("orchestrator ", "plan-reviewer-spawned", slug)
+        _print(f"auto-spawning plan-reviewer for {slug} (cycle {count})")
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
         (SIGNALS / f"{slug}.review-start").touch()
 
     def _auto_pass_plan_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "attention-resumed", slug)
+        _print(f"plan review complete — passing result to worker {slug}")
         notecove(
             f'task comments add {slug} --user "Orchestrator" '
             f'"Plan review complete (auto-review mode). Review the reviewer\'s comment '
@@ -460,10 +479,11 @@ class Orchestrator:
         count = self._increment_review_count(slug, "pr")
         if count > self.review_limit:
             log("orchestrator ", "review-limit-reached:pr", slug)
-            print(f"[orchestrator] review-limit-reached:pr count={count} slug={slug}", flush=True)
+            _print(f"review-limit-reached:pr count={count} slug={slug}")
             self._forward_to_spokesman(slug, f"event:review-limit-reached:pr:{pr_url}")
             return
         log("orchestrator ", "reviewer-spawning", slug)
+        _print(f"auto-spawning pr-reviewer for {slug} (cycle {count})")
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
         log("orchestrator ", "reviewer-spawned", slug)
@@ -472,6 +492,7 @@ class Orchestrator:
 
     def _auto_pass_pr_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "pr-review-passed-to-worker", slug)
+        _print(f"PR review complete — passing result to worker {slug}")
         notecove(
             f'task comments add {slug} --user "Orchestrator" '
             f'"PR review complete (auto-review mode). Read the reviewer\'s comment '
@@ -491,6 +512,7 @@ class Orchestrator:
 
     def _handle_completion(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "agent-completion-ack", slug)
+        _print(f"agent completion ack for {slug} — marking done")
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
         self._clear_review_counts(slug)
@@ -504,6 +526,7 @@ class Orchestrator:
         if state not in ("attention", "in review"):
             return
         log("orchestrator ", "pr-auto-approved", slug)
+        _print(f"PR merged — auto-approving {slug}")
         self._handle_pr_approved(slug, resume_sig)
         # Notify spokesman of the auto-approval
         append_spokesman_queue(slug, "event:pr-merged-auto-approved")
@@ -511,6 +534,7 @@ class Orchestrator:
 
     def _handle_crash(self, slug: str) -> None:
         log("orchestrator ", "worker-crash-requeued", slug)
+        _print(f"CRASH detected for {slug} — restarting worker")
         notecove(f'task comments add {slug} --user "Orchestrator" "Worker crashed — restarting automatically."')
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
@@ -556,6 +580,7 @@ class Orchestrator:
             pass
 
         log("orchestrator ", "shutdown")
+        _print("all tasks complete — shutting down")
         append_spokesman_queue("-", "event:shutdown")
         tmux_signal("spokesman-event")
         self._stop.set()
@@ -601,8 +626,10 @@ class Orchestrator:
             # tasks share the same short prefix (e.g. WORK-g93 matching WORK-g934 and WORK-g93w).
             full_slug = slug_obj.get("full", slug) if isinstance(slug_obj, dict) else slug
 
+            title = task.get("title", "")
             notecove(f"task change {full_slug} --state Doing")
             log("orchestrator ", "task-picked-up", slug)
+            _print(f"picked up {slug}: {title}")
             self._in_flight.add(slug)
             append_spokesman_queue(slug, "event:task-ready")
             log("orchestrator ", "task-triage-forwarded", slug)
