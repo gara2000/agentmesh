@@ -277,12 +277,6 @@ The PR has not yet been reviewed — the user can approve directly, spawn a revi
 
 Extract PR URL from event: `pr_url=${event_rest#event:pr-submitted:}`
 
-Spawn pr-monitor before showing prompt:
-```bash
-echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
-tmux wait-for -S orchestrator-cmd-event
-```
-
 ```
 ── PR Submitted ─────────────────────────────────
 Task: <slug> — <title>
@@ -302,8 +296,7 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Done
-echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -348,12 +341,6 @@ and the worker has applied any requested fixes. The PR is validated — no revie
 
 Extract PR URL from event: `pr_url=${event_rest#event:pr-ready:}`
 
-Spawn pr-monitor before showing prompt:
-```bash
-echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
-tmux wait-for -S orchestrator-cmd-event
-```
-
 ```
 ── PR Ready (reviewed) ──────────────────────────
 Task: <slug> — <title>
@@ -372,8 +359,7 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Done
-echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 ```
 
@@ -489,8 +475,7 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Done
-echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
 # Kill pr-reviewer window
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
