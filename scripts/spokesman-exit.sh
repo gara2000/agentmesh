@@ -10,7 +10,7 @@ SPOKESMAN_ACKS="$AGENTMESH/signals/spokesman-acks"
 printf '%s\tspokesman    \tshutdown\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
 # Kill any remaining reviewer windows (not tracked in signals/workers)
-tmux list-windows -t workers -F "#{window_name}" 2>/dev/null | grep -E '^(plan-rev-|pr-rev-)' | while read -r win; do
+tmux list-windows -t workers -F "#{window_name}" 2>/dev/null | { grep -E '^(plan-rev-|pr-rev-)' || true; } | while read -r win; do
   tmux kill-window -t "workers:$win" 2>/dev/null || true
 done
 
@@ -21,7 +21,7 @@ tmux kill-window -t orchestrator:watchdog 2>/dev/null || true
 tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
 
 # Kill any remaining pr-monitor windows
-tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mon-" | while read -r _win; do
+tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | { grep "^pr-mon-" || true; } | while read -r _win; do
   tmux kill-window -t "orchestrator:${_win}" 2>/dev/null || true
 done
 
