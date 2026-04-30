@@ -226,7 +226,7 @@ EOF
 
 - **Always define `LOG={{AGENTMESH}}/signals/events.log`** at startup and write `printf '%s\tworker       \t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
-- **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:pr-ready:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
+- **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
 - **Always set task state before signaling** — orchestrator reads it immediately on wakeup.
 - **Always use the shell loop blocking pattern** — never call `tmux wait-for <resume-signal>` bare. The Bash tool times out after 2 minutes (max 10 with `timeout=600000`); the loop re-blocks internally until the expected state is confirmed.
 - **Always use `timeout=600000`** on Bash calls that contain the blocking loop — this maximizes time between spurious wakeups.

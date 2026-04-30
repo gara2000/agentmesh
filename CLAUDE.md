@@ -60,8 +60,11 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | Event Tag | Fired by | Meaning |
 |---|---|---|
 | `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
-| `event:plan-ready` | Worker | Plan note written, awaiting review |
-| `event:pr-ready:<url>` | Worker | PR created at `<url>`, signaling readiness to orchestrator |
+| `event:plan-ready` | Worker | Plan note written (first submission), awaiting review |
+| `event:plan-revised` | Worker | Plan revised after reviewer feedback; re-review requested |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>` (first submission), signaling readiness to orchestrator |
+| `event:pr-revised:<url>` | Worker | PR revised after reviewer feedback; re-review requested |
+| `event:pr-ready-final:<url>` | Worker | PR is ready for user approval — no further automated review needed |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
@@ -72,12 +75,13 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:review-limit-reached:pr:<url>` | orchestrator.py | Auto-review cycle limit reached for PR reviews — escalated to Spokesman |
 | `event:crash-limit-reached` | watchdog.sh | Worker crashed 3 consecutive times — task set to Blocked, escalated to Spokesman |
 
-The orchestrator translates `event:pr-ready:<url>` from the worker into one of two Spokesman events depending on mode and context:
+The orchestrator translates worker events into Spokesman events:
 
-| Spokesman Event | When | Meaning |
-|---|---|---|
-| `event:pr-submitted:<url>` | Standard mode, first signal | PR needs user decision (approve / review / feedback / abort) |
-| `event:pr-ready:<url>` | Auto-review mode, post-review | PR has been reviewed and validated; ready for final user approval |
+| Worker Event | Spokesman Event | When | Meaning |
+|---|---|---|---|
+| `event:pr-ready:<url>` | `event:pr-submitted:<url>` | Standard mode | PR needs user decision (approve / review / feedback / abort) |
+| `event:pr-revised:<url>` | `event:pr-submitted:<url>` | Standard mode | Revised PR needs user decision |
+| `event:pr-ready-final:<url>` | `event:pr-ready:<url>` | Auto-review mode, post-review | PR validated; ready for final user approval |
 
 ---
 
@@ -265,7 +269,6 @@ agentmesh/
     ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
     ├── <slug>.seq                  # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
     ├── <slug>.merged               # flag file written by pr-monitor when PR is merged
-    ├── <slug>.reviewed             # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
     ├── <slug>.review-start         # flag file touched by orchestrator when a reviewer is spawned; cleared when review completes or is killed; used by anomaly check 1
     ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
     ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state

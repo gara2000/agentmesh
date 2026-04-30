@@ -15,9 +15,9 @@ if [[ "$MODE" == "auto-review" ]]; then
     $NOTECOVE task comments add "$SLUG" --user "Orchestrator" \
         "PR review complete (auto-review mode). Read the reviewer's comment and the GitHub PR comments. Apply any needed fixes and re-signal when ready."
     $NOTECOVE task change "$SLUG" --state Doing
-    # Kill pr-monitor now; a fresh one is spawned when the worker re-signals pr-ready.
+    # Kill pr-monitor now; a fresh one is spawned when the worker re-signals
+    # (event:pr-revised or event:pr-ready-final).
     tmux kill-window -t "orchestrator:pr-mon-${SLUG}" 2>/dev/null || true
-    touch "${SIGNALS}/${SLUG}.reviewed"
     tmux wait-for -S "$RESUME_SIG"
     tmux kill-window -t "workers:pr-rev-${SLUG}" 2>/dev/null || true
     rm -f "${SIGNALS}/${SLUG}.review-start"
