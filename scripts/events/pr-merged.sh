@@ -15,7 +15,7 @@ STATE=$($NOTECOVE task show "$SLUG" --json | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 s = d.get('state', {})
-print((s.get('name', '') if isinstance(s, dict) else '').lower() or d.get('stateId', '').lower())
+print((s.get('name', '') if isinstance(s, dict) else '').lower() or d.get('stateName', '').lower())
 ")
 if [[ "$STATE" != "attention" && "$STATE" != "in review" ]]; then
     exit 0
