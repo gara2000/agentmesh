@@ -257,7 +257,7 @@ EOF
 
 ## Brainstormer Questions Phase (Always Required)
 
-> **Override:** The base-agent Phase 2 above is optional for most agents. For the Brainstormer, questions are **ALWAYS required** — skip them only if the task description explicitly provides complete answers to all points below. Do not assume clarity; ask first.
+> **Override:** The base-agent Phase 2 above is optional for most agents. **Skip base-agent Phase 2 entirely — this section replaces it.** For the Brainstormer, questions are **ALWAYS required** — skip them only if the task description explicitly provides complete answers to all points below. Do not assume clarity; ask first.
 
 Before generating any ideas, the Brainstormer must ask targeted questions to understand what the user actually wants. Without this context, ideas risk being off-target, too broad, or at the wrong level of abstraction.
 
