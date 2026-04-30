@@ -142,23 +142,7 @@ tmux wait-for spokesman-event
 After each wakeup, verify that orchestrator.py is still alive. If the heartbeat file is stale (not updated in >90 seconds), auto-restart orchestrator.py and inform the user.
 
 ```bash
-HEARTBEAT=~/agentmesh/signals/orchestrator.heartbeat
-RESTART_CMD=$(cat ~/agentmesh/signals/orchestrator-restart-cmd 2>/dev/null || echo "")
-
-if [ -n "$RESTART_CMD" ] && [ -f "$HEARTBEAT" ]; then
-  last_modified=$(stat -f %m "$HEARTBEAT" 2>/dev/null || stat -c %Y "$HEARTBEAT" 2>/dev/null)
-  now=$(date +%s)
-  age=$((now - last_modified))
-  if [ "$age" -gt 90 ]; then
-    printf '%s\tspokesman    \torchestrator-restarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-    echo "⚠  Orchestrator heartbeat stale (${age}s). Restarting orchestrator.py..."
-    tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
-    sleep 1
-    tmux new-window -t orchestrator -n orchestrator
-    tmux send-keys -t orchestrator:orchestrator "$RESTART_CMD" Enter
-    echo "Orchestrator restarted. Continuing..."
-  fi
-fi
+bash ~/agentmesh/scripts/spokesman-heartbeat-check.sh
 ```
 
 The `orchestrator-restart-cmd` file is written by `bootstrap.sh` and contains the exact command used to launch orchestrator.py (with the same project, mode, max-workers, and profile arguments).
@@ -591,28 +575,7 @@ After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIA
 When no workers remain and no Ready tasks exist (orchestrator.py shuts down):
 
 ```bash
-printf '%s\tspokesman    \tshutdown\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# Kill any remaining reviewer windows (not tracked in signals/workers)
-tmux list-windows -t workers -F "#{window_name}" 2>/dev/null | grep -E '^(plan-rev-|pr-rev-)' | while read win; do
-  tmux kill-window -t "workers:$win" 2>/dev/null || true
-done
-# Kill the orchestrator.py window
-tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
-tmux kill-window -t orchestrator:dispatcher 2>/dev/null || true
-tmux kill-window -t orchestrator:watchdog 2>/dev/null || true
-tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
-# Kill any remaining pr-monitor windows
-tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mon-" | while read _win; do
-  tmux kill-window -t "orchestrator:${_win}" 2>/dev/null || true
-done
-rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
-rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
-rm -f "$SPOKESMAN_ACKS"
-rm -f ~/agentmesh/signals/*.merged
-rm -f ~/agentmesh/signals/*.reviewed
-rm -f ~/agentmesh/signals/*.review-start
-rm -f ~/agentmesh/signals/triage_folder
-rm -f ~/agentmesh/signals/mode
+bash ~/agentmesh/scripts/spokesman-exit.sh
 ```
 
 Tell the user: "All tasks complete. Spokesman shutting down."
