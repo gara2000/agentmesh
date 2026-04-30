@@ -437,6 +437,8 @@ class Orchestrator:
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
             (SIGNALS / f"{slug}.review-start").touch()
+        elif cmd == "spawn-pr-monitor":
+            self._spawn_pr_monitor(slug, args)
         elif cmd == "kill-pr-monitor":
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
