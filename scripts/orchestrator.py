@@ -16,8 +16,9 @@ import os
 import re
 import subprocess
 import threading
-import time
 from pathlib import Path
+
+from anomaly_checks import AnomalyChecker
 
 AGENTMESH = Path(__file__).parent.parent
 SCRIPTS = AGENTMESH / "scripts"
@@ -131,8 +132,7 @@ class Orchestrator:
         self._stop = threading.Event()
         # Slugs forwarded to Spokesman for triage but not yet spawned
         self._in_flight: set[str] = set()
-        # Tracks currently active anomalies to suppress duplicate alerts
-        self._active_anomalies: set = set()
+        self._anomaly_checker = AnomalyChecker(SIGNALS, NOTECOVE_BIN)
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -225,7 +225,7 @@ class Orchestrator:
                 entry = entry.strip()
                 if entry:
                     self._handle_queue_entry(entry)
-        self._run_anomaly_checks()
+        self._anomaly_checker.run()
 
     def _handle_queue_entry(self, entry: str) -> None:
         """Dispatch on '<slug>:<event-type>' queue entries."""
@@ -293,71 +293,6 @@ class Orchestrator:
         tmux_signal("spokesman-event")
 
     # -----------------------------------------------------------------------
-    # Anomaly detection
-    # -----------------------------------------------------------------------
-
-    def _run_anomaly_checks(self) -> None:
-        """Run all 4 invariant checks; escalate new violations to Spokesman."""
-        current: set = set()
-
-        # Check 1: reviewer stuck >15 minutes (review-start flag older than 900s)
-        for flag in SIGNALS.glob("*.review-start"):
-            slug = flag.stem
-            try:
-                age = time.time() - flag.stat().st_mtime
-            except OSError:
-                continue
-            if age > 900:
-                current.add(f"reviewer-stuck:{slug}")
-
-        # Check 2: orphaned reviewer window (window exists but task not in-review)
-        windows_result = run_bash(
-            "tmux list-windows -t workers -F '#{window_name}' 2>/dev/null || true"
-        )
-        for window in windows_result.stdout.splitlines():
-            window = window.strip()
-            slug = None
-            if window.startswith("plan-rev-"):
-                slug = window[len("plan-rev-"):]
-            elif window.startswith("pr-rev-"):
-                slug = window[len("pr-rev-"):]
-            if slug:
-                state = get_task_state(slug)
-                if state and state != "in review":
-                    current.add(f"orphaned-reviewer:{slug}:{window}")
-
-        # Check 3: stale worker registry entry (slug in workers file but window gone)
-        workers_file = SIGNALS / "workers"
-        if workers_file.exists():
-            live_windows = set(w.strip() for w in windows_result.stdout.splitlines())
-            for line in workers_file.read_text().splitlines():
-                if not line.strip() or line.startswith("#"):
-                    continue
-                parts = line.split()
-                if len(parts) >= 2 and parts[1].strip() not in live_windows:
-                    current.add(f"stale-registry:{parts[0].strip()}")
-
-        # Check 4: contradictory flags (both .reviewed and .merged exist)
-        for reviewed_flag in SIGNALS.glob("*.reviewed"):
-            slug = reviewed_flag.stem
-            if (SIGNALS / f"{slug}.merged").exists():
-                current.add(f"contradictory-flags:{slug}")
-
-        # Report new anomalies; resolve cleared ones
-        new_anomalies = current - self._active_anomalies
-        for anomaly in sorted(new_anomalies):
-            slug = anomaly.split(":")[1] if ":" in anomaly else "-"
-            log("orchestrator ", f"anomaly-detected:{anomaly}", slug)
-            append_spokesman_queue(slug, f"event:anomaly-detected:{anomaly}")
-            tmux_signal("spokesman-event")
-
-        for anomaly in sorted(self._active_anomalies - current):
-            slug = anomaly.split(":")[1] if ":" in anomaly else "-"
-            log("orchestrator ", f"anomaly-resolved:{anomaly}", slug)
-
-        self._active_anomalies = current
-
-    # -----------------------------------------------------------------------
     # Command drain (from Spokesman)
     # -----------------------------------------------------------------------
 
@@ -377,7 +312,7 @@ class Orchestrator:
             line = line.strip()
             if line:
                 self._execute_command(line)
-        self._run_anomaly_checks()
+        self._anomaly_checker.run()
 
     def _execute_command(self, cmd_line: str) -> None:
         """Execute '<cmd-seq>|<slug>|<cmd>[|<args>]' command from Spokesman.
