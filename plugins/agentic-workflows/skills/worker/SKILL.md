@@ -419,21 +419,27 @@ printf '%s\tworker       \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%
 sleep 15
 ```
 
-**Polling loop** — poll every 30 seconds for up to 10 minutes per Bash call. Use the `bucket` field (not `state`) which `gh pr checks --json` normalizes to: `pass`, `fail`, `pending`, `skipping`, `cancel`. Use `--required` to filter to required checks only.
+**Polling loop** — poll every 30 seconds for up to 10 minutes per Bash call. Use the `bucket` field (not `state`) which `gh pr checks --json` normalizes to one of: `pass`, `fail`, `pending`, `skipping`, `cancel`. Use `--required` to filter to required checks only.
+
+Track the call number in `CI_POLL_ROUND` (set before each re-call). Stop and escalate when `CI_POLL_ROUND` reaches 3 (total ~30 minutes across calls).
 
 ```bash
 CI_RESULT="pending"
 CI_DEADLINE=$(( $(date +%s) + 570 ))   # 9.5 min — leaves buffer before 10-min tool timeout
+# CI_POLL_ROUND must be set by the caller before each Bash block invocation (starts at 1)
 
 while true; do
   [ "$(date +%s)" -ge "$CI_DEADLINE" ] && break
 
-  CHECKS_JSON=$(gh pr checks "$PR_URL" --required --json name,state,bucket 2>/dev/null || echo "[]")
-  CI_RESULT=$(echo "$CHECKS_JSON" | python3 -c "
+  # Distinguish gh errors (non-zero exit) from an empty required-checks list (exit 0).
+  # On error, treat this poll cycle as pending and retry — avoids silently bypassing CI gate.
+  if CHECKS_JSON=$(gh pr checks "$PR_URL" --required --json name,bucket 2>/dev/null); then
+    CI_RESULT=$(echo "$CHECKS_JSON" | python3 -c "
 import sys, json
 checks = json.load(sys.stdin)
+# bucket values returned by gh: pass, fail, pending, skipping, cancel
 if not checks:
-    print('pass'); sys.exit()
+    print('pass'); sys.exit()  # no required checks configured — treat as pass
 buckets = {c['bucket'] for c in checks}
 if any(b in ('fail', 'cancel') for b in buckets):
     print('fail')
@@ -442,6 +448,10 @@ elif any(b == 'pending' for b in buckets):
 else:
     print('pass')
 ")
+  else
+    CI_RESULT="pending"  # gh error (network/auth blip) — retry next cycle
+  fi
+
   [ "$CI_RESULT" = "pass" ] && break
   [ "$CI_RESULT" = "fail" ] && break
   sleep 30
@@ -454,13 +464,13 @@ echo "CI_RESULT=$CI_RESULT"
 **After the polling block:**
 - `CI_RESULT=pass` → continue to Phase 5c normally.
 - `CI_RESULT=fail` → escalate to user (see below).
-- `CI_RESULT=pending` (loop hit the 9.5-minute deadline, CI still running) → re-call the polling block. If CI has not resolved after re-calling it twice (total ~30 minutes), treat as timeout and escalate.
+- `CI_RESULT=pending` (loop hit the 9.5-minute deadline, CI still running) → increment `CI_POLL_ROUND`, re-call the polling block. When `CI_POLL_ROUND` reaches 3 (total ~30 minutes), treat as timeout and escalate instead of re-calling.
 
 **On CI failure or timeout** — create a QUESTIONS note with details and signal `event:questions`:
 
 ```bash
 # Collect failure detail for the note
-FAILED_CHECKS=$(gh pr checks "$PR_URL" --required --json name,state,bucket 2>/dev/null | python3 -c "
+FAILED_CHECKS=$(gh pr checks "$PR_URL" --required --json name,bucket 2>/dev/null | python3 -c "
 import sys, json
 checks = json.load(sys.stdin)
 non_pass = [c for c in checks if c['bucket'] not in ('pass', 'skipping')]
@@ -508,10 +518,13 @@ done
 printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-**Reading the user's response** — check the QUESTIONS note for inline answers and any separate ANSWER note:
+**Reading the user's response** — the `notecove note create` call above returns JSON with the new note's `id`. Capture it and use it to read back the note after resuming:
 ```bash
-notecove note show <ci-questions-note-id> --format markdown
-# also check:
+# Capture note ID at creation time:
+CI_QUESTIONS_NOTE_ID=$(notecove note create ... --json | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# After resumed, read the note and any separate ANSWER note:
+notecove note show "$CI_QUESTIONS_NOTE_ID" --format markdown
 notecove note list --folder <task-folder-id> --json  # look for ANSWER-<N> notes
 ```
 
