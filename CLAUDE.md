@@ -14,7 +14,8 @@ All coordination is synchronous — no polling, no idle token consumption.
 - **`tmux wait-for <signal>`** — blocks until the signal is fired
 - **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
 - **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
-- **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
+- **`signals/orchestrator-cmds`** — append-only file; Spokesman writes typed commands (`<cmd-seq>|<slug>|<cmd>[|<args>]`); orchestrator.py drains and executes, then writes an ACK to `spokesman-acks`
+- **`signals/spokesman-acks`** — append-only file; orchestrator.py writes ACKs (`<cmd-seq>|<slug>|confirm|<cmd>`) after each command execution; Spokesman waits on the sequenced ACK signal before proceeding
 - **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
 
 ### Signal Protocol
@@ -24,7 +25,8 @@ All coordination is synchronous — no polling, no idle token consumption.
 | `worker-any-event` | Worker → Dispatcher | Worker needs to notify orchestrator.py |
 | `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
 | `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
-| `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
+| `orchestrator-cmd-event` | Spokesman → orchestrator.py | New command written to `orchestrator-cmds` |
+| `spokesman-ack-<cmd-seq>` | orchestrator.py → Spokesman | ACK for command `<cmd-seq>` (sequenced) |
 | `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
 
 Task slugs (e.g. `WORK-pm4`) are used as signal names — globally unique, safe for tmux (alphanumeric + hyphens).
@@ -244,7 +246,8 @@ agentmesh/
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
     ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
-    ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
+    ├── orchestrator-cmds   # append-only; Spokesman writes <cmd-seq>|<slug>|<cmd>[|<args>] typed commands for orchestrator.py
+    ├── spokesman-acks      # append-only; orchestrator.py writes <cmd-seq>|<slug>|confirm|<cmd> ACKs after each command (cleared on bootstrap)
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
     ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle

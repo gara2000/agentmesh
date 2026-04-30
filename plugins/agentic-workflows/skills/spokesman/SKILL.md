@@ -29,9 +29,37 @@ If `--project` is not provided, stop and ask the user.
 AGENTMESH=~/agentmesh
 SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ORCHESTRATOR_CMDS=~/agentmesh/signals/orchestrator-cmds
+SPOKESMAN_ACKS=~/agentmesh/signals/spokesman-acks
 LOG=~/agentmesh/signals/events.log
 MODE_FILE=~/agentmesh/signals/mode
 ```
+
+## CMD_SEQ Counter
+
+The Spokesman maintains a per-session command sequence counter `CMD_SEQ` (starts at 0). Each command sent to orchestrator.py gets a unique sequence number; the orchestrator writes an ACK with that number to `spokesman-acks` and fires `spokesman-ack-<CMD_SEQ>`.
+
+Initialize at startup alongside `LOG` and `MODE`:
+```bash
+CMD_SEQ=0
+```
+
+### Sending a command to orchestrator.py
+
+Every command send in the event handlers below follows this pattern (substitute the actual `<slug>`, `<cmd>`, and optional `|<args>`):
+
+```bash
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|<cmd>" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+# Wait for ACK — confirms orchestrator.py executed the command
+# IMPORTANT: call this Bash block with timeout=600000 to avoid spurious wakeups
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+```
+
+When the command has extra args, use `echo "${CMD_SEQ}|<slug>|<cmd>|<args>"` instead.
 
 ---
 
@@ -42,6 +70,7 @@ bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --
 LOG=~/agentmesh/signals/events.log
 # Persist mode to file so it survives Spokesman restarts
 echo "<mode>" > ~/agentmesh/signals/mode
+CMD_SEQ=0
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
@@ -191,8 +220,13 @@ Decide agent type using your judgment — you have access to the full task title
 Then dispatch:
 ```bash
 printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|spawn|<agent-type>" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn|<agent-type>" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
@@ -245,8 +279,13 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If user provides feedback inline:**
@@ -254,8 +293,13 @@ tmux wait-for -S orchestrator-cmd-event
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -277,15 +321,25 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If user says 'spawn reviewer':**
 ```bash
 printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
@@ -295,8 +349,13 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -327,17 +386,32 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If 'review' — spawn pr-reviewer:**
 ```bash
 printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
@@ -347,20 +421,40 @@ Tell the user: "PR reviewer spawned. It will signal when the review is complete 
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If 'abort':**
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -390,8 +484,13 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If feedback provided:**
@@ -399,20 +498,40 @@ tmux wait-for -S orchestrator-cmd-event
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If 'abort':**
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -447,8 +566,13 @@ Wait for the user to respond.
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "Plan accepted after review."
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 # Kill plan-reviewer window
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
@@ -458,8 +582,13 @@ tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \treview-rejected\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "Plan review rejected by user. Continuing with original plan."
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
 
@@ -468,8 +597,13 @@ tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
 ```
 
@@ -506,8 +640,13 @@ Wait for the user to respond.
 **If 'approve':**
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 # Kill pr-reviewer window
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 ```
@@ -517,8 +656,13 @@ tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 ```
@@ -526,8 +670,13 @@ tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 **If 're-review':**
 ```bash
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "New PR reviewer spawned."
@@ -536,10 +685,20 @@ Tell the user: "New PR reviewer spawned."
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
 ```
 
@@ -565,15 +724,25 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If user says 'spawn reviewer':**
 ```bash
 printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-plan-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
@@ -583,8 +752,13 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -597,8 +771,13 @@ The orchestrator has hit the auto-review cycle limit for PR reviews and is escal
 
 Spawn pr-monitor before showing prompt:
 ```bash
-echo "<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-pr-monitor|<pr_url>" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ```
@@ -622,17 +801,32 @@ Wait for the user to respond.
 ```bash
 printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Done
-echo "<slug>|done" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|pr-approved" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If 'review' — spawn pr-reviewer:**
 ```bash
 printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|spawn-pr-reviewer" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
@@ -642,20 +836,40 @@ Tell the user: "PR reviewer spawned. It will signal when the review is complete 
 printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<feedback>"
 notecove task change <slug> --state Doing
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 **If 'abort':**
 ```bash
 printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state "Won't Do"
-echo "<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|kill-pr-monitor" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
-echo "<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|abort" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -677,8 +891,13 @@ Wait for the user to respond. Write response as ANSWER note or task comment, set
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Spokesman" "<user-response>"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -698,8 +917,13 @@ Wait for the user to say 'continue', then:
 ```bash
 printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Doing
-echo "<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
 tmux wait-for -S orchestrator-cmd-event
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
 ```
 
 ---
@@ -766,6 +990,7 @@ tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mo
 done
 rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
 rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
+rm -f "$SPOKESMAN_ACKS"
 rm -f ~/agentmesh/signals/*.merged
 rm -f ~/agentmesh/signals/*.reviewed
 rm -f ~/agentmesh/signals/*.review-start
@@ -784,5 +1009,6 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **Queue-as-source-of-truth** — the spokesman-queue entry carries the full event type; no NoteCove comment parsing for routing.
 - **Always drain the full spokesman-queue** before going back to wait.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
+- **Always wait for ACK after every command** — use the `CMD_SEQ` counter pattern for every command send. The ACK loop confirms orchestrator.py executed the command (e.g., the spawn actually happened) before the Spokesman moves on.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
 - **Zero in-memory state across wakeup cycles** — `MODE`, `TRIAGE_FOLDER`, and `LOG` are re-read from `signals/mode`, `signals/triage_folder`, and a fixed path at the top of every wakeup cycle. No bash variable set in one cycle is relied upon in the next. This makes the Spokesman fully restartable: a new session picks up from NoteCove state with no data loss.
