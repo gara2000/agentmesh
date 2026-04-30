@@ -64,6 +64,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+| `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
 
 The orchestrator translates `event:pr-ready:<url>` from the worker into one of two Spokesman events depending on mode and context:
 
@@ -248,6 +249,7 @@ agentmesh/
     ├── <slug>.seq          # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
     ├── <slug>.merged           # flag file written by pr-monitor when PR is merged
     ├── <slug>.reviewed         # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
+    ├── <slug>.review-start     # flag file touched by orchestrator when a reviewer is spawned; cleared when review completes or is killed; used by anomaly check 1
     ├── orchestrator.heartbeat  # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log              # append-only TSV: timestamp, component, event_type, slug
@@ -281,6 +283,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
 2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
 2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
+2026-04-26T...  orchestrator    anomaly-detected:<key>      WORK-xyz
+2026-04-26T...  orchestrator    anomaly-resolved:<key>      WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz
 2026-04-26T...  spokesman       attention-resumed           WORK-xyz
@@ -289,6 +293,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  spokesman       reviewer-requested          WORK-xyz
 2026-04-26T...  spokesman       review-approved             WORK-xyz
 2026-04-26T...  spokesman       review-feedback             WORK-xyz
+2026-04-26T...  spokesman       anomaly-detected            WORK-xyz
 2026-04-26T...  spokesman       review-rejected             WORK-xyz
 2026-04-26T...  spokesman       review-aborted              WORK-xyz
 2026-04-26T...  spokesman       orchestrator-restarted      -
