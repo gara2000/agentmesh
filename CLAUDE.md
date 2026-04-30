@@ -58,12 +58,19 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 |---|---|---|
 | `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
 | `event:plan-ready` | Worker | Plan note written, awaiting review |
-| `event:pr-ready:<url>` | Worker | PR created at `<url>`, awaiting approval |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>`, signaling readiness to orchestrator |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+
+The orchestrator translates `event:pr-ready:<url>` from the worker into one of two Spokesman events depending on mode and context:
+
+| Spokesman Event | When | Meaning |
+|---|---|---|
+| `event:pr-submitted:<url>` | Standard mode, first signal | PR needs user decision (approve / review / feedback / abort) |
+| `event:pr-ready:<url>` | Auto-review mode, post-review | PR has been reviewed and validated; ready for final user approval |
 
 ---
 
