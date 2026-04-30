@@ -43,7 +43,8 @@ def log(component: str, event_type: str, slug: str = "-") -> None:
 def notecove(args: str) -> str:
     result = subprocess.run(
         f"{NOTECOVE_BIN} {args}",
-        shell=True, capture_output=True, text=True
+        shell=True, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,  # prevent interactive prompts from blocking
     )
     if result.returncode != 0:
         log("orchestrator ", f"notecove-error: {result.stderr.strip()[:120]}")
@@ -60,6 +61,23 @@ def tmux(args: str) -> subprocess.CompletedProcess:
 
 def tmux_signal(signal_name: str) -> None:
     subprocess.run(["tmux", "wait-for", "-S", signal_name])
+
+
+def resolve_full_slug(short_slug: str) -> str:
+    """Return full slug (e.g. 'WORK-g93:4gj4j0g...') for a short slug.
+
+    Falls back to short_slug if the full form cannot be determined, so callers
+    always get a usable identifier.
+    """
+    result = run_bash(f"{NOTECOVE_BIN} task show {short_slug} --json")
+    try:
+        data = json.loads(result.stdout)
+        slug_obj = data.get("slug", {})
+        if isinstance(slug_obj, dict):
+            return slug_obj.get("full", short_slug) or short_slug
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return short_slug
 
 
 def get_task_state(slug: str) -> str:
@@ -133,6 +151,9 @@ class Orchestrator:
         self._in_flight: set[str] = set()
         # Tracks currently active anomalies to suppress duplicate alerts
         self._active_anomalies: set = set()
+        # Maps short slug → full slug (e.g. "WORK-g93" → "WORK-g93:4gj4j0g...")
+        # Populated by pick_up_ready_tasks(); used to avoid ambiguous-slug CLI errors.
+        self._full_slugs: dict = {}
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -428,12 +449,12 @@ class Orchestrator:
             self._clear_review_counts(slug)
             self.pick_up_ready_tasks()
         elif cmd == "spawn-plan-reviewer":
-            notecove(f"task change {slug} --state 'In Review'")
+            self._notecove_task_change(slug, 'In Review')
             spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
             log("orchestrator ", "plan-reviewer-spawned", slug)
             (SIGNALS / f"{slug}.review-start").touch()
         elif cmd == "spawn-pr-reviewer":
-            notecove(f"task change {slug} --state 'In Review'")
+            self._notecove_task_change(slug, 'In Review')
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
             (SIGNALS / f"{slug}.review-start").touch()
@@ -488,7 +509,7 @@ class Orchestrator:
 
         Sets task state to Done internally — callers must not set it beforehand.
         """
-        notecove(f"task change {slug} --state Done")
+        self._notecove_task_change(slug, 'Done')
         task_done(slug, self.project, resume_sig)
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
@@ -505,7 +526,7 @@ class Orchestrator:
             self._forward_to_spokesman(slug, "event:review-limit-reached:plan")
             return
         log("orchestrator ", "plan-reviewer-spawned", slug)
-        notecove(f"task change {slug} --state 'In Review'")
+        self._notecove_task_change(slug, 'In Review')
         spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
         (SIGNALS / f"{slug}.review-start").touch()
 
@@ -516,7 +537,7 @@ class Orchestrator:
             f'"Plan review complete (auto-review mode). Review the reviewer\'s comment '
             f'and the REVIEW note in your task folder before implementing."'
         )
-        notecove(f"task change {slug} --state Doing")
+        self._notecove_task_change(slug, 'Doing')
         tmux_signal(resume_sig)
         tmux(f"kill-window -t workers:plan-rev-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
@@ -529,7 +550,7 @@ class Orchestrator:
             self._forward_to_spokesman(slug, f"event:review-limit-reached:pr:{pr_url}")
             return
         log("orchestrator ", "reviewer-spawning", slug)
-        notecove(f"task change {slug} --state 'In Review'")
+        self._notecove_task_change(slug, 'In Review')
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
         log("orchestrator ", "reviewer-spawned", slug)
         (SIGNALS / f"{slug}.review-start").touch()
@@ -542,7 +563,7 @@ class Orchestrator:
             f'"PR review complete (auto-review mode). Read the reviewer\'s comment '
             f'and the GitHub PR comments. Apply any needed fixes and re-signal when ready."'
         )
-        notecove(f"task change {slug} --state Doing")
+        self._notecove_task_change(slug, 'Doing')
         # Kill pr-monitor now so the orchestrator can spawn a fresh one on the worker's next PR signal
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.reviewed").touch()
@@ -556,7 +577,7 @@ class Orchestrator:
 
     def _handle_completion(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "agent-completion-ack", slug)
-        notecove(f"task change {slug} --state Done")
+        self._notecove_task_change(slug, 'Done')
         task_done(slug, self.project, resume_sig)
         self._clear_review_counts(slug)
         # Notify spokesman for display purposes
@@ -583,7 +604,7 @@ class Orchestrator:
         (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         self._clear_review_counts(slug)
         task_done(slug, self.project)
-        notecove(f"task change {slug} --state Doing")
+        self._notecove_task_change(slug, 'Doing')
         spawn_agent("workers", slug, "/worker", slug, self.project)
         with open(SIGNALS / "workers", "a") as f:
             f.write(f"{slug} {slug}\n")
@@ -667,12 +688,21 @@ class Orchestrator:
             full_slug = slug_obj.get("full", slug) if isinstance(slug_obj, dict) else slug
 
             notecove(f"task change {full_slug} --state Doing")
+            self._full_slugs[slug] = full_slug
             log("orchestrator ", "task-picked-up", slug)
             self._in_flight.add(slug)
             append_spokesman_queue(slug, "event:task-ready")
             log("orchestrator ", "task-triage-forwarded", slug)
 
         tmux_signal("spokesman-event")
+
+    def _notecove_task_change(self, slug: str, state: str) -> None:
+        """Change task state using the full slug to avoid ambiguous-slug CLI errors."""
+        full = self._full_slugs.get(slug)
+        if not full:
+            full = resolve_full_slug(slug)
+            self._full_slugs[slug] = full
+        notecove(f"task change {full} --state {state!r}")
 
     # -----------------------------------------------------------------------
     # Helpers
