@@ -226,9 +226,11 @@ class Orchestrator:
             elif reviewed_flag.exists():
                 # Auto-review mode, post-review: PR has been validated — forward as pr-ready
                 reviewed_flag.unlink()
+                self._spawn_pr_monitor(slug, pr_url)
                 self._forward_to_spokesman(slug, event_type)
             else:
                 # Standard mode: worker submitted PR, needs user decision (review or approve)
+                self._spawn_pr_monitor(slug, pr_url)
                 self._forward_to_spokesman(slug, f"event:pr-submitted:{pr_url}")
         elif event_type == "event:pr-review-complete":
             if self.mode == "auto-review":
@@ -290,12 +292,9 @@ class Orchestrator:
             self.pick_up_ready_tasks()
         elif cmd == "resume":
             tmux_signal(resume_sig)
-        elif cmd == "done":
-            task_done(slug, self.project, resume_sig)
-            tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
-            (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-            (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
-            self.pick_up_ready_tasks()
+        elif cmd in ("done", "pr-approved"):
+            log("orchestrator ", "review-approved", slug)
+            self._handle_pr_approved(slug, resume_sig)
         elif cmd == "abort":
             task_done(slug, self.project)
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
@@ -310,11 +309,6 @@ class Orchestrator:
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
-        elif cmd == "spawn-pr-monitor":
-            pr_url = args
-            tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
-            tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
-            log("orchestrator ", "pr-monitor-spawned", slug)
         elif cmd == "kill-pr-monitor":
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
@@ -325,6 +319,23 @@ class Orchestrator:
     # -----------------------------------------------------------------------
     # Auto-review handlers
     # -----------------------------------------------------------------------
+
+    def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
+        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
+        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
+        log("orchestrator ", "pr-monitor-spawned", slug)
+
+    def _handle_pr_approved(self, slug: str, resume_sig: str) -> None:
+        """Shared cleanup for all PR approval paths (user-approved and pr-merged).
+
+        Sets task state to Done internally — callers must not set it beforehand.
+        """
+        notecove(f"task change {slug} --state Done")
+        task_done(slug, self.project, resume_sig)
+        tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
+        (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
+        (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
+        self.pick_up_ready_tasks()
 
     def _auto_spawn_plan_reviewer(self, slug: str) -> None:
         log("orchestrator ", "plan-reviewer-spawned", slug)
@@ -347,10 +358,7 @@ class Orchestrator:
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
         log("orchestrator ", "reviewer-spawned", slug)
-        # Spawn pr-monitor
-        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
-        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
-        log("orchestrator ", "pr-monitor-spawned", slug)
+        self._spawn_pr_monitor(slug, pr_url)
 
     def _auto_pass_pr_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "pr-review-passed-to-worker", slug)
@@ -360,7 +368,7 @@ class Orchestrator:
             f'and the GitHub PR comments. Apply any needed fixes and re-signal when ready."'
         )
         notecove(f"task change {slug} --state Doing")
-        # Kill pr-monitor now so the Spokesman can spawn a fresh one on the worker's next PR signal
+        # Kill pr-monitor now so the orchestrator can spawn a fresh one on the worker's next PR signal
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.reviewed").touch()
         tmux_signal(resume_sig)
@@ -384,15 +392,10 @@ class Orchestrator:
         if state not in ("attention", "in review"):
             return
         log("orchestrator ", "pr-auto-approved", slug)
-        notecove(f"task change {slug} --state Done")
-        tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
-        (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-        (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
-        task_done(slug, self.project, resume_sig)
-        # Notify spokesman
+        self._handle_pr_approved(slug, resume_sig)
+        # Notify spokesman of the auto-approval
         append_spokesman_queue(slug, "event:pr-merged-auto-approved")
         tmux_signal("spokesman-event")
-        self.pick_up_ready_tasks()
 
     def _handle_crash(self, slug: str) -> None:
         log("orchestrator ", "worker-crash-requeued", slug)

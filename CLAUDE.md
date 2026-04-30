@@ -134,7 +134,7 @@ Responsibilities:
 
 ### PR Monitor
 
-**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned by orchestrator.py (in auto-review mode) or by Spokesman (in standard mode) when a worker signals PR-ready.
+**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Always spawned by orchestrator.py as soon as the worker's `event:pr-ready` signal is received — in all modes (standard and auto-review).
 
 Responsibilities:
 - Poll `gh pr view <pr-url>` every 60 seconds
