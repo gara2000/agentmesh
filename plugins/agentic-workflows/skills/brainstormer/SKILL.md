@@ -422,10 +422,10 @@ Check the boxes next to the ideas you want to create as tasks.
 
 ## Proposed Dependencies
 
-*(Edit if needed — "Idea X depends on Idea Y" means X will be created as Blocked until Y is done)*
+*(Edit if needed — "Idea X depends on Idea Y" means X will be created as Blocked until Y is done.
+ Independent ideas do not need to be listed.)*
 
 - Idea 2 depends on Idea 1 (logical dependency)
-- Idea 3 is independent
 ...
 
 ## Merge Conflict Analysis
