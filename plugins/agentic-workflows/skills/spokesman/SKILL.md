@@ -189,8 +189,7 @@ case "$event_rest" in
   event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
-  event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
-  event:pr-ready:*)       → PR validated (auto-review mode, post-review): ready for final user approval
+  event:pr-submitted:*|event:pr-ready:*) → PR decision: unified handler (approve / [review] / feedback / abort); 'review' option only for pr-submitted
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
   event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
@@ -296,13 +295,24 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 
 ---
 
-### Event: `event:pr-submitted:<pr-url>` — PR submitted, needs user decision (standard mode)
+### Event: `event:pr-submitted:<pr-url>` / `event:pr-ready:<pr-url>` — PR decision
 
-Fired by the orchestrator in standard mode when a worker signals PR-ready for the first time.
-The PR has not yet been reviewed — the user can approve directly, spawn a reviewer, give feedback, or abort.
+Handles both PR events with a unified flow. `event:pr-submitted` means the PR is new (standard mode, not yet reviewed); `event:pr-ready` means it has been reviewed (auto-review mode). The only differences are the header text, the description line, and whether the 'review' option is offered.
 
-Extract PR URL from event: `pr_url=${event_rest#event:pr-submitted:}`
+Detect which event arrived and extract URL:
+```bash
+if [[ "$event_rest" == event:pr-submitted:* ]]; then
+  pr_url=${event_rest#event:pr-submitted:}
+  pr_reviewed=false
+else
+  pr_url=${event_rest#event:pr-ready:}
+  pr_reviewed=true
+fi
+```
 
+Display prompt (header, description, and 'review' option depend on `pr_reviewed`):
+
+If `pr_reviewed=false`:
 ```
 ── PR Submitted ─────────────────────────────────
 Task: <slug> — <title>
@@ -317,27 +327,7 @@ Options:
 ─────────────────────────────────────────────────
 ```
 
-Wait for the user to respond.
-
-**If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
-
-**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
-
-Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
-
-**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
-
-**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
-
----
-
-### Event: `event:pr-ready:<pr-url>` — PR validated, ready for final approval (auto-review mode)
-
-Fired by the orchestrator in auto-review mode after the PR has already been reviewed by an AI reviewer
-and the worker has applied any requested fixes. The PR is validated — no reviewer option is shown.
-
-Extract PR URL from event: `pr_url=${event_rest#event:pr-ready:}`
-
+If `pr_reviewed=true`:
 ```
 ── PR Ready (reviewed) ──────────────────────────
 Task: <slug> — <title>
@@ -354,6 +344,10 @@ Options:
 Wait for the user to respond.
 
 **If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
+
+**If 'review' (only valid when `pr_reviewed=false`) — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
+
+Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
 
 **If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
 
