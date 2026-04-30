@@ -17,6 +17,7 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 AGENTMESH = Path(__file__).parent.parent
@@ -115,6 +116,33 @@ def append_spokesman_ack(cmd_seq: int, slug: str, cmd: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase file helpers
+# ---------------------------------------------------------------------------
+
+def write_phase(slug: str, phase: str) -> None:
+    """Write current phase to signals/<slug>.phase with UTC timestamp."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (SIGNALS / f"{slug}.phase").write_text(f"{phase}:{ts}\n")
+
+
+def read_phase(slug: str) -> tuple:
+    """Return (phase, iso_timestamp_str) from signals/<slug>.phase, or ('', '') on miss."""
+    try:
+        content = (SIGNALS / f"{slug}.phase").read_text().strip()
+        idx = content.find(":")
+        if idx == -1:
+            return content, ""
+        return content[:idx], content[idx + 1:]
+    except FileNotFoundError:
+        return "", ""
+
+
+def delete_phase(slug: str) -> None:
+    """Delete signals/<slug>.phase if it exists."""
+    (SIGNALS / f"{slug}.phase").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -160,6 +188,10 @@ class Orchestrator:
         t_heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
         t_heartbeat.start()
 
+        # Stuck-reviewer detection thread (checks every 5 minutes)
+        t_stuck = threading.Thread(target=self._stuck_detection_loop, daemon=True, name="stuck-detection")
+        t_stuck.start()
+
         # Block until _stop is set (by _maybe_shutdown or shutdown command)
         self._stop.wait()
 
@@ -204,6 +236,53 @@ class Orchestrator:
                 break
             with self._lock:
                 self._drain_commands()
+
+    def _stuck_detection_loop(self) -> None:
+        """Periodically scan phase files and alert Spokesman if a reviewer is stuck >30 min.
+
+        Phase files are read without self._lock (writes are atomic on macOS/Linux for
+        small files). The try/except guards against races where a file is deleted between
+        glob and read. already_alerted prevents repeat alerts for the same stuck slug;
+        entries are cleared when the phase file disappears or the phase changes.
+        """
+        STUCK_THRESHOLD_SECS = 1800  # 30 minutes
+        CHECK_INTERVAL_SECS = 300    # 5 minutes
+        reviewer_phases = {"plan-reviewing", "pr-reviewing"}
+        # Tracks (slug, phase) pairs already alerted to avoid repeat notifications
+        already_alerted: set = set()
+
+        while not self._stop.wait(timeout=CHECK_INTERVAL_SECS):
+            now = datetime.now(timezone.utc)
+            current_reviewing: set = set()
+
+            for phase_file in list(SIGNALS.glob("*.phase")):
+                slug = phase_file.stem
+                try:
+                    content = phase_file.read_text().strip()
+                    idx = content.find(":")
+                    if idx == -1:
+                        continue
+                    phase = content[:idx]
+                    ts_str = content[idx + 1:]
+                    if phase not in reviewer_phases:
+                        continue
+                    current_reviewing.add((slug, phase))
+                    if (slug, phase) in already_alerted:
+                        continue
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    elapsed = (now - ts).total_seconds()
+                    if elapsed > STUCK_THRESHOLD_SECS:
+                        log("orchestrator ", f"stuck-reviewer-detected:{phase}", slug)
+                        already_alerted.add((slug, phase))
+                        with self._lock:
+                            append_spokesman_queue(slug, f"event:stuck-reviewer:{phase}")
+                            tmux_signal("spokesman-event")
+                except (FileNotFoundError, ValueError, OSError):
+                    # File may have been deleted or partially written — ignore
+                    pass
+
+            # Expire alerted entries whose phase file is gone or phase has changed
+            already_alerted &= current_reviewing
 
     # -----------------------------------------------------------------------
     # Worker queue drain
@@ -252,7 +331,15 @@ class Orchestrator:
             self._handle_pr_merged(slug, resume_sig)
         elif event_type == "event:completion":
             self._handle_completion(slug, resume_sig)
+        elif event_type == "event:questions":
+            # Only write phase for worker slugs — brainstormers/planners do not have
+            # a .phase file created at spawn time, so we skip them here.
+            current_phase, _ = read_phase(slug)
+            if current_phase:
+                write_phase(slug, "questions")
+            self._forward_to_spokesman(slug, event_type)
         elif event_type == "event:plan-ready":
+            write_phase(slug, "planning")
             if self.mode == "auto-review":
                 self._auto_spawn_plan_reviewer(slug)
             else:
@@ -263,6 +350,7 @@ class Orchestrator:
             else:
                 self._forward_to_spokesman(slug, event_type)
         elif event_type.startswith("event:pr-ready:"):
+            write_phase(slug, "pr-ready")
             pr_url = event_type[len("event:pr-ready:"):]
             reviewed_flag = SIGNALS / f"{slug}.reviewed"
             if self.mode == "auto-review" and not reviewed_flag.exists():
@@ -281,7 +369,11 @@ class Orchestrator:
                 self._auto_pass_pr_review(slug, resume_sig)
             else:
                 self._forward_to_spokesman(slug, event_type)
-        elif event_type in ("event:questions", "event:ideas-ready", "event:selection-ready"):
+        elif event_type in ("event:ideas-ready", "event:selection-ready"):
+            self._forward_to_spokesman(slug, event_type)
+        elif event_type.startswith("event:stuck-reviewer:"):
+            # Escalate to Spokesman — already forwarded by stuck detection loop;
+            # this branch handles legacy queue entries if ever written externally.
             self._forward_to_spokesman(slug, event_type)
         else:
             log("orchestrator ", f"unknown-event:{event_type}", slug)
@@ -408,6 +500,10 @@ class Orchestrator:
             # Spokesman has triaged the task and decided the agent type
             agent_type = args if args in ("worker", "planner", "brainstormer") else "worker"
             self._in_flight.discard(slug)
+            # Write spawned phase only for worker agents — brainstormers/planners
+            # don't traverse the plan-reviewing/pr-reviewing phases.
+            if agent_type == "worker":
+                write_phase(slug, "spawned")
             spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
             with open(SIGNALS / "workers", "a") as f:
                 f.write(f"{slug} {slug}\n")
@@ -415,11 +511,19 @@ class Orchestrator:
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
+            # Infer next phase from current phase
+            current_phase, _ = read_phase(slug)
+            if current_phase in ("planning", "plan-reviewing"):
+                write_phase(slug, "implementing")
+            elif current_phase in ("pr-ready", "pr-reviewing"):
+                write_phase(slug, "post-review")
+            # For "questions" or missing phase: leave as-is (worker decides next step)
             tmux_signal(resume_sig)
         elif cmd in ("done", "pr-approved"):
             log("orchestrator ", "review-approved", slug)
             self._handle_pr_approved(slug, resume_sig)
         elif cmd == "abort":
+            delete_phase(slug)
             task_done(slug, self.project)
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
@@ -428,11 +532,13 @@ class Orchestrator:
             self._clear_review_counts(slug)
             self.pick_up_ready_tasks()
         elif cmd == "spawn-plan-reviewer":
+            write_phase(slug, "plan-reviewing")
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
             log("orchestrator ", "plan-reviewer-spawned", slug)
             (SIGNALS / f"{slug}.review-start").touch()
         elif cmd == "spawn-pr-reviewer":
+            write_phase(slug, "pr-reviewing")
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
@@ -488,6 +594,7 @@ class Orchestrator:
 
         Sets task state to Done internally — callers must not set it beforehand.
         """
+        delete_phase(slug)
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
@@ -505,12 +612,14 @@ class Orchestrator:
             self._forward_to_spokesman(slug, "event:review-limit-reached:plan")
             return
         log("orchestrator ", "plan-reviewer-spawned", slug)
+        write_phase(slug, "plan-reviewing")
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"plan-rev-{slug}", "/plan-reviewer", slug, self.project)
         (SIGNALS / f"{slug}.review-start").touch()
 
     def _auto_pass_plan_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "attention-resumed", slug)
+        write_phase(slug, "implementing")
         notecove(
             f'task comments add {slug} --user "Orchestrator" '
             f'"Plan review complete (auto-review mode). Review the reviewer\'s comment '
@@ -529,6 +638,7 @@ class Orchestrator:
             self._forward_to_spokesman(slug, f"event:review-limit-reached:pr:{pr_url}")
             return
         log("orchestrator ", "reviewer-spawning", slug)
+        write_phase(slug, "pr-reviewing")
         notecove(f"task change {slug} --state 'In Review'")
         spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
         log("orchestrator ", "reviewer-spawned", slug)
@@ -537,6 +647,7 @@ class Orchestrator:
 
     def _auto_pass_pr_review(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "pr-review-passed-to-worker", slug)
+        write_phase(slug, "post-review")
         notecove(
             f'task comments add {slug} --user "Orchestrator" '
             f'"PR review complete (auto-review mode). Read the reviewer\'s comment '
@@ -556,6 +667,7 @@ class Orchestrator:
 
     def _handle_completion(self, slug: str, resume_sig: str) -> None:
         log("orchestrator ", "agent-completion-ack", slug)
+        delete_phase(slug)
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
         self._clear_review_counts(slug)
@@ -576,6 +688,7 @@ class Orchestrator:
 
     def _handle_crash(self, slug: str) -> None:
         log("orchestrator ", "worker-crash-requeued", slug)
+        delete_phase(slug)
         notecove(f'task comments add {slug} --user "Orchestrator" "Worker crashed — restarting automatically."')
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
         (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)

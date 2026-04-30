@@ -195,6 +195,7 @@ case "$event_rest" in
   event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
   event:ideas-ready)      → brainstormer ideation
   event:selection-ready)  → brainstormer selection
+  event:stuck-reviewer:*) → stuck reviewer alert (requires user decision: kill or wait)
   *)                      → unknown (log and tell user)
 esac
 ```
@@ -951,6 +952,52 @@ Continue draining the queue without waiting for user input.
 
 ---
 
+### Event: `event:stuck-reviewer:<phase>` — stuck reviewer alert
+
+Extract which phase is stuck: `stuck_phase=${event_rest#event:stuck-reviewer:}`
+
+```
+── Stuck Reviewer Alert ─────────────────────────
+Task: <slug> — <title>
+A reviewer appears to be stuck in '<stuck_phase>' phase (>30 min with no response).
+Options:
+  • 'kill'  — kill the stuck reviewer window and resume the worker
+  • 'wait'  — ignore this alert (reviewer may still be running)
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'kill':**
+
+Determine which window to kill based on stuck phase:
+- `plan-reviewing` → `workers:plan-rev-<slug>`
+- `pr-reviewing` → `workers:pr-rev-<slug>`
+
+```bash
+printf '%s\tspokesman    \tstuck-reviewer-killed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+tmux kill-window -t <reviewer-window> 2>/dev/null || true
+notecove task comments add <slug> --user "Spokesman" "Stuck reviewer killed by user. Worker resumed."
+notecove task change <slug> --state Doing
+CMD_SEQ=$((CMD_SEQ + 1))
+echo "${CMD_SEQ}|<slug>|resume" >> ~/agentmesh/signals/orchestrator-cmds
+tmux wait-for -S orchestrator-cmd-event
+# Wait for ACK — IMPORTANT: call this Bash block with timeout=600000
+while true; do
+  tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
+  grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
+done
+```
+
+**If 'wait':**
+```bash
+printf '%s\tspokesman    \tstuck-reviewer-ignored\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+Tell the user: "Alert acknowledged. Continuing to wait for reviewer on `<slug>`."
+
+---
+
 ### Unknown event
 
 ```bash
@@ -963,7 +1010,39 @@ Wait for user response and act accordingly.
 
 ---
 
-### 1d. Loop back
+### 1d. Handle out-of-band user input: "status"
+
+While waiting for `spokesman-event`, the user may type **"status"** to request a system overview. When the user does so (at any point before or during 1a), display the current state of all active tasks by reading phase files:
+
+```bash
+echo "── System Status ────────────────────────────────"
+has_workers=false
+for phase_file in ~/agentmesh/signals/*.phase; do
+  [ -f "$phase_file" ] || continue
+  has_workers=true
+  slug=$(basename "$phase_file" .phase)
+  content=$(cat "$phase_file" 2>/dev/null || echo "unknown:")
+  phase="${content%%:*}"
+  ts="${content#*:}"
+  # Convert ISO timestamp to HH:MM local
+  time_str=$(date -d "$ts" "+%H:%M" 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" "+%H:%M" 2>/dev/null || echo "$ts")
+  # Elapsed minutes
+  now_epoch=$(date +%s)
+  ts_epoch=$(date -d "$ts" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null || echo "$now_epoch")
+  elapsed=$(( (now_epoch - ts_epoch) / 60 ))
+  echo "  $slug — $phase  (since $time_str, ${elapsed}m ago)"
+done
+if [ "$has_workers" = false ]; then
+  echo "  (no active workers)"
+fi
+echo "─────────────────────────────────────────────────"
+```
+
+This is purely informational — no commands are sent to orchestrator.py.
+
+---
+
+### 1e. Loop back
 
 After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles.
 
@@ -994,6 +1073,7 @@ rm -f "$SPOKESMAN_ACKS"
 rm -f ~/agentmesh/signals/*.merged
 rm -f ~/agentmesh/signals/*.reviewed
 rm -f ~/agentmesh/signals/*.review-start
+rm -f ~/agentmesh/signals/*.phase
 rm -f ~/agentmesh/signals/triage_folder
 rm -f ~/agentmesh/signals/mode
 ```

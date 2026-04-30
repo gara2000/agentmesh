@@ -69,6 +69,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
 | `event:review-limit-reached:plan` | orchestrator.py | Auto-review cycle limit reached for plan reviews — escalated to Spokesman |
 | `event:review-limit-reached:pr:<url>` | orchestrator.py | Auto-review cycle limit reached for PR reviews — escalated to Spokesman |
+| `event:stuck-reviewer:<phase>` | orchestrator.py | Reviewer in `plan-reviewing` or `pr-reviewing` phase >30 min — escalated to Spokesman for kill/wait decision |
 
 The orchestrator translates `event:pr-ready:<url>` from the worker into one of two Spokesman events depending on mode and context:
 
@@ -255,6 +256,7 @@ agentmesh/
     ├── <slug>.merged               # flag file written by pr-monitor when PR is merged
     ├── <slug>.reviewed             # flag file written by orchestrator after passing pr-review to worker (auto-review mode); cleared on PR resolution
     ├── <slug>.review-start         # flag file touched by orchestrator when a reviewer is spawned; cleared when review completes or is killed; used by anomaly check 1
+    ├── <slug>.phase                # current workflow phase for worker tasks: spawned|questions|planning|plan-reviewing|implementing|pr-ready|pr-reviewing|post-review; format: <phase>:<iso-timestamp>; written by orchestrator.py on each transition, deleted on done/abort/completion/merge
     ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
     ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
@@ -294,6 +296,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    anomaly-resolved:<key>      WORK-xyz
 2026-04-26T...  orchestrator    review-limit-reached:plan   WORK-xyz
 2026-04-26T...  orchestrator    review-limit-reached:pr     WORK-xyz
+2026-04-26T...  orchestrator    stuck-reviewer-detected:<phase> WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz
 2026-04-26T...  spokesman       attention-resumed           WORK-xyz
@@ -303,6 +306,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  spokesman       review-approved             WORK-xyz
 2026-04-26T...  spokesman       review-feedback             WORK-xyz
 2026-04-26T...  spokesman       anomaly-detected            WORK-xyz
+2026-04-26T...  spokesman       stuck-reviewer-killed       WORK-xyz
+2026-04-26T...  spokesman       stuck-reviewer-ignored      WORK-xyz
 2026-04-26T...  spokesman       review-rejected             WORK-xyz
 2026-04-26T...  spokesman       review-aborted              WORK-xyz
 2026-04-26T...  spokesman       orchestrator-restarted      -
