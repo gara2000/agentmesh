@@ -342,6 +342,23 @@ This replaces the inline `move_task_folder_to_done` helper that was previously c
 
 ---
 
+## CI Gate
+
+After creating a PR, the worker polls required CI checks before signaling PR-ready. This ensures the user only sees a PR that has already cleared automated testing.
+
+**How it works:**
+
+1. After `gh pr create` the worker captures the PR URL in `$PR_URL`.
+2. After a 15-second initial delay (to let GitHub register the checks), it enters a polling loop: `gh pr checks $PR_URL --required --json name,state,bucket` every 30 seconds.
+3. The `bucket` field (normalized by `gh`) is used — values are `pass`, `fail`, `pending`, `skipping`, `cancel`. No required checks is treated as a pass.
+4. On **pass** → worker proceeds directly to signal `event:pr-ready`.
+5. On **fail** or **timeout** (9.5 minutes per call; re-call up to twice for ~30-minute total) → worker creates a `QUESTIONS-<N>` note with the failed check names, signals `event:questions` to escalate to the user.
+6. User responds in the note with **fix** (worker pushes a fix and re-polls CI) or **override** (worker signals PR-ready immediately).
+
+**Value**: eliminates the "approve → CI fails → feedback → fix" round-trip. The user only reviews PRs that are green.
+
+---
+
 ## PR Monitor
 
 The pr-monitor (`scripts/pr-monitor.sh`) polls a PR's state and triggers auto-approval when it is merged — removing the need for the user to manually approve.
