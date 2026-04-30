@@ -362,10 +362,12 @@ Check the boxes next to the ideas you want to create as tasks.
 
 ## Merge Conflict Analysis
 
-*(Two ideas that modify the same file must be serialized — one blocks the other, even without a logical dependency)*
+*(Two ideas that modify the same file must be serialized — one blocks the other, even without a logical dependency.
+ If a pair already has a logical dependency, note "already covered by logical dependency" to avoid confusion.)*
 
 - Idea 1 and Idea 4 both modify `<file>` → Idea 4 blocked by Idea 1
-- Idea 2 modifies independent files → no conflict with other ideas
+- Idea 2 depends on Idea 1 (already covered by logical dependency in Proposed Dependencies)
+- Idea 3 touches independent files → no conflict with other ideas
 ...
 EOF
 ```
