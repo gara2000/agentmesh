@@ -326,7 +326,10 @@ class Orchestrator:
         log("orchestrator ", "pr-monitor-spawned", slug)
 
     def _handle_pr_approved(self, slug: str, resume_sig: str) -> None:
-        """Shared cleanup for all PR approval paths (user-approved and pr-merged)."""
+        """Shared cleanup for all PR approval paths (user-approved and pr-merged).
+
+        Sets task state to Done internally — callers must not set it beforehand.
+        """
         notecove(f"task change {slug} --state Done")
         task_done(slug, self.project, resume_sig)
         tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
