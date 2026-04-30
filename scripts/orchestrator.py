@@ -606,6 +606,11 @@ class Orchestrator:
         if active > 0:
             return
 
+        # Don't shut down if there are pending commands from Spokesman (e.g. spawn after restart)
+        cmds_file = SIGNALS / "orchestrator-cmds"
+        if cmds_file.exists() and cmds_file.stat().st_size > 0:
+            return
+
         result = run_bash(
             f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit 1 --json"
         )
@@ -657,8 +662,11 @@ class Orchestrator:
             slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
             if not slug:
                 continue
+            # Use full slug (includes unique ID) to avoid ambiguous-slug errors when two
+            # tasks share the same short prefix (e.g. WORK-g93 matching WORK-g934 and WORK-g93w).
+            full_slug = slug_obj.get("full", slug) if isinstance(slug_obj, dict) else slug
 
-            notecove(f"task change {slug} --state Doing")
+            notecove(f"task change {full_slug} --state Doing")
             log("orchestrator ", "task-picked-up", slug)
             self._in_flight.add(slug)
             append_spokesman_queue(slug, "event:task-ready")
