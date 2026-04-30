@@ -188,12 +188,11 @@ case "$event_rest" in
   event:pr-merged-auto-approved) → PR auto-merge announcement (auto, no user input)
   event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
-  event:plan-ready)       → plan-ready attention
+  event:plan-ready | event:review-limit-reached:plan) → plan decision (_plan_mode=normal or limit; same options)
   event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
   event:pr-ready:*)       → PR validated (auto-review mode, post-review): ready for final user approval
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
-  event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
   event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
   event:ideas-ready)      → brainstormer ideation
   event:selection-ready)  → brainstormer selection
@@ -273,14 +272,34 @@ Wait for the user to respond.
 
 ---
 
-### Event: `event:plan-ready` — plan ready for review
+### Event: `event:plan-ready` / `event:review-limit-reached:plan` — plan decision
 
+Both events offer the same three options (continue / spawn reviewer / feedback), differing only in display text. Set `_plan_mode` inside the `case` arm before reaching this handler:
+
+- `event:plan-ready` → `_plan_mode="normal"`
+- `event:review-limit-reached:plan` → `_plan_mode="limit"`
+
+**Normal mode** (`_plan_mode="normal"`):
 ```
 ── Attention needed ─────────────────────────────
 Task: <slug> — <title>
 The worker has a plan ready for review.
 Open NoteCove to read the PLAN note, then say 'continue'.
 (Or say 'spawn reviewer' to have a plan reviewer agent critique the plan first.)
+─────────────────────────────────────────────────
+```
+
+**Limit mode** (`_plan_mode="limit"`):
+```bash
+_review_count=$(cat ~/agentmesh/signals/<slug>.plan-review-count 2>/dev/null || echo "?")
+```
+```
+── Auto-review limit reached (plan) ─────────────
+Task: <slug> — <title>
+Auto-review limit reached — the plan has been reviewed <_review_count> times automatically.
+Manual review required.
+Open NoteCove to read the PLAN note and any REVIEW notes, then say 'continue'.
+(Or say 'spawn reviewer' to run one additional plan reviewer.)
 ─────────────────────────────────────────────────
 ```
 
@@ -431,32 +450,6 @@ Wait for the user to respond.
 Tell the user: "New PR reviewer spawned."
 
 **If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`; kill `workers:pr-rev-<slug>`
-
----
-
-### Event: `event:review-limit-reached:plan` — plan auto-review limit reached
-
-The orchestrator has hit the auto-review cycle limit for plan reviews and is escalating to the user.
-
-```
-── Auto-review limit reached (plan) ─────────────
-Task: <slug> — <title>
-Auto-review limit reached — the plan has been reviewed <n> times automatically.
-Manual review required.
-Open NoteCove to read the PLAN note and any REVIEW notes, then say 'continue'.
-(Or say 'spawn reviewer' to run one additional plan reviewer.)
-─────────────────────────────────────────────────
-```
-
-Wait for the user to respond.
-
-**If 'continue':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
-
-**If 'spawn reviewer':** log `plan-reviewer-requested` → `send_cmd <slug> spawn-plan-reviewer`
-
-Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
-
-**If user provides feedback (plan revision):** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
