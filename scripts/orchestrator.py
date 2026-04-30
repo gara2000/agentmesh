@@ -116,7 +116,7 @@ def append_spokesman_ack(cmd_seq: int, slug: str, cmd: str) -> None:
 
 
 def _print(msg: str) -> None:
-    """Print a [orchestrator]-prefixed message to stdout."""
+    """Print an [orchestrator]-prefixed message to stdout."""
     print(f"[orchestrator] {msg}", flush=True)
 
 
