@@ -261,6 +261,9 @@ Analyze the task and design the subtask breakdown. Consider:
 - **Cohesion**: group related changes that must land together
 - **Independence**: each subtask should be implementable after its dependencies, without implicit coupling
 - **Size balance**: subtasks should be roughly PR-sized — not trivially small, not sprawling
+- **Merge conflict risk**: two subtasks that modify any of the same files must NOT run in parallel — add a sequential dependency between them (one blocks the other) even if there is no logical implementation dependency
+
+For each proposed subtask, identify the specific files it will likely modify (use Glob/Grep on the codebase if needed). Then cross-check all pairs: any pair that shares at least one file gets a `Blocks` relationship.
 
 Create a DECOMPOSITION note proposing the subtasks:
 
@@ -275,25 +278,33 @@ notecove note create "<slug>/DECOMPOSITION" --folder <task-folder-id> --content-
 ### Subtask 1: <name>
 - **Description:** <what this subtask accomplishes>
 - **Depends on:** None (or list subtask numbers)
-- **Key areas:** <files/modules this subtask touches>
+- **Key files:** <specific files this subtask modifies, e.g. `scripts/orchestrator.py`, `plugins/.../SKILL.md`>
 - **Acceptance criteria:**
   - <criterion 1>
   - <criterion 2>
 
 ### Subtask 2: <name>
 - **Description:** <what this subtask accomplishes>
-- **Depends on:** Subtask 1
-- **Key areas:** <files/modules this subtask touches>
+- **Depends on:** Subtask 1 (logical dependency)
+- **Key files:** <specific files this subtask modifies>
 - **Acceptance criteria:**
   - <criterion 1>
   - <criterion 2>
 
+## Merge Conflict Analysis
+
+For each pair of subtasks that share at least one file, list the shared file(s) and which task must go first:
+
+- Subtask 1 and Subtask 2 both modify `<file>` → Subtask 2 blocked by Subtask 1 (already covered by logical dependency)
+- Subtask 3 and Subtask 4 both modify `<file>` → Subtask 4 blocked by Subtask 3 (merge conflict risk — no logical dependency, but must be serialized)
+- Subtask 5 touches independent files → no conflicts with other subtasks
+
 ## Execution Order
 
-<Text representation of dependency order, e.g.:>
+<Text representation of all dependencies (logical + merge-conflict), e.g.:>
 Subtask 1 → Subtask 2 → Subtask 4
 Subtask 1 → Subtask 3 → Subtask 4
-(Subtasks 2 and 3 can run in parallel after Subtask 1)
+(Subtasks 2 and 3 can run in parallel after Subtask 1 only if they share no files)
 EOF
 ```
 
@@ -385,12 +396,14 @@ notecove task change ${CHILD_SLUG} \
 
 **Step E — After all child tasks are created, establish blocking links:**
 
-For each dependency identified in the DECOMPOSITION (where subtask A blocks subtask B):
+For each dependency identified in the DECOMPOSITION — both **logical dependencies** and **merge conflict pairs** from the "Merge Conflict Analysis" section — create a `--block` link:
 ```bash
 notecove task change <blocked-slug> --block <blocker-slug>
 ```
 
 This creates the actual "Blocks / Blocked by" relationship in NoteCove. It must be done after all tasks exist so both slugs are known. The `--block <slug>` flag means "add a blocking task" (i.e., `<slug>` blocks the subject), so it must be called on the *blocked* task with the *blocker* as the argument — combined with the `Blocked` state set in Step A, this ensures the orchestrator will not dispatch blocked tasks.
+
+Apply this for **every** pair in the Merge Conflict Analysis, not just logical dependencies. A shared file is sufficient reason to serialize two tasks.
 
 After creating all child tasks and establishing all links, add a comment listing them:
 ```bash
