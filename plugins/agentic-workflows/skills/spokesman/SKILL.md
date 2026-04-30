@@ -129,12 +129,15 @@ Re-read all runtime state from files at the top of each wakeup cycle — the Spo
 MODE=$(cat ~/agentmesh/signals/mode 2>/dev/null || echo "standard")
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder 2>/dev/null || echo "")
 LOG=~/agentmesh/signals/events.log
+SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ```
 
-Then block:
+Then block — but first check whether the queue already has pending events. The orchestrator always writes to `spokesman-queue` **before** firing `spokesman-event`. If the signal fired during the previous processing cycle (while the Spokesman was handling events or waiting for user input), it is silently dropped by tmux. Checking the queue here closes that race window:
 
 ```bash
-tmux wait-for spokesman-event
+if [ ! -s "$SPOKESMAN_QUEUE" ]; then
+  tmux wait-for spokesman-event
+fi
 ```
 
 ### 1a.5. Check orchestrator heartbeat
@@ -588,6 +591,7 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **The spokesman always sets NoteCove state BEFORE sending commands** — state must be set before the resume signal fires (invariant from Critical Rules).
 - **Queue-as-source-of-truth** — the spokesman-queue entry carries the full event type; no NoteCove comment parsing for routing.
 - **Always drain the full spokesman-queue** before going back to wait.
+- **Check queue before blocking on spokesman-event** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
 - **Always wait for ACK after every command** — use the `CMD_SEQ` counter pattern for every command send. The ACK loop confirms orchestrator.py executed the command (e.g., the spawn actually happened) before the Spokesman moves on.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
