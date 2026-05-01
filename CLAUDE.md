@@ -252,7 +252,9 @@ agentmesh/
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
-│   └── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
+│   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
+│   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
+│   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
     ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
@@ -336,6 +338,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  worker          resumed-from-plan           WORK-xyz
 2026-04-26T...  worker          implementing                WORK-xyz
 2026-04-26T...  worker          pr-created                  WORK-xyz
+2026-04-26T...  worker          ci-wait-start               WORK-xyz
+2026-04-26T...  worker          ci-wait-complete            WORK-xyz
 2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  worker          approved                    WORK-xyz
 2026-04-26T...  worker          feedback-received           WORK-xyz

@@ -67,19 +67,17 @@ send_cmd() {
 
 ### Sending a command to orchestrator.py
 
-Use `send_cmd` (defined below). Call it in any Bash block, substituting the actual `<slug>` and `<cmd>`:
+Every handler response that sends a command follows this pattern:
+1. Log: `printf '%s\tspokesman    \t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`
+2. If needed: `notecove task comments add <slug> --user "Spokesman" "<text>"`
+3. If needed: `notecove task change <slug> --state <state>`
+4. `send_cmd "<slug>" "<cmd>"` — or `send_cmd "<slug>" "<cmd>" "<args>"` with extra args; sequential calls are issued one after another in the same Bash block
+5. If needed: `tmux kill-window -t <session>:<window> 2>/dev/null || true`
 
-```bash
-send_cmd "<slug>" "<cmd>"
-```
+**IMPORTANT:** Every Bash block containing a `send_cmd` call must use `timeout=600000`.
 
-When the command has extra args:
-
-```bash
-send_cmd "<slug>" "<cmd>" "<args>"
-```
-
-**IMPORTANT:** Every Bash block that contains a `send_cmd` call must be invoked with `timeout=600000` — the internal ACK wait loop blocks until the orchestrator responds, and the default 2-minute Bash tool timeout will kill it prematurely.
+**Shorthand notation used in handlers below:**
+`log <event>[, comment "<text>"][, set <state>] → send_cmd <slug> <cmd>[; send_cmd <slug> <cmd2>][; kill <window>]`
 
 ---
 
@@ -131,12 +129,15 @@ Re-read all runtime state from files at the top of each wakeup cycle — the Spo
 MODE=$(cat ~/agentmesh/signals/mode 2>/dev/null || echo "standard")
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder 2>/dev/null || echo "")
 LOG=~/agentmesh/signals/events.log
+SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ```
 
-Then block:
+Then block — but first check whether the queue already has pending events. The orchestrator always writes to `spokesman-queue` **before** firing `spokesman-event`. If the signal fired during the previous processing cycle (while the Spokesman was handling events or waiting for user input), it is silently dropped by tmux. Checking the queue here closes that race window:
 
 ```bash
-tmux wait-for spokesman-event
+if [ ! -s "$SPOKESMAN_QUEUE" ]; then
+  tmux wait-for spokesman-event
+fi
 ```
 
 ### 1a.5. Check orchestrator heartbeat
@@ -144,23 +145,7 @@ tmux wait-for spokesman-event
 After each wakeup, verify that orchestrator.py is still alive. If the heartbeat file is stale (not updated in >90 seconds), auto-restart orchestrator.py and inform the user.
 
 ```bash
-HEARTBEAT=~/agentmesh/signals/orchestrator.heartbeat
-RESTART_CMD=$(cat ~/agentmesh/signals/orchestrator-restart-cmd 2>/dev/null || echo "")
-
-if [ -n "$RESTART_CMD" ] && [ -f "$HEARTBEAT" ]; then
-  last_modified=$(stat -f %m "$HEARTBEAT" 2>/dev/null || stat -c %Y "$HEARTBEAT" 2>/dev/null)
-  now=$(date +%s)
-  age=$((now - last_modified))
-  if [ "$age" -gt 90 ]; then
-    printf '%s\tspokesman    \torchestrator-restarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-    echo "⚠  Orchestrator heartbeat stale (${age}s). Restarting orchestrator.py..."
-    tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
-    sleep 1
-    tmux new-window -t orchestrator -n orchestrator
-    tmux send-keys -t orchestrator:orchestrator "$RESTART_CMD" Enter
-    echo "Orchestrator restarted. Continuing..."
-  fi
-fi
+bash ~/agentmesh/scripts/spokesman-heartbeat-check.sh
 ```
 
 The `orchestrator-restart-cmd` file is written by `bootstrap.sh` and contains the exact command used to launch orchestrator.py (with the same project, mode, max-workers, and profile arguments).
@@ -238,11 +223,7 @@ Decide agent type using your judgment — you have access to the full task title
 - **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
 - **worker**: any other concrete, well-defined implementation task (the default)
 
-Then dispatch:
-```bash
-printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "spawn" "<agent-type>"
-```
+Then dispatch: log `task-triaged` → `send_cmd <slug> spawn <agent-type>`
 
 Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
 
@@ -290,20 +271,9 @@ Open NoteCove to review and answer the QUESTIONS note, then say 'continue'.
 
 Wait for the user to respond.
 
-**If user says 'continue':**
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If 'continue':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
 
-**If user provides feedback inline:**
-```bash
-printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If user provides feedback inline:** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
@@ -320,28 +290,13 @@ Open NoteCove to read the PLAN note, then say 'continue'.
 
 Wait for the user to respond.
 
-**If user says 'continue':**
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If 'continue':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
 
-**If user says 'spawn reviewer':**
-```bash
-printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "spawn-plan-reviewer"
-```
+**If 'spawn reviewer':** log `plan-reviewer-requested` → `send_cmd <slug> spawn-plan-reviewer`
 
 Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
 
-**If user provides feedback (plan revision):**
-```bash
-printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If user provides feedback (plan revision):** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
@@ -368,37 +323,15 @@ Options:
 
 Wait for the user to respond.
 
-**If 'approve':**
-```bash
-printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "pr-approved"
-```
+**If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
 
-**If 'review' — spawn pr-reviewer:**
-```bash
-printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "spawn-pr-reviewer"
-```
+**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
 
-**If feedback provided:**
-```bash
-printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "resume"
-```
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
 
-**If 'abort':**
-```bash
-printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state "Won't Do"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "abort"
-```
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
 
 ---
 
@@ -424,28 +357,11 @@ Options:
 
 Wait for the user to respond.
 
-**If 'approve':**
-```bash
-printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "pr-approved"
-```
+**If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
 
-**If feedback provided:**
-```bash
-printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "resume"
-```
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
 
-**If 'abort':**
-```bash
-printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state "Won't Do"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "abort"
-```
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
 
 ---
 
@@ -474,33 +390,11 @@ Options:
 
 Wait for the user to respond.
 
-**If 'continue':**
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "Plan accepted after review."
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-# Kill plan-reviewer window
-tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
-```
+**If 'continue':** log `attention-resumed`, comment `"Plan accepted after review."`, set `Doing` → `send_cmd <slug> resume`; kill `workers:plan-rev-<slug>`
 
-**If 'reject review':**
-```bash
-printf '%s\tspokesman    \treview-rejected\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "Plan review rejected by user. Continuing with original plan."
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
-```
+**If 'reject review':** log `review-rejected`, comment `"Plan review rejected by user. Continuing with original plan."`, set `Doing` → `send_cmd <slug> resume`; kill `workers:plan-rev-<slug>`
 
-**If feedback:**
-```bash
-printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-tmux kill-window -t workers:plan-rev-<slug> 2>/dev/null || true
-```
+**If feedback:** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`; kill `workers:plan-rev-<slug>`
 
 ---
 
@@ -532,40 +426,15 @@ Options:
 
 Wait for the user to respond.
 
-**If 'approve':**
-```bash
-printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "pr-approved"
-# Kill pr-reviewer window
-tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-```
+**If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`; kill `workers:pr-rev-<slug>`
 
-**If feedback:**
-```bash
-printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-tmux kill-window -t orchestrator:pr-mon-<slug> 2>/dev/null || true
-tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-```
+**If feedback:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`; kill `orchestrator:pr-mon-<slug>`; kill `workers:pr-rev-<slug>`
 
-**If 're-review':**
-```bash
-tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-send_cmd "<slug>" "spawn-pr-reviewer"
-```
+**If 're-review':** kill `workers:pr-rev-<slug>` → `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "New PR reviewer spawned."
 
-**If 'abort':**
-```bash
-printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state "Won't Do"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "abort"
-tmux kill-window -t workers:pr-rev-<slug> 2>/dev/null || true
-```
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`; kill `workers:pr-rev-<slug>`
 
 ---
 
@@ -585,28 +454,13 @@ Open NoteCove to read the PLAN note and any REVIEW notes, then say 'continue'.
 
 Wait for the user to respond.
 
-**If user says 'continue':**
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If 'continue':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
 
-**If user says 'spawn reviewer':**
-```bash
-printf '%s\tspokesman    \tplan-reviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "spawn-plan-reviewer"
-```
+**If 'spawn reviewer':** log `plan-reviewer-requested` → `send_cmd <slug> spawn-plan-reviewer`
 
 Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
 
-**If user provides feedback (plan revision):**
-```bash
-printf '%s\tspokesman    \tattention-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+**If user provides feedback (plan revision):** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
@@ -616,10 +470,7 @@ Extract PR URL from event: `pr_url=${event_rest#event:review-limit-reached:pr:}`
 
 The orchestrator has hit the auto-review cycle limit for PR reviews and is escalating to the user.
 
-Spawn pr-monitor before showing prompt:
-```bash
-send_cmd "<slug>" "spawn-pr-monitor" "<pr_url>"
-```
+Spawn pr-monitor before showing prompt: → `send_cmd <slug> spawn-pr-monitor <pr_url>`
 
 ```
 ── Auto-review limit reached (PR) ───────────────
@@ -638,38 +489,15 @@ Options:
 
 Wait for the user to respond.
 
-**If 'approve':**
-```bash
-printf '%s\tspokesman    \treview-approved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Done
-send_cmd "<slug>" "pr-approved"
-```
+**If 'approve':** log `review-approved`, set `Done` → `send_cmd <slug> pr-approved`
 
-**If 'review' — spawn pr-reviewer:**
-```bash
-printf '%s\tspokesman    \treviewer-requested\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "spawn-pr-reviewer"
-```
+**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
 
-**If feedback provided:**
-```bash
-printf '%s\tspokesman    \treview-feedback\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<feedback>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "resume"
-```
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
 
-**If 'abort':**
-```bash
-printf '%s\tspokesman    \treview-aborted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state "Won't Do"
-send_cmd "<slug>" "kill-pr-monitor"
-send_cmd "<slug>" "abort"
-```
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
 
 ---
 
@@ -686,12 +514,7 @@ Open NoteCove to review the IDEAS note and respond with:
 ```
 
 Wait for the user to respond. Write response as ANSWER note or task comment, set Doing, and resume:
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Spokesman" "<user-response>"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+log `attention-resumed`, comment `"<user-response>"`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
@@ -706,12 +529,7 @@ When done, say 'continue'.
 ─────────────────────────────────────────────────
 ```
 
-Wait for the user to say 'continue', then:
-```bash
-printf '%s\tspokesman    \tattention-resumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task change <slug> --state Doing
-send_cmd "<slug>" "resume"
-```
+Wait for the user to say 'continue', then: log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
 
 ---
 
@@ -789,28 +607,7 @@ After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIA
 When no workers remain and no Ready tasks exist (orchestrator.py shuts down):
 
 ```bash
-printf '%s\tspokesman    \tshutdown\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# Kill any remaining reviewer windows (not tracked in signals/workers)
-tmux list-windows -t workers -F "#{window_name}" 2>/dev/null | grep -E '^(plan-rev-|pr-rev-)' | while read win; do
-  tmux kill-window -t "workers:$win" 2>/dev/null || true
-done
-# Kill the orchestrator.py window
-tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
-tmux kill-window -t orchestrator:dispatcher 2>/dev/null || true
-tmux kill-window -t orchestrator:watchdog 2>/dev/null || true
-tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
-# Kill any remaining pr-monitor windows
-tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep "^pr-mon-" | while read _win; do
-  tmux kill-window -t "orchestrator:${_win}" 2>/dev/null || true
-done
-rm -f ~/agentmesh/signals/queue ~/agentmesh/signals/workers
-rm -f ~/agentmesh/signals/spokesman-queue ~/agentmesh/signals/orchestrator-cmds
-rm -f "$SPOKESMAN_ACKS"
-rm -f ~/agentmesh/signals/*.merged
-rm -f ~/agentmesh/signals/*.reviewed
-rm -f ~/agentmesh/signals/*.review-start
-rm -f ~/agentmesh/signals/triage_folder
-rm -f ~/agentmesh/signals/mode
+bash ~/agentmesh/scripts/spokesman-exit.sh
 ```
 
 Tell the user: "All tasks complete. Spokesman shutting down."
@@ -823,6 +620,7 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **The spokesman always sets NoteCove state BEFORE sending commands** — state must be set before the resume signal fires (invariant from Critical Rules).
 - **Queue-as-source-of-truth** — the spokesman-queue entry carries the full event type; no NoteCove comment parsing for routing.
 - **Always drain the full spokesman-queue** before going back to wait.
+- **Check queue before blocking on spokesman-event** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
 - **Always wait for ACK after every command** — use the `CMD_SEQ` counter pattern for every command send. The ACK loop confirms orchestrator.py executed the command (e.g., the spawn actually happened) before the Spokesman moves on.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
