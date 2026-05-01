@@ -246,6 +246,8 @@ for priority in 0 1 2 3 4; do
   echo "$ATTENTION_EVENTS" | while IFS='|' read -r prio slug event_rest; do
     [ "$prio" = "$priority" ] || continue
     # Fetch task title and dispatch — see section 1d
+    # Note: treat each matched entry as an independent step; CMD_SEQ state
+    # must persist across iterations (invoke each handler as a separate action).
   done
 done
 ```
@@ -342,9 +344,9 @@ Tell the user: "PR for `<slug> — <title>` was merged automatically — approve
 
 Received from orchestrator.py when active worker count is zero and no Ready tasks remain.
 
-Tell the user: "All tasks complete. Shutting down."
+This event is **not dispatched directly** — it is handled by setting `SHUTDOWN_RECEIVED=1` in step 1b. Exit is **deferred** until after all accumulated attention events have been handled in step 1c. Once the attention queue is empty, step 1c checks `SHUTDOWN_RECEIVED` and runs the Exit phase.
 
-Run the Exit phase immediately (see below).
+Tell the user at that point: "All tasks complete. Shutting down."
 
 ---
 
