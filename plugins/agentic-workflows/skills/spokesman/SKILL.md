@@ -200,26 +200,23 @@ while [ -s "$SPOKESMAN_QUEUE" ]; do
       event:shutdown)
         SHUTDOWN_RECEIVED=1
         ;;
-      event:questions)
-        ATTENTION_EVENTS="${ATTENTION_EVENTS}
-1|${slug}|${event_rest}"
-        ;;
-      event:pr-submitted:*|event:pr-ready:*|event:pr-review-complete|event:review-limit-reached:pr:*)
-        ATTENTION_EVENTS="${ATTENTION_EVENTS}
-2|${slug}|${event_rest}"
-        ;;
-      event:plan-ready|event:plan-revised|event:plan-review-complete|event:review-limit-reached:plan)
-        ATTENTION_EVENTS="${ATTENTION_EVENTS}
-3|${slug}|${event_rest}"
-        ;;
-      event:ideas-ready|event:selection-ready)
-        ATTENTION_EVENTS="${ATTENTION_EVENTS}
-4|${slug}|${event_rest}"
-        ;;
       *)
-        # Unknown event — treat as highest priority (safety)
-        ATTENTION_EVENTS="${ATTENTION_EVENTS}
-0|${slug}|${event_rest}"
+        # Attention event — determine priority, then accumulate (no leading newline)
+        case "$event_rest" in
+          event:questions)                                                             _prio=1 ;;
+          event:pr-submitted:*|event:pr-ready:*|event:pr-review-complete|event:review-limit-reached:pr:*)
+                                                                                      _prio=2 ;;
+          event:plan-ready|event:plan-revised|event:plan-review-complete|event:review-limit-reached:plan)
+                                                                                      _prio=3 ;;
+          event:ideas-ready|event:selection-ready)                                    _prio=4 ;;
+          *)                                                                          _prio=0 ;;
+        esac
+        if [ -z "$ATTENTION_EVENTS" ]; then
+          ATTENTION_EVENTS="${_prio}|${slug}|${event_rest}"
+        else
+          ATTENTION_EVENTS="${ATTENTION_EVENTS}
+${_prio}|${slug}|${event_rest}"
+        fi
         ;;
     esac
   done
