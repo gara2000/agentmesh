@@ -115,7 +115,18 @@ for _slug in $_attention_slugs; do
 done
 ```
 
-If any entries were added to the spokesman-queue by the recovery scan, process them directly (jump to step 1b) before entering the normal event loop wait. If the queue is empty, proceed to the main event loop.
+After the recovery loop, check whether the `spokesman-queue` file is non-empty — regardless of whether recovery added anything. This guards against pre-existing entries that orchestrator.py may have written (e.g. `event:task-ready`) before the Spokesman started listening:
+
+```bash
+if [ -s "$SPOKESMAN_QUEUE" ]; then
+  # Queue is non-empty: jump directly to step 1b to drain it.
+  # (This handles both recovery entries AND any events orchestrator.py already queued.)
+  :
+fi
+# If empty: fall through to step 1a (normal event loop).
+```
+
+If the queue is non-empty, skip the `tmux wait-for spokesman-event` call in step 1a and go directly to step 1b to drain it. If the queue is empty, proceed normally to step 1a.
 
 ---
 
