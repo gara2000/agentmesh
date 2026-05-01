@@ -58,18 +58,19 @@ The orchestrator supports two modes set via `--mode`:
 | `standard` (default) | User decides: approve, spawn reviewer, or give feedback | User decides: approve, spawn reviewer, feedback, or abort | All Attention events |
 | `auto-review` | Plan-reviewer spawns automatically; review passed to worker | PR-reviewer spawns automatically; review passed to worker; user approves final PR | Questions + final PR approval only |
 
-In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. For plan reviews, the worker reads the REVIEW note and decides how to proceed before implementing. For PR reviews, the reviewer posts its findings to the GitHub PR; the orchestrator passes the review back to the worker (sets task `Doing`), and the worker reads the PR comments, applies any fixes, and re-signals when ready. On the worker's next PR-ready signal, the orchestrator presents the PR to the user for final approval (no second auto-review). This keeps the orchestrator simple and avoids infinite review cycles.
+In `auto-review` mode the reviewer verdict is not read by the orchestrator — the worker is always resumed regardless of verdict. For plan reviews, the worker reads the REVIEW note and decides how to proceed: if the plan needs revision it updates the PLAN note and signals `event:plan-revised` to request another review cycle. For PR reviews, the reviewer posts its findings to the GitHub PR; the orchestrator passes the review back to the worker (sets task `Doing`), and the worker reads the PR comments and applies any fixes. The worker then re-signals with one of two event tags: `event:pr-revised:<url>` to request another review cycle, or `event:pr-ready-final:<url>` to skip further review and go directly to the user.
 
 ### PR Event Translation
 
-Workers always signal `event:pr-ready:<url>`. The orchestrator translates this into one of two Spokesman events depending on mode and context:
+Workers use distinct event tags to remove ambiguity from the orchestrator's routing:
 
-| Spokesman event | When | What the Spokesman shows |
-|---|---|---|
-| `event:pr-submitted:<url>` | Standard mode, first worker signal | "PR submitted" — options: approve, spawn reviewer, feedback, abort |
-| `event:pr-ready:<url>` | Auto-review mode, post-review worker re-signal | "PR validated" — options: approve, feedback, abort (no reviewer option) |
+| Worker event | Spokesman event | When | What the Spokesman shows |
+|---|---|---|---|
+| `event:pr-ready:<url>` | `event:pr-submitted:<url>` | Standard mode, first submission | "PR submitted" — options: approve, spawn reviewer, feedback, abort |
+| `event:pr-revised:<url>` | `event:pr-submitted:<url>` | Standard mode, post-feedback | "PR revised" — same options as pr-submitted |
+| `event:pr-ready-final:<url>` | `event:pr-ready:<url>` | Auto-review mode, worker declares PR final | "PR validated" — options: approve, feedback, abort (no reviewer option) |
 
-This means `event:pr-ready` reaching the Spokesman always indicates the PR has already been reviewed and validated; no reviewer spawn is offered at that point.
+`event:pr-ready` reaching the Spokesman always indicates the PR has already been reviewed and is ready for final approval; no reviewer spawn is offered at that point.
 
 ---
 
@@ -142,15 +143,18 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | Event Tag | Fired by | Meaning |
 |---|---|---|
 | `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
-| `event:plan-ready` | Worker | Plan note written, awaiting review |
-| `event:pr-ready:<url>` | Worker | PR created at `<url>`, signaling readiness to orchestrator |
+| `event:plan-ready` | Worker | Plan note written (first submission), awaiting review |
+| `event:plan-revised` | Worker | Plan revised after reviewer feedback; re-review requested |
+| `event:pr-ready:<url>` | Worker | PR created at `<url>` (first submission), signaling readiness |
+| `event:pr-revised:<url>` | Worker | PR revised after reviewer feedback; re-review requested |
+| `event:pr-ready-final:<url>` | Worker | PR is ready for user approval — no further automated review needed |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
 
-The orchestrator translates `event:pr-ready:<url>` from the worker into `event:pr-submitted:<url>` (standard mode, needs decision) or keeps it as `event:pr-ready:<url>` (auto-review mode, post-review, already validated) before forwarding to the Spokesman.
+The orchestrator translates worker events into Spokesman events: `event:pr-ready:<url>` and `event:pr-revised:<url>` → `event:pr-submitted:<url>` (standard mode); `event:pr-ready-final:<url>` → `event:pr-ready:<url>` (auto-review mode, post-review).
 
 ### Task State as the Only Message
 
@@ -229,7 +233,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, spokesman-acks, worker registry, and event log, and removes stale `.merged`, `.reviewed`, and `.review-start` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, spokesman-acks, worker registry, and event log, and removes stale `.merged` and `.review-start` flags.
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
@@ -312,14 +316,13 @@ sequenceDiagram
 
 ## Anomaly Detection
 
-`orchestrator.py` runs 4 lightweight invariant checks after every event it processes. New violations are logged to `events.log` with the `anomaly-detected:<key>` event type and escalated to the Spokesman for user notification. When a violation clears, an `anomaly-resolved:<key>` entry is logged.
+`orchestrator.py` runs 3 lightweight invariant checks after every event it processes. New violations are logged to `events.log` with the `anomaly-detected:<key>` event type and escalated to the Spokesman for user notification. When a violation clears, an `anomaly-resolved:<key>` entry is logged.
 
 | Check | Anomaly key | Condition |
 |---|---|---|
 | 1 | `reviewer-stuck:<slug>` | `signals/<slug>.review-start` exists and is older than 15 minutes |
 | 2 | `orphaned-reviewer:<slug>:<window>` | A `plan-rev-*` or `pr-rev-*` window exists but the task is not in `in-review` state |
 | 3 | `stale-registry:<slug>` | Slug is in `signals/workers` but its tmux window no longer exists |
-| 4 | `contradictory-flags:<slug>` | Both `signals/<slug>.reviewed` and `signals/<slug>.merged` exist simultaneously |
 
 **De-duplication**: the orchestrator tracks active anomalies in memory; each anomaly is reported only once when first detected and again only if it reappears after clearing.
 
@@ -447,10 +450,13 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 | `crash-limit.sh <slug> <project>` | `event:crash-limit-reached` | Cleans up flag files and crash-count, forwards to Spokesman for user notification |
 | `pr-merged.sh <slug> <resume_sig> <project>` | `event:pr-merged` | Guards on task state, calls pr-approved.sh, notifies Spokesman |
 | `completion.sh <slug> <resume_sig> <project>` | `event:completion` | Marks Done, runs task-done.sh, clears review counts, notifies Spokesman |
-| `plan-ready.sh <slug> <mode> <review_limit> <project>` | `event:plan-ready` | Auto-review: spawns plan-reviewer (with cycle limit); Standard: forwards to Spokesman |
+| `plan-ready.sh <slug> <mode> <review_limit> <project>` | `event:plan-ready` | Auto-review: initializes plan counter to 1, always spawns plan-reviewer; Standard: forwards to Spokesman |
+| `plan-revised.sh <slug> <mode> <review_limit> <project>` | `event:plan-revised` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards to Spokesman |
 | `plan-review-complete.sh <slug> <resume_sig> <mode>` | `event:plan-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
-| `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto (first): spawns pr-reviewer; Auto (post-review): forwards validated PR; Standard: forwards submitted PR |
-| `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
+| `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto-review: initializes PR counter to 1, always spawns pr-reviewer, spawns pr-monitor; Standard: forwards submitted PR, spawns pr-monitor |
+| `pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-revised:<url>` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards as pr-submitted |
+| `pr-ready-final.sh <slug> <pr_url>` | `event:pr-ready-final:<url>` | Spawns pr-monitor, forwards as `event:pr-ready` to Spokesman for final user approval |
+| `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window and pr-monitor; Standard: forwards to Spokesman |
 | `pr-approved.sh <slug> <resume_sig> <project>` | shared helper | Marks Done, task-done cleanup, kills pr-mon, removes all signal flags |
 
 Shared utilities are in `scripts/events/lib.sh`: `log_event`, `forward_to_spokesman`, `get_review_count`, `increment_review_count`, `spawn_pr_monitor`.

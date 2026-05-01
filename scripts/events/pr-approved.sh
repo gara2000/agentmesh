@@ -13,5 +13,5 @@ PROJECT="${3:?project required}"
 $NOTECOVE task change "$SLUG" --state Done
 bash "${SCRIPTS}/task-done.sh" "$SLUG" "$PROJECT" "$RESUME_SIG"
 tmux kill-window -t "orchestrator:pr-mon-${SLUG}" 2>/dev/null || true
-rm -f "${SIGNALS}/${SLUG}.merged" "${SIGNALS}/${SLUG}.reviewed" "${SIGNALS}/${SLUG}.review-start"
+rm -f "${SIGNALS}/${SLUG}.merged" "${SIGNALS}/${SLUG}.review-start"
 rm -f "${SIGNALS}/${SLUG}.plan-review-count" "${SIGNALS}/${SLUG}.pr-review-count"

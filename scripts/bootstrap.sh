@@ -46,7 +46,6 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/orchestrator-cmds"
 : > "$SIGNALS/spokesman-acks"
 rm -f "$SIGNALS/"*.merged
-rm -f "$SIGNALS/"*.reviewed
 rm -f "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start
 rm -f "$SIGNALS/"*.plan-review-count

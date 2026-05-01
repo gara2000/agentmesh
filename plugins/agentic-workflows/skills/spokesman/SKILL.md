@@ -192,8 +192,9 @@ case "$event_rest" in
   event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
+  event:plan-revised)     → plan revised (standard mode only, same as plan-ready attention)
   event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
-  event:pr-ready:*)       → PR validated (auto-review mode, post-review): ready for final user approval
+  event:pr-ready:*)       → PR validated (auto-review mode, post-review via event:pr-ready-final): ready for final user approval
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
   event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
@@ -297,6 +298,12 @@ Wait for the user to respond.
 Tell the user: "Plan reviewer spawned. It will signal when the review is complete."
 
 **If user provides feedback (plan revision):** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
+
+---
+
+### Event: `event:plan-revised` — revised plan ready for review (standard mode)
+
+Only received in standard mode (in auto-review mode the orchestrator handles re-reviews internally). Handle identically to `event:plan-ready`: display the plan-ready attention block, wait for user to say 'continue', spawn reviewer, or give feedback.
 
 ---
 

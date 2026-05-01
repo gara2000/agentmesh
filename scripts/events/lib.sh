@@ -38,6 +38,10 @@ increment_review_count() {
 
 spawn_pr_monitor() {
     local slug="${1:?slug required}" pr_url="${2:?pr_url required}"
+    # Idempotency guard: skip if a monitor for this slug is already running.
+    if tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qF "pr-mon-${slug}"; then
+        return 0
+    fi
     tmux new-window -t orchestrator -n "pr-mon-${slug}" 2>/dev/null || true
     tmux send-keys -t "orchestrator:pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" Enter
     log_event "pr-monitor-spawned" "$slug"

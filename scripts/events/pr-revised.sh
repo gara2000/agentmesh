@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>
-# Handles event:pr-ready:<url> — worker's FIRST PR submission.
-#   auto-review: always spawn pr-reviewer (no limit check; first review always runs).
-#                Counter is initialized to 1. Re-review cycles use event:pr-revised.
-#                Final user approval uses event:pr-ready-final.
+# pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>
+# Handles event:pr-revised:<url> — worker re-signals after addressing pr-reviewer feedback
+# and wants another automated review cycle.
+#   auto-review: spawn pr-reviewer again (increment counter, check limit) + spawn pr-monitor.
 #   standard:    forward as pr-submitted for user decision.
-# Spawns pr-monitor in all modes so merged PRs are detected immediately.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -17,16 +15,20 @@ REVIEW_LIMIT="${5:?review_limit required}"
 PROJECT="${6:?project required}"
 
 if [[ "$MODE" == "auto-review" ]]; then
-    # Initialize counter to 1 (first review — no limit check needed).
-    increment_review_count "$SLUG" "pr" > /dev/null
+    COUNT=$(increment_review_count "$SLUG" "pr")
+    if [[ "$COUNT" -gt "$REVIEW_LIMIT" ]]; then
+        log_event "review-limit-reached:pr" "$SLUG"
+        forward_to_spokesman "$SLUG" "event:review-limit-reached:pr:${PR_URL}"
+        exit 0
+    fi
     log_event "reviewer-spawning" "$SLUG"
     $NOTECOVE task change "$SLUG" --state 'In Review'
     bash "${SCRIPTS}/spawn-agent.sh" workers "pr-rev-${SLUG}" /pr-reviewer "$SLUG" "$PROJECT"
     log_event "reviewer-spawned" "$SLUG"
     touch "${SIGNALS}/${SLUG}.review-start"
+    # Respawn pr-monitor (was killed by pr-review-complete.sh before worker re-signaled).
     spawn_pr_monitor "$SLUG" "$PR_URL"
 else
-    # Standard mode: worker submitted PR; forward for user decision (review or approve).
     spawn_pr_monitor "$SLUG" "$PR_URL"
     forward_to_spokesman "$SLUG" "event:pr-submitted:${PR_URL}"
 fi

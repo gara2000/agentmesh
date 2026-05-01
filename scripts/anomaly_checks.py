@@ -25,7 +25,7 @@ class AnomalyChecker:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        """Run all 4 invariant checks; escalate new violations to Spokesman."""
+        """Run all 3 invariant checks; escalate new violations to Spokesman."""
         current: set = set()
 
         # Compute tmux window list once; shared by checks 2 and 3.
@@ -34,7 +34,6 @@ class AnomalyChecker:
         self._check_reviewer_stuck(current)
         self._check_orphaned_reviewer(current, windows_result)
         self._check_stale_registry(current, windows_result)
-        self._check_contradictory_flags(current)
 
         self._report_changes(current)
         self._active_anomalies = current
@@ -88,13 +87,6 @@ class AnomalyChecker:
                 parts = line.split()
                 if len(parts) >= 2 and parts[1].strip() not in live_windows:
                     current.add(f"stale-registry:{parts[0].strip()}")
-
-    def _check_contradictory_flags(self, current: set) -> None:
-        """Check 4: contradictory flags (both .reviewed and .merged exist for same slug)."""
-        for reviewed_flag in self._signals.glob("*.reviewed"):
-            slug = reviewed_flag.stem
-            if (self._signals / f"{slug}.merged").exists():
-                current.add(f"contradictory-flags:{slug}")
 
     def _report_changes(self, current: set) -> None:
         """Report new anomalies to Spokesman; log resolved ones."""

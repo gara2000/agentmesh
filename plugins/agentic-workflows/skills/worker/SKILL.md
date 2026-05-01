@@ -244,7 +244,7 @@ EOF
 - **Always define `LOG=~/agentmesh/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
-- **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:pr-ready:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
+- **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
 - **Always set task state before signaling** — orchestrator reads it immediately on wakeup.
 - **Always use the shell loop blocking pattern** — never call `tmux wait-for <resume-signal>` bare. The Bash tool times out after 2 minutes (max 10 with `timeout=600000`); the loop re-blocks internally until the expected state is confirmed.
 - **Always use `timeout=600000`** on Bash calls that contain the blocking loop — this maximizes time between spurious wakeups.
@@ -289,7 +289,25 @@ done
 printf '%s\tworker       \tresumed-from-plan\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-After confirmed resume: check task comments for feedback, adjust plan if needed, proceed to Phase 4.
+After confirmed resume:
+1. Read task comments for feedback (orchestrator comment and any plan-reviewer notes).
+2. If no significant changes needed → proceed directly to Phase 4 without re-signaling.
+3. If plan requires revision → update the `<slug>/PLAN` note, then signal `event:plan-revised` to request another review:
+```bash
+SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
+echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
+notecove task comments add <slug> --user "Worker" "event:plan-revised"
+notecove task change <slug> --state Attention
+echo "<slug>:event:plan-revised" >> ~/agentmesh/signals/queue
+tmux wait-for -S worker-any-event
+# Block until resumed — IMPORTANT: call with timeout=600000
+while true; do
+  tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
+  state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin)['stateId'])")
+  [ "$state" = "doing" ] && break
+done
+```
+Repeat step 1–3 as needed; the orchestrator enforces the re-review cycle limit.
 
 ---
 
@@ -570,11 +588,31 @@ done
 
 After unblocking, check which state was set:
 - **`done`** — user approved. Log `printf '%s\tworker       \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Worker exits. Do not mark task Done yourself — the orchestrator does that.
-- **`doing`** — user provided feedback. Log `printf '%s\tworker       \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments and any new ANSWER notes. Also fetch the PR comments to see any AI review feedback:
+- **`doing`** — feedback received (from an auto-reviewer or the user). Log `printf '%s\tworker       \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments and fetch PR comments:
   ```bash
   gh pr view "$PR_URL" --comments
   ```
-  Then continue working (amend the PR or push additional commits as needed), and re-signal `Attention` when ready.
+  Apply any needed fixes (amend or push additional commits), then re-signal with the appropriate event tag:
+  - **`event:pr-revised:<PR-URL>`** — use when significant changes were made and another automated review pass is warranted (orchestrator will spawn pr-reviewer again, subject to the review limit).
+  - **`event:pr-ready-final:<PR-URL>`** — use when the PR is ready for the user to make the final call (no further automated review needed). Use this after addressing auto-reviewer feedback when you consider the PR complete, OR after addressing user feedback.
+
+  ```bash
+  # Re-signal with the chosen event tag (replace <EVENT-TAG> with pr-revised or pr-ready-final):
+  SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
+  echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
+  notecove task change <slug> --state Attention
+  notecove task comments add <slug> --user "Worker" "event:<EVENT-TAG>:<PR-URL>"
+  echo "<slug>:event:<EVENT-TAG>:<PR-URL>" >> ~/agentmesh/signals/queue
+  tmux wait-for -S worker-any-event
+  # Block until resumed — IMPORTANT: call with timeout=600000
+  # Break on either 'done' (approved) or 'doing' (feedback given)
+  while true; do
+    tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
+    state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin)['stateId'])")
+    { [ "$state" = "done" ] || [ "$state" = "doing" ]; } && break
+  done
+  ```
+  Repeat until state is `done`.
 
 ---
 

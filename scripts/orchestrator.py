@@ -267,11 +267,19 @@ class Orchestrator:
             self.pick_up_ready_tasks()
         elif event_type == "event:plan-ready":
             subprocess.run(["bash", str(EVENTS / "plan-ready.sh"), slug, self.mode, str(self.review_limit), self.project])
+        elif event_type == "event:plan-revised":
+            subprocess.run(["bash", str(EVENTS / "plan-revised.sh"), slug, self.mode, str(self.review_limit), self.project])
         elif event_type == "event:plan-review-complete":
             subprocess.run(["bash", str(EVENTS / "plan-review-complete.sh"), slug, resume_sig, self.mode])
         elif event_type.startswith("event:pr-ready:"):
             pr_url = event_type[len("event:pr-ready:"):]
             subprocess.run(["bash", str(EVENTS / "pr-ready.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
+        elif event_type.startswith("event:pr-revised:"):
+            pr_url = event_type[len("event:pr-revised:"):]
+            subprocess.run(["bash", str(EVENTS / "pr-revised.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
+        elif event_type.startswith("event:pr-ready-final:"):
+            pr_url = event_type[len("event:pr-ready-final:"):]
+            subprocess.run(["bash", str(EVENTS / "pr-ready-final.sh"), slug, pr_url])
         elif event_type == "event:pr-review-complete":
             subprocess.run(["bash", str(EVENTS / "pr-review-complete.sh"), slug, resume_sig, self.mode])
         elif event_type in ("event:questions", "event:ideas-ready", "event:selection-ready"):
@@ -357,7 +365,6 @@ class Orchestrator:
             task_done(slug, self.project)
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-            (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.plan-review-count").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.pr-review-count").unlink(missing_ok=True)
@@ -381,7 +388,6 @@ class Orchestrator:
             _print(f"killing pr-monitor for {slug}")
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-            (SIGNALS / f"{slug}.reviewed").unlink(missing_ok=True)
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
