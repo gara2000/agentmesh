@@ -163,11 +163,19 @@ The `orchestrator-restart-cmd` file is written by `bootstrap.sh` and contains th
 
 If `$HEARTBEAT` does not exist (e.g., shortly after bootstrap before orchestrator.py writes its first heartbeat), the check is silently skipped.
 
-### 1b. Drain spokesman-queue
+### 1b. Drain spokesman-queue — collect all events
+
+Initialize accumulators at the start of each drain pass. `ATTENTION_EVENTS` is a newline-separated string of `<priority>|<slug>|<event_rest>` entries (lower priority number = higher urgency). `SHUTDOWN_RECEIVED` is set to `1` if a shutdown event is encountered:
 
 ```bash
+ATTENTION_EVENTS=""
+SHUTDOWN_RECEIVED=""
 SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
+```
 
+Drain all entries from the queue atomically. For each entry, immediately handle auto-events or accumulate attention events:
+
+```bash
 while [ -s "$SPOKESMAN_QUEUE" ]; do
   # Atomic drain: rename so orchestrator.py can append to a fresh file concurrently
   TMP_QUEUE="${SPOKESMAN_QUEUE}.draining"
@@ -179,12 +187,80 @@ while [ -s "$SPOKESMAN_QUEUE" ]; do
     # Handle event: <slug>:<event-type>[:<data>]
     slug=$(echo "$entry" | cut -d: -f1)
     event_rest=$(echo "$entry" | cut -d: -f2-)
-    # handle_event $slug $event_rest
+
+    case "$event_rest" in
+      event:task-ready|event:completion|event:pr-merged-auto-approved)
+        # Auto-handle silently: no user interaction, no blocking wait
+        # Process immediately — see event handlers in section 1d
+        ;;
+      event:anomaly-detected:*|event:crash-limit-reached)
+        # Warn user (visible output) but do not block waiting for a response
+        # Process immediately — see event handlers in section 1d
+        ;;
+      event:shutdown)
+        SHUTDOWN_RECEIVED=1
+        ;;
+      event:questions)
+        ATTENTION_EVENTS="${ATTENTION_EVENTS}
+1|${slug}|${event_rest}"
+        ;;
+      event:pr-submitted:*|event:pr-ready:*|event:pr-review-complete|event:review-limit-reached:pr:*)
+        ATTENTION_EVENTS="${ATTENTION_EVENTS}
+2|${slug}|${event_rest}"
+        ;;
+      event:plan-ready|event:plan-revised|event:plan-review-complete|event:review-limit-reached:plan)
+        ATTENTION_EVENTS="${ATTENTION_EVENTS}
+3|${slug}|${event_rest}"
+        ;;
+      event:ideas-ready|event:selection-ready)
+        ATTENTION_EVENTS="${ATTENTION_EVENTS}
+4|${slug}|${event_rest}"
+        ;;
+      *)
+        # Unknown event — treat as highest priority (safety)
+        ATTENTION_EVENTS="${ATTENTION_EVENTS}
+0|${slug}|${event_rest}"
+        ;;
+    esac
   done
 done
 ```
 
-### 1c. Handle each event
+### 1c. Sort and present attention events by priority
+
+After draining, process all collected attention events in priority order (lower number = higher urgency):
+
+| Priority | Event types |
+|---|---|
+| 0 (highest, safety) | Unknown events |
+| 1 | `event:questions` |
+| 2 | `event:pr-submitted:*`, `event:pr-ready:*`, `event:pr-review-complete`, `event:review-limit-reached:pr:*` |
+| 3 | `event:plan-ready`, `event:plan-revised`, `event:plan-review-complete`, `event:review-limit-reached:plan` |
+| 4 | `event:ideas-ready`, `event:selection-ready` |
+
+If `ATTENTION_EVENTS` is non-empty:
+
+1. Count entries: `n=$(echo "$ATTENTION_EVENTS" | grep -c '[|]' 2>/dev/null || echo 0)`
+2. If `n > 1`, announce before presenting: "There are N events requiring your attention — presenting in priority order."
+3. Iterate through priorities in ascending order; for each priority level, handle matching entries in queue order:
+
+```bash
+for priority in 0 1 2 3 4; do
+  echo "$ATTENTION_EVENTS" | while IFS='|' read -r prio slug event_rest; do
+    [ "$prio" = "$priority" ] || continue
+    # Fetch task title and dispatch — see section 1d
+  done
+done
+```
+
+After all attention events are handled, check the shutdown flag:
+```bash
+if [ -n "$SHUTDOWN_RECEIVED" ]; then
+  # Run the Exit phase — see Exit section below
+fi
+```
+
+### 1d. Handle each event
 
 Fetch task title for display:
 ```bash
@@ -193,27 +269,31 @@ title=$(echo "$task_info" | python3 -c "import sys,json; print(json.load(sys.std
 seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 ```
 
-Dispatch on event type:
+Dispatch on event type. Events are grouped by when they are handled:
 
 ```
+# --- AUTO-HANDLED DURING DRAIN (step 1b) — no user interaction ---
 case "$event_rest" in
-  event:task-ready)       → task triage (auto, decide agent type, spawn)
-  event:completion)       → completion announcement (auto, no user input)
+  event:task-ready)            → task triage (auto, decide agent type, spawn)
+  event:completion)            → completion announcement (auto, no user input)
   event:pr-merged-auto-approved) → PR auto-merge announcement (auto, no user input)
-  event:shutdown)         → all tasks complete, run Exit phase and stop
-  event:questions)        → questions attention
-  event:plan-ready)       → plan-ready attention
-  event:plan-revised)     → plan revised (standard mode only, same as plan-ready attention)
-  event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
-  event:pr-ready:*)       → PR validated (auto-review mode, post-review via event:pr-ready-final): ready for final user approval
-  event:plan-review-complete) → post-plan-review attention
-  event:pr-review-complete)   → post-PR-review attention
+  event:anomaly-detected:*)    → warn user, no blocking wait (visible warning)
+  event:crash-limit-reached)   → warn user, no blocking wait (visible warning)
+  # event:shutdown is handled via SHUTDOWN_RECEIVED flag — not dispatched here
+
+# --- ATTENTION EVENTS (presented in sorted order in step 1c) ---
+  event:questions)             → questions attention
+  event:plan-ready)            → plan-ready attention
+  event:plan-revised)          → plan revised (standard mode only, same as plan-ready attention)
+  event:pr-submitted:*)        → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
+  event:pr-ready:*)            → PR validated (auto-review mode, post-review): ready for final user approval
+  event:plan-review-complete)  → post-plan-review attention
+  event:pr-review-complete)    → post-PR-review attention
   event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
   event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
-  event:ideas-ready)      → brainstormer ideation
-  event:selection-ready)  → brainstormer selection
-  event:crash-limit-reached) → worker crash limit (warn user, no auto-resume)
-  *)                      → unknown (log and tell user)
+  event:ideas-ready)           → brainstormer ideation
+  event:selection-ready)       → brainstormer selection
+  *)                           → unknown (log and tell user)
 esac
 ```
 
@@ -614,9 +694,9 @@ Wait for user response and act accordingly.
 
 ---
 
-### 1d. Loop back
+### 1e. Loop back
 
-After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles.
+After draining the queue and handling all attention events, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles. `ATTENTION_EVENTS` and `SHUTDOWN_RECEIVED` are local to each drain cycle and are never carried forward.
 
 ---
 
@@ -637,7 +717,9 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **The spokesman never spawns workers directly** — all spawning is delegated to orchestrator.py via `orchestrator-cmds`.
 - **The spokesman always sets NoteCove state BEFORE sending commands** — state must be set before the resume signal fires (invariant from Critical Rules).
 - **Queue-as-source-of-truth** — the spokesman-queue entry carries the full event type; no NoteCove comment parsing for routing.
-- **Always drain the full spokesman-queue** before going back to wait.
+- **Always drain the full spokesman-queue before surfacing anything to the user** — step 1b collects all entries first; auto-events are handled silently inline; attention events are sorted by priority and presented after the drain is complete.
+- **Never present attention events during the drain loop** — accumulate them in `ATTENTION_EVENTS` and present only after the full queue is drained.
+- **Priority ordering for attention events**: questions (1) > PR events (2) > plan events (3) > brainstormer events (4). Unknown events get priority 0 (highest, safety).
 - **Check queue before blocking on spokesman-event** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
 - **Always wait for ACK after every command** — use the `CMD_SEQ` counter pattern for every command send. The ACK loop confirms orchestrator.py executed the command (e.g., the spawn actually happened) before the Spokesman moves on.
