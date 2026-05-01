@@ -269,7 +269,7 @@ Without the dispatcher the orchestrator would need to know which signal to wait 
 
 ## Watchdog
 
-The watchdog (`scripts/watchdog.sh`) detects crashed workers and automatically recovers them.
+The watchdog (`scripts/watchdog.sh`) detects crashed workers and automatically recovers them with exponential backoff. After 3 consecutive crashes the task is set to Blocked and the user is notified via the Spokesman.
 
 ```mermaid
 sequenceDiagram
@@ -283,10 +283,22 @@ sequenceDiagram
         loop for each registered worker
             WD->>WD: Check if tmux window still exists
             alt window gone AND state = doing
-                WD->>Q: Append <slug>:event:crash-detected
-                WD->>O: tmux wait-for -S worker-any-event
-                Note over O: Orchestrator re-queues task\nand spawns fresh worker
+                WD->>WD: Read signals/<slug>.crash-count (default 0), increment
+                alt crash count < 3
+                    WD->>WD: Write new count to signals/<slug>.crash-count
+                    WD->>WD: Sleep 30s × 2^(n-1) (30s, 60s)
+                    WD->>Q: Append <slug>:event:crash-detected
+                    WD->>O: tmux wait-for -S worker-any-event
+                    Note over O: Orchestrator re-queues task\nand spawns fresh worker
+                else crash count ≥ 3
+                    WD->>WD: Delete signals/<slug>.crash-count
+                    WD->>NC: Set task to Blocked, add comment
+                    WD->>Q: Append <slug>:event:crash-limit-reached
+                    WD->>O: tmux wait-for -S worker-any-event
+                    Note over O: Orchestrator escalates to\nSpokesman for user notification
+                end
             else window gone AND state ≠ doing
+                WD->>WD: Delete signals/<slug>.crash-count (reset)
                 Note over WD: Worker finished cleanly — no action
             end
             WD->>WD: Remove entry from registry
@@ -294,7 +306,7 @@ sequenceDiagram
     end
 ```
 
-**Crash detection latency**: at most 60 seconds (two poll cycles).
+**Crash detection latency**: at most 60 seconds (two poll cycles). Backoff adds 30s (1st retry) or 60s (2nd retry) before re-queuing.
 
 ---
 
@@ -432,6 +444,7 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 | Script | Event | What it does |
 |---|---|---|
 | `crash.sh <slug> <project>` | `event:crash-detected` | Comments task, kills stale flags, re-queues via task-done.sh, spawns fresh worker |
+| `crash-limit.sh <slug> <project>` | `event:crash-limit-reached` | Cleans up flag files and crash-count, forwards to Spokesman for user notification |
 | `pr-merged.sh <slug> <resume_sig> <project>` | `event:pr-merged` | Guards on task state, calls pr-approved.sh, notifies Spokesman |
 | `completion.sh <slug> <resume_sig> <project>` | `event:completion` | Marks Done, runs task-done.sh, clears review counts, notifies Spokesman |
 | `plan-ready.sh <slug> <mode> <review_limit> <project>` | `event:plan-ready` | Auto-review: spawns plan-reviewer (with cycle limit); Standard: forwards to Spokesman |

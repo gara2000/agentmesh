@@ -51,6 +51,7 @@ rm -f "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start
 rm -f "$SIGNALS/"*.plan-review-count
 rm -f "$SIGNALS/"*.pr-review-count
+rm -f "$SIGNALS/"*.crash-count
 
 # Persist orchestrator launch command so Spokesman can restart it on stale heartbeat
 echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" > "$SIGNALS/orchestrator-restart-cmd"

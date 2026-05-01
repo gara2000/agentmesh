@@ -200,6 +200,7 @@ case "$event_rest" in
   event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
   event:ideas-ready)      → brainstormer ideation
   event:selection-ready)  → brainstormer selection
+  event:crash-limit-reached) → worker crash limit (warn user, no auto-resume)
   *)                      → unknown (log and tell user)
 esac
 ```
@@ -552,6 +553,34 @@ No action required unless you want to investigate.
 ```
 
 Continue draining the queue without waiting for user input.
+
+---
+
+### Event: `event:crash-limit-reached` — worker crash limit reached
+
+The watchdog detected 3 consecutive crashes for this task. The task is now Blocked in NoteCove — manual user intervention is required.
+
+```bash
+printf '%s\tspokesman    \tcrash-limit-reached\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+Fetch the task title:
+```bash
+_task_info=$($NOTECOVE task show <slug> --json)
+_title=$(echo "$_task_info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
+```
+
+Display a warning to the user:
+
+```
+⚠ Worker crash limit reached
+Task:  <slug> — <title>
+The worker crashed 3 consecutive times. The task has been set to Blocked.
+Please investigate the root cause in the workers tmux session or NoteCove
+before resuming (unblock and set to Ready to re-queue, or mark Won't Do).
+```
+
+Do NOT auto-resume the worker. Continue draining the queue without waiting for user input.
 
 ---
 
