@@ -399,12 +399,6 @@ class Orchestrator:
     # Helpers
     # -----------------------------------------------------------------------
 
-    def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
-        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
-        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
-        log("orchestrator ", "pr-monitor-spawned", slug)
-        _print(f"spawned pr-monitor for {slug} ({pr_url})")
-
     def _event_type_from_comments(self, slug: str) -> str:
         """Legacy: derive event type from last task comment (no queue event type)."""
         result = run_bash(f"{NOTECOVE_BIN} task show {slug} --format markdown-with-comments")
