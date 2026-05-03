@@ -325,13 +325,13 @@ Wait for the user to respond.
 
 **If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
 
-**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
+**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
 
-**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
-**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
 
 ---
 
@@ -359,9 +359,9 @@ Wait for the user to respond.
 
 **If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
 
-**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
-**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
 
 ---
 
@@ -428,13 +428,13 @@ Wait for the user to respond.
 
 **If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`; kill `workers:pr-rev-<slug>`
 
-**If feedback:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`; kill `orchestrator:pr-mon-<slug>`; kill `workers:pr-rev-<slug>`
+**If feedback:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`; kill `workers:pr-rev-<slug>`
 
 **If 're-review':** kill `workers:pr-rev-<slug>` → `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "New PR reviewer spawned."
 
-**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`; kill `workers:pr-rev-<slug>`
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`; kill `workers:pr-rev-<slug>`
 
 ---
 
@@ -469,8 +469,7 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 Extract PR URL from event: `pr_url=${event_rest#event:review-limit-reached:pr:}`
 
 The orchestrator has hit the auto-review cycle limit for PR reviews and is escalating to the user.
-
-Spawn pr-monitor before showing prompt: → `send_cmd <slug> spawn-pr-monitor <pr_url>`
+A background pr-monitor is already running (spawned automatically by the orchestrator).
 
 ```
 ── Auto-review limit reached (PR) ───────────────
@@ -491,13 +490,13 @@ Wait for the user to respond.
 
 **If 'approve':** log `review-approved`, set `Done` → `send_cmd <slug> pr-approved`
 
-**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> spawn-pr-reviewer`
+**If 'review' — spawn pr-reviewer:** log `reviewer-requested` → `send_cmd <slug> spawn-pr-reviewer`
 
 Tell the user: "PR reviewer spawned. It will signal when the review is complete — you will see it as an Attention event for this task."
 
-**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> resume`
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
-**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> kill-pr-monitor`; `send_cmd <slug> abort`
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
 
 ---
 

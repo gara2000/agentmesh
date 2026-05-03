@@ -265,12 +265,15 @@ class Orchestrator:
             subprocess.run(["bash", str(EVENTS / "plan-review-complete.sh"), slug, resume_sig, self.mode])
         elif event_type.startswith("event:pr-ready:"):
             pr_url = event_type[len("event:pr-ready:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-ready.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
         elif event_type.startswith("event:pr-revised:"):
             pr_url = event_type[len("event:pr-revised:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-revised.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
         elif event_type.startswith("event:pr-ready-final:"):
             pr_url = event_type[len("event:pr-ready-final:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-ready-final.sh"), slug, pr_url])
         elif event_type == "event:pr-review-complete":
             subprocess.run(["bash", str(EVENTS / "pr-review-complete.sh"), slug, resume_sig, self.mode])
@@ -333,6 +336,8 @@ class Orchestrator:
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
+            # Clear stale review-start (set if a reviewer ran; reviewer window is now gone)
+            (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
         elif cmd in ("done", "pr-approved"):
@@ -361,13 +366,6 @@ class Orchestrator:
             log("orchestrator ", "reviewer-spawned", slug)
             _print(f"spawned pr-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
-        elif cmd == "spawn-pr-monitor":
-            self._spawn_pr_monitor(slug, args)
-        elif cmd == "kill-pr-monitor":
-            _print(f"killing pr-monitor for {slug}")
-            tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
-            (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-            (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
             _print(f"unknown cmd: {cmd} ({slug})")
@@ -377,6 +375,12 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
+        """Spawn a pr-monitor window for slug/pr_url (idempotent — no-op if already running)."""
+        running = run_bash(
+            f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qF 'pr-mon-{slug}'"
+        )
+        if running.returncode == 0:
+            return  # already running
         tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
         tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
         log("orchestrator ", "pr-monitor-spawned", slug)

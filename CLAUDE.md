@@ -143,14 +143,14 @@ Responsibilities:
 
 ### PR Monitor
 
-**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Always spawned by orchestrator.py as soon as the worker's `event:pr-ready` signal is received — in all modes (standard and auto-review).
+**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned automatically by `orchestrator.py` (in `_handle_queue_entry`) whenever it receives `event:pr-ready`, `event:pr-revised`, or `event:pr-ready-final` — before calling the corresponding event handler script. The spawn is idempotent. The Spokesman has no knowledge of the pr-monitor.
 
 Responsibilities:
 - Poll `gh pr view <pr-url>` every 60 seconds
 - When the PR state is `MERGED`: write a `signals/<slug>.merged` flag file, append `<slug>:event:pr-merged` to the queue, fire `worker-any-event`, and exit
 - orchestrator.py detects the merge event and auto-approves (sets Done, fires resume, cleans up)
 
-The pr-monitor window is killed by orchestrator.py in all PR resolution paths (approve, feedback, abort) and at shutdown.
+The pr-monitor window is killed by orchestrator.py when the task closes (approve or abort). It is NOT killed during review cycles (reviewer feedback, re-review requests).
 
 ### Watchdog
 

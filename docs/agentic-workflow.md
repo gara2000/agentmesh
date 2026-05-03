@@ -448,10 +448,10 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 | `plan-ready.sh <slug> <mode> <review_limit> <project>` | `event:plan-ready` | Auto-review: initializes plan counter to 1, always spawns plan-reviewer; Standard: forwards to Spokesman |
 | `plan-revised.sh <slug> <mode> <review_limit> <project>` | `event:plan-revised` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards to Spokesman |
 | `plan-review-complete.sh <slug> <resume_sig> <mode>` | `event:plan-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
-| `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto-review: initializes PR counter to 1, always spawns pr-reviewer, spawns pr-monitor; Standard: forwards submitted PR, spawns pr-monitor |
-| `pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-revised:<url>` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards as pr-submitted |
-| `pr-ready-final.sh <slug> <pr_url>` | `event:pr-ready-final:<url>` | Spawns pr-monitor, forwards as `event:pr-ready` to Spokesman for final user approval |
-| `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window and pr-monitor; Standard: forwards to Spokesman |
+| `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto-review: initializes PR counter to 1, spawns pr-reviewer; Standard: forwards as pr-submitted. pr-monitor spawned by orchestrator.py before this script runs. |
+| `pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-revised:<url>` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards as pr-submitted. pr-monitor spawned by orchestrator.py (idempotent). |
+| `pr-ready-final.sh <slug> <pr_url>` | `event:pr-ready-final:<url>` | Forwards as `event:pr-ready` to Spokesman. pr-monitor spawned by orchestrator.py (idempotent). |
+| `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window (pr-monitor keeps running until task close); Standard: forwards to Spokesman |
 | `pr-approved.sh <slug> <resume_sig> <project>` | shared helper | Marks Done, task-done cleanup, kills pr-mon, removes all signal flags |
 
 Shared utilities are in `scripts/events/lib.sh`: `log_event`, `forward_to_spokesman`, `get_review_count`, `increment_review_count`, `spawn_pr_monitor`.
