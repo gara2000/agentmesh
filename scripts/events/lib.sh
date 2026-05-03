@@ -43,6 +43,6 @@ spawn_pr_monitor() {
         return 0
     fi
     tmux new-window -t orchestrator -n "pr-mon-${slug}" 2>/dev/null || true
-    tmux send-keys -t "orchestrator:pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" Enter
+    tmux send-keys -t "orchestrator:pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" Enter 2>/dev/null || true
     log_event "pr-monitor-spawned" "$slug"
 }
