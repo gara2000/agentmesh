@@ -487,8 +487,7 @@ Tell the user: "Plan reviewer spawned. It will signal when the review is complet
 Extract PR URL from event: `pr_url=${event_rest#event:review-limit-reached:pr:}`
 
 The orchestrator has hit the auto-review cycle limit for PR reviews and is escalating to the user.
-
-Spawn pr-monitor before showing prompt: → `send_cmd <slug> spawn-pr-monitor <pr_url>`
+A background pr-monitor is already running (spawned automatically by the orchestrator).
 
 ```
 ── Auto-review limit reached (PR) ───────────────

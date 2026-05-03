@@ -382,8 +382,6 @@ class Orchestrator:
             log("orchestrator ", "reviewer-spawned", slug)
             _print(f"spawned pr-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
-        elif cmd == "spawn-pr-monitor":
-            self._spawn_pr_monitor(slug, args)
         elif cmd == "kill-pr-monitor":
             _print(f"killing pr-monitor for {slug}")
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")

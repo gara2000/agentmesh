@@ -18,6 +18,7 @@ if [[ "$MODE" == "auto-review" ]]; then
     COUNT=$(increment_review_count "$SLUG" "pr")
     if [[ "$COUNT" -gt "$REVIEW_LIMIT" ]]; then
         log_event "review-limit-reached:pr" "$SLUG"
+        spawn_pr_monitor "$SLUG" "$PR_URL"
         forward_to_spokesman "$SLUG" "event:review-limit-reached:pr:${PR_URL}"
         exit 0
     fi
