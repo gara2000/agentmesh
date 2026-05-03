@@ -529,7 +529,7 @@ Part of brainstorming session [[T:<parent-task-id>|<parent-slug>]].
 
 ## Description
 
-<idea description from IDEAS note>
+<Expand on the idea description from the IDEAS note. Include what the idea entails, the approach to implement it, and any non-obvious constraints. 2–4 sentences minimum.>
 
 ## Value
 
@@ -538,6 +538,10 @@ Part of brainstorming session [[T:<parent-task-id>|<parent-slug>]].
 ## Complexity
 
 <Low / Medium / High>
+
+## Implementation notes
+
+<Based on codebase exploration: list key files to touch, patterns to follow, and any known constraints. This is not transcribed from the IDEAS note — synthesize from your exploration.>
 EOF
 ```
 

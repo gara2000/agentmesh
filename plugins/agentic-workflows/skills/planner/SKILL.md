@@ -377,7 +377,15 @@ Part of parent task [[T:<parent-task-id>|<parent-slug>]].
 
 ## Description
 
-<subtask description from DECOMPOSITION note>
+<Expand on the subtask description from the DECOMPOSITION note. Include what the subtask does, the approach to be taken, and any non-obvious constraints. 2–4 sentences minimum.>
+
+## Key Files
+
+<Files this subtask will modify, copied from the DECOMPOSITION note and annotated with why each file is relevant.>
+
+## Blocked by
+
+<Subtasks that must complete before this one starts (to be confirmed after all child tasks are created). "None" if this is an independent subtask.>
 
 ## Acceptance Criteria
 
