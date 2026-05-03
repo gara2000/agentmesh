@@ -369,6 +369,9 @@ CHILD_FOLDER_PATH=$(echo "$CHILD_FOLDER_JSON" | python3 -c "import sys,json; pri
 ```
 
 **Step C — Create a DESCRIPTION note in the child's folder:**
+
+Because independent subtasks are created first (Step A), their slugs are already known when you write DESCRIPTION notes for blocked subtasks. Fill in the `## Blocked by` section with actual blocker slugs at this point — do not leave it as a placeholder.
+
 ```bash
 notecove note create "${CHILD_SLUG}/DESCRIPTION" --folder ${CHILD_FOLDER_ID} --content-file - --format markdown --json << 'EOF'
 ## Context
@@ -377,7 +380,15 @@ Part of parent task [[T:<parent-task-id>|<parent-slug>]].
 
 ## Description
 
-<subtask description from DECOMPOSITION note>
+<Expand on the subtask description from the DECOMPOSITION note. Include what the subtask does, the approach to be taken, and any non-obvious constraints. 2–4 sentences minimum.>
+
+## Key Files
+
+<Files this subtask will modify, copied from the DECOMPOSITION note and annotated with why each file is relevant.>
+
+## Blocked by
+
+<Blocker slug(s) that must complete before this subtask starts, e.g. "WORK-xyz". "None" if this is an independent subtask. Blocker slugs are known at this point — fill them in now.>
 
 ## Acceptance Criteria
 
