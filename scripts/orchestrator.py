@@ -357,6 +357,7 @@ class Orchestrator:
             # Kill pr-monitor if one is running for this task (idempotent when no PR exists)
             tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
+            (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
         elif cmd in ("done", "pr-approved"):
