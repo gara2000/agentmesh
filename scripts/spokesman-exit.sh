@@ -5,7 +5,6 @@ set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LOG="$AGENTMESH/signals/events.log"
-SPOKESMAN_ACKS="$AGENTMESH/signals/spokesman-acks"
 
 printf '%s\tspokesman    \tshutdown\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
@@ -28,7 +27,6 @@ done
 # Clean up signal files
 rm -f "$AGENTMESH/signals/queue" "$AGENTMESH/signals/workers"
 rm -f "$AGENTMESH/signals/spokesman-queue" "$AGENTMESH/signals/orchestrator-cmds"
-rm -f "$SPOKESMAN_ACKS"
 rm -f "$AGENTMESH/signals/"*.merged
 rm -f "$AGENTMESH/signals/"*.reviewed
 rm -f "$AGENTMESH/signals/"*.review-start

@@ -116,12 +116,9 @@ sequenceDiagram
         OP->>SP: tmux wait-for -S spokesman-event
         SP->>SP: Drain spokesman-queue, present to user
         SP->>NC: Update task state
-        SP->>SP: Append <cmd-seq>|<slug>|<cmd> to signals/orchestrator-cmds
+        SP->>SP: Append <slug>|<cmd> to signals/orchestrator-cmds
         SP->>OP: tmux wait-for -S orchestrator-cmd-event
-        OP->>OP: Drain commands, execute each
-        OP->>OP: Append <cmd-seq>|<slug>|confirm|<cmd> to signals/spokesman-acks
-        OP->>SP: tmux wait-for -S spokesman-ack-<cmd-seq>
-        SP->>SP: Confirm ACK, proceed
+        OP->>OP: Drain commands
         OP->>W: tmux wait-for -S <slug>-resume-<seq>
     end
 
@@ -131,8 +128,6 @@ sequenceDiagram
 **Fan-in via dispatcher**: multiple workers can fire `worker-any-event` concurrently without losing events. The dispatcher serialises them into `orchestrator-event` one at a time.
 
 **Sequenced resume signals** (`<slug>-resume-<N>`): each round uses a unique name, so a stale signal from round N-1 can never accidentally unblock round N.
-
-**Typed command+ACK protocol**: Spokesman sends commands with a monotonic `CMD_SEQ` counter (`<cmd-seq>|<slug>|<cmd>[|<args>]`). After executing each command, orchestrator.py writes an ACK (`<cmd-seq>|<slug>|confirm|<cmd>`) to `signals/spokesman-acks` and fires `spokesman-ack-<cmd-seq>`. The Spokesman waits for this signal before proceeding — guaranteeing each action (spawn, resume, approve) was actually executed.
 
 **Queue format**: workers write `<slug>:<event-type>` (e.g. `WORK-abc:event:plan-ready`) so orchestrator.py knows the event type without reading NoteCove comments.
 
@@ -233,7 +228,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, spokesman-acks, worker registry, and event log, and removes stale `.merged` and `.review-start` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, and removes stale `.merged` and `.review-start` flags.
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
@@ -491,7 +486,7 @@ sequenceDiagram
     U->>NC: Read QUESTIONS-1, write ANSWER-1
     U->>SP: "continue"
     SP->>NC: Set WORK-42 → Doing
-    SP->>OP: Send 1|WORK-42|resume via orchestrator-cmds, wait for ACK
+    SP->>OP: Send WORK-42|resume via orchestrator-cmds
     OP->>W: Fire WORK-42-resume-1
 
     W->>NC: Create PLAN note, set Attention
@@ -504,7 +499,7 @@ sequenceDiagram
     U->>NC: Read PLAN, approve
     U->>SP: "continue"
     SP->>NC: Set WORK-42 → Doing
-    SP->>OP: Send 1|WORK-42|resume via orchestrator-cmds, wait for ACK
+    SP->>OP: Send WORK-42|resume via orchestrator-cmds
     OP->>W: Fire WORK-42-resume-2
 
     W->>W: Create worktree, implement, write tests
