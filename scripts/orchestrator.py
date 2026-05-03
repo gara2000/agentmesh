@@ -354,9 +354,7 @@ class Orchestrator:
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
-            # Kill pr-monitor if one is running for this task (idempotent when no PR exists)
-            tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
-            (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
+            # Clear stale review-start (set if a reviewer ran; reviewer window is now gone)
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
@@ -381,10 +379,6 @@ class Orchestrator:
             _print(f"spawned plan-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
         elif cmd == "spawn-pr-reviewer":
-            # Kill pr-monitor before reviewer runs; re-spawned when worker re-signals
-            tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
-            (SIGNALS / f"{slug}.merged").unlink(missing_ok=True)
-            (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             notecove(f"task change {slug} --state 'In Review'")
             spawn_agent("workers", f"pr-rev-{slug}", "/pr-reviewer", slug, self.project)
             log("orchestrator ", "reviewer-spawned", slug)
