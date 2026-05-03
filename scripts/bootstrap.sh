@@ -44,7 +44,6 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/events.log"
 : > "$SIGNALS/spokesman-queue"
 : > "$SIGNALS/orchestrator-cmds"
-: > "$SIGNALS/spokesman-acks"
 rm -f "$SIGNALS/"*.merged
 rm -f "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start

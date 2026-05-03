@@ -29,39 +29,24 @@ If `--project` is not provided, stop and ask the user.
 AGENTMESH=~/agentmesh
 SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ORCHESTRATOR_CMDS=~/agentmesh/signals/orchestrator-cmds
-SPOKESMAN_ACKS=~/agentmesh/signals/spokesman-acks
 LOG=~/agentmesh/signals/events.log
 MODE_FILE=~/agentmesh/signals/mode
 ```
 
-## CMD_SEQ Counter
-
-The Spokesman maintains a per-session command sequence counter `CMD_SEQ` (starts at 0). Each command sent to orchestrator.py gets a unique sequence number; the orchestrator writes an ACK with that number to `spokesman-acks` and fires `spokesman-ack-<CMD_SEQ>`.
-
-Initialize at startup alongside `LOG` and `MODE`:
-```bash
-CMD_SEQ=0
-```
-
 ### `send_cmd` helper
 
-Define `send_cmd` once at startup (same bash session). Every event handler calls it instead of inlining the ACK loop:
+Define `send_cmd` once at startup (same bash session). Every event handler calls it instead of inlining the send+signal pattern:
 
 ```bash
 send_cmd() {
   # Usage: send_cmd <slug> <cmd> [<args>]
   local slug="$1" cmd="$2"
-  CMD_SEQ=$((CMD_SEQ + 1))
   if [ -n "${3:-}" ]; then
-    echo "${CMD_SEQ}|${slug}|${cmd}|$3" >> ~/agentmesh/signals/orchestrator-cmds
+    echo "${slug}|${cmd}|$3" >> ~/agentmesh/signals/orchestrator-cmds
   else
-    echo "${CMD_SEQ}|${slug}|${cmd}" >> ~/agentmesh/signals/orchestrator-cmds
+    echo "${slug}|${cmd}" >> ~/agentmesh/signals/orchestrator-cmds
   fi
   tmux wait-for -S orchestrator-cmd-event
-  while true; do
-    tmux wait-for "spokesman-ack-${CMD_SEQ}" 2>/dev/null || true
-    grep -q "^${CMD_SEQ}|" "$SPOKESMAN_ACKS" 2>/dev/null && break
-  done
 }
 ```
 
@@ -73,8 +58,6 @@ Every handler response that sends a command follows this pattern:
 3. If needed: `notecove task change <slug> --state <state>`
 4. `send_cmd "<slug>" "<cmd>"` — or `send_cmd "<slug>" "<cmd>" "<args>"` with extra args; sequential calls are issued one after another in the same Bash block
 5. If needed: `tmux kill-window -t <session>:<window> 2>/dev/null || true`
-
-**IMPORTANT:** Every Bash block containing a `send_cmd` call must use `timeout=600000`.
 
 **Shorthand notation used in handlers below:**
 `log <event>[, comment "<text>"][, set <state>] → send_cmd <slug> <cmd>[; send_cmd <slug> <cmd2>][; kill <window>]`
@@ -88,7 +71,6 @@ bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --
 LOG=~/agentmesh/signals/events.log
 # Persist mode to file so it survives Spokesman restarts
 echo "<mode>" > ~/agentmesh/signals/mode
-CMD_SEQ=0
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
@@ -640,6 +622,5 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **Always drain the full spokesman-queue** before going back to wait.
 - **Check queue before blocking on spokesman-event** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
-- **Always wait for ACK after every command** — use the `CMD_SEQ` counter pattern for every command send. The ACK loop confirms orchestrator.py executed the command (e.g., the spawn actually happened) before the Spokesman moves on.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
 - **Zero in-memory state across wakeup cycles** — `MODE`, `TRIAGE_FOLDER`, and `LOG` are re-read from `signals/mode`, `signals/triage_folder`, and a fixed path at the top of every wakeup cycle. No bash variable set in one cycle is relied upon in the next. This makes the Spokesman fully restartable: a new session picks up from NoteCove state with no data loss.
