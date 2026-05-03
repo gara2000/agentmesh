@@ -2,7 +2,8 @@
 # pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>
 # Handles event:pr-revised:<url> — worker re-signals after addressing pr-reviewer feedback
 # and wants another automated review cycle.
-#   auto-review: spawn pr-reviewer again (increment counter, check limit) + spawn pr-monitor.
+#   auto-review: spawn pr-reviewer again (increment counter, check limit).
+#                pr-monitor was spawned at pr-ready and keeps running — no spawn needed here.
 #   standard:    forward as pr-submitted for user decision.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -18,7 +19,7 @@ if [[ "$MODE" == "auto-review" ]]; then
     COUNT=$(increment_review_count "$SLUG" "pr")
     if [[ "$COUNT" -gt "$REVIEW_LIMIT" ]]; then
         log_event "review-limit-reached:pr" "$SLUG"
-        spawn_pr_monitor "$SLUG" "$PR_URL"
+        # pr-monitor was spawned at pr-ready and is still running — no spawn needed here.
         forward_to_spokesman "$SLUG" "event:review-limit-reached:pr:${PR_URL}"
         exit 0
     fi
@@ -27,9 +28,6 @@ if [[ "$MODE" == "auto-review" ]]; then
     bash "${SCRIPTS}/spawn-agent.sh" workers "pr-rev-${SLUG}" /pr-reviewer "$SLUG" "$PROJECT"
     log_event "reviewer-spawned" "$SLUG"
     touch "${SIGNALS}/${SLUG}.review-start"
-    # Respawn pr-monitor (was killed by pr-review-complete.sh before worker re-signaled).
-    spawn_pr_monitor "$SLUG" "$PR_URL"
 else
-    spawn_pr_monitor "$SLUG" "$PR_URL"
     forward_to_spokesman "$SLUG" "event:pr-submitted:${PR_URL}"
 fi

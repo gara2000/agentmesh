@@ -454,8 +454,8 @@ Use `<resume-sig>` when the worker is blocked waiting (normal Done path). Omit i
 | `plan-revised.sh <slug> <mode> <review_limit> <project>` | `event:plan-revised` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates; Standard: forwards to Spokesman |
 | `plan-review-complete.sh <slug> <resume_sig> <mode>` | `event:plan-review-complete` | Auto-review: resumes worker, kills reviewer window; Standard: forwards to Spokesman |
 | `pr-ready.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-ready:<url>` | Auto-review: initializes PR counter to 1, always spawns pr-reviewer, spawns pr-monitor; Standard: forwards submitted PR, spawns pr-monitor |
-| `pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-revised:<url>` | Auto-review: increments counter, spawns reviewer + pr-monitor if ≤ limit, else spawns pr-monitor and escalates to Spokesman; Standard: spawns pr-monitor, forwards as pr-submitted |
-| `pr-ready-final.sh <slug> <pr_url>` | `event:pr-ready-final:<url>` | Spawns pr-monitor, forwards as `event:pr-ready` to Spokesman for final user approval |
+| `pr-revised.sh <slug> <pr_url> <resume_sig> <mode> <review_limit> <project>` | `event:pr-revised:<url>` | Auto-review: increments counter, spawns reviewer if ≤ limit else escalates (pr-monitor already running); Standard: forwards as pr-submitted |
+| `pr-ready-final.sh <slug> <pr_url>` | `event:pr-ready-final:<url>` | Forwards as `event:pr-ready` to Spokesman (pr-monitor already running from first pr-ready) |
 | `pr-review-complete.sh <slug> <resume_sig> <mode>` | `event:pr-review-complete` | Auto-review: resumes worker, kills reviewer window (pr-monitor keeps running until task close); Standard: forwards to Spokesman |
 | `pr-approved.sh <slug> <resume_sig> <project>` | shared helper | Marks Done, task-done cleanup, kills pr-mon, removes all signal flags |
 
