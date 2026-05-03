@@ -273,12 +273,15 @@ class Orchestrator:
             subprocess.run(["bash", str(EVENTS / "plan-review-complete.sh"), slug, resume_sig, self.mode])
         elif event_type.startswith("event:pr-ready:"):
             pr_url = event_type[len("event:pr-ready:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-ready.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
         elif event_type.startswith("event:pr-revised:"):
             pr_url = event_type[len("event:pr-revised:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-revised.sh"), slug, pr_url, resume_sig, self.mode, str(self.review_limit), self.project])
         elif event_type.startswith("event:pr-ready-final:"):
             pr_url = event_type[len("event:pr-ready-final:"):]
+            self._spawn_pr_monitor(slug, pr_url)
             subprocess.run(["bash", str(EVENTS / "pr-ready-final.sh"), slug, pr_url])
         elif event_type == "event:pr-review-complete":
             subprocess.run(["bash", str(EVENTS / "pr-review-complete.sh"), slug, resume_sig, self.mode])
@@ -395,6 +398,18 @@ class Orchestrator:
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
+
+    def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
+        """Spawn a pr-monitor window for slug/pr_url (idempotent — no-op if already running)."""
+        running = run_bash(
+            f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qF 'pr-mon-{slug}'"
+        )
+        if running.returncode == 0:
+            return  # already running
+        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
+        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
+        log("orchestrator ", "pr-monitor-spawned", slug)
+        _print(f"spawned pr-monitor for {slug} ({pr_url})")
 
     def _event_type_from_comments(self, slug: str) -> str:
         """Legacy: derive event type from last task comment (no queue event type)."""

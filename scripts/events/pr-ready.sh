@@ -5,7 +5,7 @@
 #                Counter is initialized to 1. Re-review cycles use event:pr-revised.
 #                Final user approval uses event:pr-ready-final.
 #   standard:    forward as pr-submitted for user decision.
-# Spawns pr-monitor in all modes so merged PRs are detected immediately.
+# pr-monitor is spawned by orchestrator.py before this script runs.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -24,9 +24,7 @@ if [[ "$MODE" == "auto-review" ]]; then
     bash "${SCRIPTS}/spawn-agent.sh" workers "pr-rev-${SLUG}" /pr-reviewer "$SLUG" "$PROJECT"
     log_event "reviewer-spawned" "$SLUG"
     touch "${SIGNALS}/${SLUG}.review-start"
-    spawn_pr_monitor "$SLUG" "$PR_URL"
 else
     # Standard mode: worker submitted PR; forward for user decision (review or approve).
-    spawn_pr_monitor "$SLUG" "$PR_URL"
     forward_to_spokesman "$SLUG" "event:pr-submitted:${PR_URL}"
 fi
