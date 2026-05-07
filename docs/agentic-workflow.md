@@ -230,13 +230,13 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, and removes stale `.merged` and `.review-start` flags.
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, and writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file).
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
-8. **Orchestrator daemon** — launches `scripts/orchestrator.py` in `orchestrator:orchestrator`.
+8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
 
 Usage:
 ```bash

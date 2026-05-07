@@ -45,7 +45,7 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/spokesman-queue"
 : > "$SIGNALS/orchestrator-cmds"
 rm -f "$SIGNALS/"*.merged
-rm -f "$SIGNALS/orchestrator.heartbeat"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start
 rm -f "$SIGNALS/"*.plan-review-count
 rm -f "$SIGNALS/"*.pr-review-count
@@ -88,11 +88,12 @@ tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup
 }
 
 # 0g. Launch orchestrator.py daemon (handles all event routing and worker spawning)
-tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" || {
-  tmux new-window -t orchestrator -n orchestrator
-  tmux send-keys -t orchestrator:orchestrator \
-    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
-    Enter
-}
+# Always kill and restart — ensures stale/old-version orchestrators are replaced on every bootstrap.
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" && \
+  tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
+tmux new-window -t orchestrator -n orchestrator
+tmux send-keys -t orchestrator:orchestrator \
+  "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
+  Enter
 
 echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"
