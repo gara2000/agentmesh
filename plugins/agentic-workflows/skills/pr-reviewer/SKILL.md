@@ -5,6 +5,8 @@ description: PR reviewer agent that reviews a GitHub PR for a given worker task 
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, gh *, git *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep
 hint: "PR reviewer agent. Required: --task <worker-slug> --project <key>. The worker task must have a PR URL in its comments ('PR created: <url>')."
+agent-user: "PR Reviewer"
+log-prefix: "pr-reviewer  "
 ---
 
 # PR Reviewer — NoteCove PR Review Agent
@@ -79,7 +81,7 @@ LOG=~/agentmesh/signals/events.log
 source ~/agentmesh/scripts/signal-agent.sh
 signal_init "<slug>"
 TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
-printf '%s	worker       	started	<slug>
+printf '%s	pr-reviewer  	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -167,13 +169,13 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	worker       	signaling-attention	<slug>
+printf '%s	pr-reviewer  	signaling-attention	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:questions"
+notecove task comments add <slug> --user "PR Reviewer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	worker       	resumed	<slug>
+printf '%s	pr-reviewer  	resumed	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -227,7 +229,7 @@ EOF
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	pr-reviewer  	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
