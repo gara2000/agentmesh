@@ -7,7 +7,17 @@ allowed-tools: Bash(notecove *, tmux *, echo *, cat *, mkdir *, python3 *), Read
 hint: "Plan reviewer agent. Required: --task <target-slug> --project <key>"
 agent-user: "Plan Reviewer"
 log-prefix: "plan-reviewer"
+events:
+  - plan-review-complete
 ---
+
+<!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->
+## Events This Agent Fires
+
+| Event tag | Queue entry | Meaning |
+|---|---|---|
+| `event:plan-review-complete` | `<slug>:event:plan-review-complete` | Plan review note written, summary in comment |
+<!-- EVENTS-TABLE:END -->
 
 # Plan Reviewer — NoteCove Plan Review Agent
 
@@ -232,7 +242,7 @@ EOF
 - **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	plan-reviewer	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
-- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
+- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
 - **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
 - **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
 - **Never mark task Done** — only the orchestrator does that, after user approval.

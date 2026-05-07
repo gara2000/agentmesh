@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
 #            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}),
+#            generates per-skill EVENTS-TABLE sections from 'events:' frontmatter,
 #            and expands the {{AGENTMESH}} path variable in all skill files.
 #
 # Usage:
@@ -14,7 +15,11 @@
 #      with the content of the referenced base file.
 #   4. Substitutes {{AGENT_USER}} and {{LOG_PREFIX}} from frontmatter 'agent-user' and
 #      'log-prefix' keys into the built skill file. Errors if either key is missing.
-#   5. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
+#   5. Reads the 'events:' list from frontmatter and generates a per-skill "Events This Agent
+#      Fires" markdown table, injecting it between <!-- EVENTS-TABLE:START --> and
+#      <!-- EVENTS-TABLE:END --> markers. Errors if an unknown event name is encountered or
+#      if markers are missing when an 'events:' list is present.
+#   6. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
 #
 # The {{AGENTMESH}} placeholder allows skill source files to stay portable across
 # machines — run ./build.sh after cloning to stamp the correct absolute path.
@@ -23,7 +28,9 @@
 #   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-agent.md' in frontmatter.
 #   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where the shared
 #      content should be injected.
-#   3. Run ./build.sh to populate the markers.
+#   3. Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the
+#      frontmatter block (before the skill title) and add an 'events:' list to the frontmatter.
+#   4. Run ./build.sh to populate the markers.
 
 set -euo pipefail
 
@@ -138,6 +145,86 @@ with open(skill_file, 'w') as f:
     f.write(new_content)
 
 print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_user!r}, {{LOG_PREFIX}}={log_prefix!r}")
+PYEOF
+
+    # Generate and inject EVENTS-TABLE from frontmatter 'events:' list
+    python3 - "$skill_md" << 'PYEOF'
+import sys, re
+
+skill_file = sys.argv[1]
+
+# Static lookup: short event name → human-readable meaning
+EVENT_MEANINGS = {
+    'questions':           'Agent has questions for the user',
+    'plan-ready':          'Plan note written (first submission), awaiting review',
+    'plan-revised':        'Plan revised after reviewer feedback; re-review requested',
+    'pr-ready:<url>':      'PR created, signaling readiness to orchestrator',
+    'pr-revised:<url>':    'PR revised after reviewer feedback; re-review requested',
+    'pr-ready-final:<url>':'PR ready for user approval — no further automated review needed',
+    'ideas-ready':         'IDEAS note ready for user feedback',
+    'selection-ready':     'SELECTION note ready for user to check ideas',
+    'completion':          'Subtasks created (or skipped), parent marked Done',
+    'plan-review-complete':'Plan review note written, summary in comment',
+    'pr-review-complete':  'PR review posted to GitHub, summary in comment',
+}
+
+with open(skill_file) as f:
+    content = f.read()
+
+# Extract frontmatter
+fm_match = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL)
+if not fm_match:
+    sys.exit(0)  # no frontmatter — skip
+fm = fm_match.group(1)
+
+# Extract 'events:' YAML list
+events_block = re.search(r'^events:\n((?:  - .+\n?)+)', fm, re.MULTILINE)
+if not events_block:
+    sys.exit(0)  # no events: list — skip (not all skills have one)
+
+events = re.findall(r'  - (.+)', events_block.group(1))
+
+# Validate all event names against the static lookup
+unknown = [e for e in events if e not in EVENT_MEANINGS]
+if unknown:
+    print(f"ERROR: unknown event name(s) in {skill_file}: {unknown}", file=sys.stderr)
+    print(f"       Valid event names: {list(EVENT_MEANINGS.keys())}", file=sys.stderr)
+    sys.exit(1)
+
+# Check that EVENTS-TABLE markers exist
+start_marker = '<!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->'
+end_marker   = '<!-- EVENTS-TABLE:END -->'
+if start_marker not in content and '<!-- EVENTS-TABLE:START' not in content:
+    print(f"ERROR: 'events:' frontmatter found but no <!-- EVENTS-TABLE:START --> marker in {skill_file}", file=sys.stderr)
+    print(f"       Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the frontmatter block.", file=sys.stderr)
+    sys.exit(1)
+
+# Generate the events table
+rows = []
+for event in events:
+    tag = f'event:{event}'
+    queue_entry = f'`<slug>:{tag}`'
+    meaning = EVENT_MEANINGS[event]
+    rows.append(f'| `{tag}` | {queue_entry} | {meaning} |')
+
+table = '## Events This Agent Fires\n\n'
+table += '| Event tag | Queue entry | Meaning |\n'
+table += '|---|---|---|\n'
+table += '\n'.join(rows) + '\n'
+
+replacement = f'{start_marker}\n{table}{end_marker}'
+pattern = r'<!-- EVENTS-TABLE:START.*?-->.*?<!-- EVENTS-TABLE:END -->'
+if not re.search(pattern, content, re.DOTALL):
+    print(f"ERROR: EVENTS-TABLE markers not found in {skill_file}", file=sys.stderr)
+    sys.exit(1)
+
+new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+
+with open(skill_file, 'w') as f:
+    f.write(new_content)
+
+skill_name = skill_file.split('/')[-2]
+print(f"  ✓ {skill_name} — generated EVENTS-TABLE ({len(events)} event(s))")
 PYEOF
 
     echo "  ✓ $skill_name  ←  $(basename "$base_file")"
