@@ -26,64 +26,58 @@ If either argument is missing, stop immediately.
 QUEUE=~/agentmesh/signals/queue
 SEQ_FILE=~/agentmesh/signals/<slug>.seq
 LOG=~/agentmesh/signals/events.log
+SIGNAL_HELPER=~/agentmesh/scripts/signal-agent.sh
 ```
 
 ---
 
 ## Signal Sequence Counter
 
-The agent maintains a per-session counter `SIGNAL_SEQ` (starts at 0). It is incremented before every signal and written to `signals/<slug>.seq`. The orchestrator reads this file to know the exact resume signal name to fire: `<slug>-resume-<SIGNAL_SEQ>`.
+The agent maintains a per-session counter `SIGNAL_SEQ` (starts at 0, managed by `signal-agent.sh`). It is incremented before every signal and written to `signals/<slug>.seq`. The orchestrator reads this file to know the exact resume signal name to fire: `<slug>-resume-<SIGNAL_SEQ>`.
 
 This guarantees every resume signal is unique across all rounds — a stale stored signal from round N cannot accidentally unblock round N+1.
 
-Initialize at startup:
-```bash
-SIGNAL_SEQ=0
-LOG=~/agentmesh/signals/events.log
-```
+The helper `signal-agent.sh` initializes `SIGNAL_SEQ=0` and provides two functions:
+- `signal_attention <event-type> <break-state> [<alt-break-state>]` — increments the counter, writes the seq file, appends to queue, fires `worker-any-event`, and blocks until state matches
+- `signal_fire <event-type>` — appends to queue and fires `worker-any-event` without blocking (fire-and-done reviewers only)
 
 ---
 
 ## Signaling the Orchestrator
 
-The agent signals the orchestrator by writing to the queue and firing `worker-any-event`. It then blocks on a sequenced resume signal. The orchestrator reads task state from NoteCove — **task state is the only message**.
+The agent signals the orchestrator by calling `signal_attention` (or `signal_fire` for reviewers). The orchestrator reads task state from NoteCove — **task state is the only message**.
 
-Set task state *before* signaling — the orchestrator reads it immediately after unblocking.
+**Before calling `signal_attention`, the caller must:**
+1. Add the `event:<type>` comment to the task (the `--user` value differs per agent type)
+2. Set task state to `Attention`: `notecove task change <slug> --state Attention`
 
 ### Signal procedure
 
 ```bash
-# 1. Set task state (always Attention) before this step
-# 2. Increment sequence counter and publish it
-SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
-# 3. Append slug with event type to queue (format: <slug>:<event-type>)
-echo "<slug>:<event-type>" >> ~/agentmesh/signals/queue
-# 4. Fire fan-in signal
-tmux wait-for -S worker-any-event
-# 5. Block until resumed — loop handles Bash tool timeout spurious wakeups
-#    IMPORTANT: call this Bash block with timeout=600000
-while true; do
-  tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
-  state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin)['stateId'])")
-  [ "$state" = "<expected-state>" ] && break
-done
+# 1. Add event comment (caller's responsibility — user value differs per agent):
+notecove task comments add <slug> --user "<AgentUser>" "event:<type>"
+# 2. Set task state to Attention:
+notecove task change <slug> --state Attention
+# 3. Call signal_attention — it handles seq, queue, tmux signaling, and blocking:
+#    IMPORTANT: the Bash call containing signal_attention must use timeout=600000
+signal_attention "event:<type>" "<expected-state>"
 ```
 
-Where `<expected-state>` is `doing` after signaling `Attention` for questions or plan review, or `done` or `doing` after signaling `Attention` for PR-ready (see individual agent skill docs for the exact break condition).
+Where `<expected-state>` is `doing` after signaling `Attention` for questions or plan review, or `done`/`doing` (two-arg form) after signaling `Attention` for PR-ready.
 
-### Why a loop: Bash tool timeout
+### Why a loop inside signal_attention: Bash tool timeout
 
-`tmux wait-for` is called via Claude Code's Bash tool, which has a **default timeout of 120 seconds**. Without the loop, the Bash call times out every 2 minutes and returns control to Claude Code even without a signal — causing spurious wakeups that waste tokens. The shell loop re-calls `tmux wait-for` internally so Claude Code only wakes up when the expected state is confirmed (or after the 10-minute Bash tool maximum timeout, at which point the whole block is re-called).
+`tmux wait-for` is called via Claude Code's Bash tool, which has a **default timeout of 120 seconds**. Without the loop, the Bash call times out every 2 minutes and returns control to Claude Code even without a signal — causing spurious wakeups that waste tokens. `signal_attention` contains an internal loop that re-calls `tmux wait-for` until the expected state is confirmed (or after the 10-minute Bash tool maximum timeout, at which point the outer block is re-called).
 
 ---
 
 ## Step 1: Initialize
 
-Initialize the signal sequence counter and resolve the Triage folder:
+Initialize the signal helper and resolve the Triage folder:
 ```bash
-SIGNAL_SEQ=0
 LOG=~/agentmesh/signals/events.log
+source ~/agentmesh/scripts/signal-agent.sh
+signal_init "<slug>"
 TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 printf '%s	worker       	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
@@ -175,18 +169,10 @@ Set task to Attention and signal:
 ```bash
 printf '%s	worker       	signaling-attention	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-SIGNAL_SEQ=$((SIGNAL_SEQ + 1))
-echo "$SIGNAL_SEQ" > ~/agentmesh/signals/<slug>.seq
 notecove task comments add <slug> --user "Worker" "event:questions"
 notecove task change <slug> --state Attention
-echo "<slug>:event:questions" >> ~/agentmesh/signals/queue
-tmux wait-for -S worker-any-event
-# Block until resumed — IMPORTANT: call with timeout=600000
-while true; do
-  tmux wait-for <slug>-resume-${SIGNAL_SEQ} 2>/dev/null || true
-  state=$(notecove task show <slug> --json | python3 -c "import sys,json; print(json.load(sys.stdin)['stateId'])")
-  [ "$state" = "doing" ] && break
-done
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:questions" "doing"
 printf '%s	worker       	resumed	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
@@ -241,13 +227,12 @@ EOF
 
 ## Shared Critical Rules
 
-- **Always define `LOG=~/agentmesh/signals/events.log`** at startup and write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	worker       	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
-- **Always add an `event:<type>` comment before setting Attention** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
-- **Always set task state before signaling** — orchestrator reads it immediately on wakeup.
-- **Always use the shell loop blocking pattern** — never call `tmux wait-for <resume-signal>` bare. The Bash tool times out after 2 minutes (max 10 with `timeout=600000`); the loop re-blocks internally until the expected state is confirmed.
-- **Always use `timeout=600000`** on Bash calls that contain the blocking loop — this maximizes time between spurious wakeups.
+- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:plan-revised, event:pr-ready:<url>, event:pr-revised:<url>, event:pr-ready-final:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
+- **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
+- **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
 - **Never mark task Done** — only the orchestrator does that, after user approval.
 - **Signal before exiting** — even on error, signal so the orchestrator can clean up.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
@@ -294,8 +279,7 @@ If no PLAN note is found, comment on the task, set it back to Attention so the w
 notecove task comments add <slug> --user "Plan Reviewer" "event:plan-review-complete No PLAN note found in this task's folder — nothing to review."
 printf '%s\tplan-reviewer\terror-no-plan\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Attention
-echo "<slug>:event:plan-review-complete" >> ~/agentmesh/signals/queue
-tmux wait-for -S worker-any-event
+signal_fire "event:plan-review-complete"
 exit 0
 ```
 
@@ -366,11 +350,10 @@ Set the task back to `Attention` and fire the normal fan-in signal. This returns
 
 ```bash
 printf '%s\tplan-reviewer\tplan-review-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# NOTE: Do NOT update signals/<slug>.seq — the worker's seq must remain intact
+# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker's seq must remain intact
 #       so the orchestrator can resume the worker with the correct signal
 notecove task change <slug> --state Attention
-echo "<slug>:event:plan-review-complete" >> ~/agentmesh/signals/queue
-tmux wait-for -S worker-any-event
+signal_fire "event:plan-review-complete"
 ```
 
 The plan reviewer exits immediately after firing the event. The orchestrator handles the rest:

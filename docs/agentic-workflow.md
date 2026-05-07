@@ -131,6 +131,8 @@ sequenceDiagram
 
 **Queue format**: workers write `<slug>:<event-type>` (e.g. `WORK-abc:event:plan-ready`) so orchestrator.py knows the event type without reading NoteCove comments.
 
+**Signal helper**: all agents source `scripts/signal-agent.sh` at startup and call `signal_attention <event-type> <break-state>` to encapsulate the sequence counter, queue append, `worker-any-event`, and blocking loop in a single reusable function. Fire-and-done reviewers call `signal_fire <event-type>` instead (no blocking, no seq update).
+
 ### Event Tag Dispatch
 
 When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a short `event:<type>` comment as the final comment before signaling. The orchestrator extracts this tag and dispatches via a `case` statement — no content heuristics.
