@@ -7,6 +7,7 @@ allowed-tools: Bash(notecove *, tmux *, git *, echo *, cat *, mkdir *, python3 *
 hint: "Brainstormer agent for idea generation and task creation. Required: --task <slug> --project <key>"
 agent-user: "Brainstormer"
 log-prefix: "brainstormer "
+role: brainstormer
 events:
   - questions
   - ideas-ready

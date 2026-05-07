@@ -7,6 +7,7 @@ allowed-tools: Bash(notecove *, tmux *, gh *, git *, echo *, cat *, mkdir *, pyt
 hint: "PR reviewer agent. Required: --task <worker-slug> --project <key>. The worker task must have a PR URL in its comments ('PR created: <url>')."
 agent-user: "PR Reviewer"
 log-prefix: "pr-reviewer  "
+role: pr-reviewer
 events:
   - pr-review-complete
 ---
