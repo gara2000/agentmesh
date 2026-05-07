@@ -318,25 +318,27 @@ print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_
 PYEOF
 
     # Generate and inject EVENTS-TABLE from frontmatter 'events:' list
-    python3 - "$skill_md" << 'PYEOF'
+    python3 - "$skill_md" "$PLUGIN_DIR/shared/protocol.yaml" << 'PYEOF'
 import sys, re
 
-skill_file = sys.argv[1]
+skill_file    = sys.argv[1]
+protocol_file = sys.argv[2]
 
-# Static lookup: short event name → human-readable meaning
-EVENT_MEANINGS = {
-    'questions':           'Agent has questions for the user',
-    'plan-ready':          'Plan note written (first submission), awaiting review',
-    'plan-revised':        'Plan revised after reviewer feedback; re-review requested',
-    'pr-ready:<url>':      'PR created, signaling readiness to orchestrator',
-    'pr-revised:<url>':    'PR revised after reviewer feedback; re-review requested',
-    'pr-ready-final:<url>':'PR ready for user approval — no further automated review needed',
-    'ideas-ready':         'IDEAS note ready for user feedback',
-    'selection-ready':     'SELECTION note ready for user to check ideas',
-    'completion':          'Subtasks created (or skipped), parent marked Done',
-    'plan-review-complete':'Plan review note written, summary in comment',
-    'pr-review-complete':  'PR review posted to GitHub, summary in comment',
-}
+# Load event meanings from protocol.yaml (single source of truth).
+# url_bearing events are keyed as '<name>:<url>' to match the skill frontmatter convention.
+try:
+    import yaml
+    with open(protocol_file) as f:
+        protocol = yaml.safe_load(f)
+    EVENT_MEANINGS = {}
+    for name, attrs in protocol.get("events", {}).items():
+        meaning     = attrs.get("meaning", "")
+        url_bearing = attrs.get("url_bearing", False)
+        key = f"{name}:<url>" if url_bearing else name
+        EVENT_MEANINGS[key] = meaning
+except FileNotFoundError:
+    print(f"ERROR: protocol.yaml not found at {protocol_file}", file=sys.stderr)
+    sys.exit(1)
 
 with open(skill_file) as f:
     content = f.read()

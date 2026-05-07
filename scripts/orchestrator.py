@@ -27,6 +27,45 @@ EVENTS = SCRIPTS / "events"
 
 NOTECOVE_BIN = "node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
+# ---------------------------------------------------------------------------
+# Protocol — valid event types (loaded from shared/protocol.yaml)
+# ---------------------------------------------------------------------------
+
+def _load_valid_events() -> set:
+    """Load the set of valid base event names from protocol.yaml.
+
+    url_bearing events (e.g. pr-ready) arrive as 'event:pr-ready:<url>';
+    we store the base name so the dispatch validator can check by prefix.
+    Returns an empty set (graceful degradation) if the file is missing.
+    """
+    protocol_path = AGENTMESH / "plugins" / "agentic-workflows" / "shared" / "protocol.yaml"
+    try:
+        import yaml
+        with open(protocol_path) as f:
+            protocol = yaml.safe_load(f)
+        return set(protocol.get("events", {}).keys())
+    except FileNotFoundError:
+        import sys
+        print(
+            f"[orchestrator] WARNING: protocol.yaml not found at {protocol_path}; "
+            "event validation disabled",
+            file=sys.stderr,
+            flush=True,
+        )
+        return set()
+    except Exception as exc:
+        import sys
+        print(
+            f"[orchestrator] WARNING: failed to load protocol.yaml ({exc}); "
+            "event validation disabled",
+            file=sys.stderr,
+            flush=True,
+        )
+        return set()
+
+
+VALID_EVENTS: set = _load_valid_events()
+
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -241,6 +280,18 @@ class Orchestrator:
 
         log("orchestrator ", f"handling-event:{event_type}", slug)
         _print(f"event {event_type} from {slug}")
+
+        # Validate event against protocol.yaml (skip if VALID_EVENTS not loaded).
+        # Internal system events (from watchdog/pr-monitor) are exempt.
+        _INTERNAL_EVENTS = frozenset({"crash-detected", "crash-limit-reached", "pr-merged"})
+        if VALID_EVENTS and event_type.startswith("event:"):
+            base = event_type[len("event:"):].split(":")[0]
+            if base not in VALID_EVENTS and base not in _INTERNAL_EVENTS:
+                anomaly_key = "unknown-event"
+                log("orchestrator ", f"anomaly-detected:{anomaly_key}", slug)
+                _print(f"unknown event '{event_type}' from {slug} — forwarding to Spokesman")
+                self._forward_to_spokesman(slug, f"event:anomaly-detected:{anomaly_key}")
+                return
 
         seq = get_task_seq(slug)
         resume_sig = f"{slug}-resume-{seq}"

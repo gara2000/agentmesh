@@ -55,6 +55,7 @@ The orchestrator does not use separate status files. After unblocking, it reads 
 
 When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a machine-readable `event:<type>` comment as the final comment before signaling `Attention`. The orchestrator extracts the tag and dispatches via a clean `case` statement — no string-content heuristics.
 
+<!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
 | Event Tag | Fired by | Meaning |
 |---|---|---|
 | `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
@@ -75,6 +76,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 
 The orchestrator translates worker events into Spokesman events:
 
+<!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
 | Worker Event | Spokesman Event | When | Meaning |
 |---|---|---|---|
 | `event:pr-ready:<url>` | `event:pr-submitted:<url>` | Standard mode | PR needs user decision (approve / review / feedback / abort) |
