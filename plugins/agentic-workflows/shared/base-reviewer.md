@@ -1,30 +1,3 @@
----
-name: pr-reviewer
-extends: ../../shared/base-reviewer.md
-description: PR reviewer agent that reviews a GitHub PR for a given worker task — reads the diff, checks changed files, posts a GitHub PR comment with the review, then sets the task back to Attention so the orchestrator can surface the review to the user. Never approves or merges.
-disable-model-invocation: true
-allowed-tools: Bash(notecove *, tmux *, gh *, git *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep
-hint: "PR reviewer agent. Required: --task <worker-slug> --project <key>. The worker task must have a PR URL in its comments ('PR created: <url>')."
-agent-user: "PR Reviewer"
-log-prefix: "pr-reviewer  "
-role: pr-reviewer
-events:
-  - pr-review-complete
----
-
-<!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->
-## Events This Agent Fires
-
-| Event tag | Queue entry | Meaning |
-|---|---|---|
-| `event:pr-review-complete` | `<slug>:event:pr-review-complete` | PR review posted to GitHub, summary in comment |
-<!-- EVENTS-TABLE:END -->
-
-# PR Reviewer — NoteCove PR Review Agent
-
-**Arguments:** $ARGUMENTS
-
-<!-- BASE-AGENT:START (do not edit — run ./build.sh to refresh) -->
 <!-- Reviewer-family base file (base-agent.md → base-reviewer.md → plan-reviewer/pr-reviewer).
      Contains shared signal protocol (from base-agent.md) plus reviewer-specific conventions:
      fire-and-done role, task folder lookup (read-only), review artifact naming, comment format,
@@ -35,6 +8,7 @@ events:
        ./build.sh --update-family-bases
      The BASE-AGENT block is auto-managed — do not edit it manually. -->
 
+<!-- BASE-AGENT:START (do not edit — run ./build.sh --update-family-bases to refresh) -->
 Parse arguments:
 - `--task <slug>` — required, task slug assigned by the orchestrator (e.g. `WORK-42`)
 - `--project <key>` — required, NoteCove project key
@@ -101,7 +75,7 @@ Initialize the signal helper:
 LOG={{AGENTMESH}}/signals/events.log
 source {{AGENTMESH}}/scripts/signal-agent.sh
 signal_init "<slug>"
-printf '%s	pr-reviewer  	started	<slug>
+printf '%s	{{LOG_PREFIX}}	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -109,7 +83,7 @@ printf '%s	pr-reviewer  	started	<slug>
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source {{AGENTMESH}}/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	pr-reviewer  	<event>	<slug>
+- **Always define `LOG=` and `source {{AGENTMESH}}/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	{{LOG_PREFIX}}	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
@@ -117,6 +91,7 @@ printf '%s	pr-reviewer  	started	<slug>
 - **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
 - **Never mark task Done** — only the orchestrator does that, after user approval.
 - **Signal before exiting** — even on error, signal so the orchestrator can clean up.
+<!-- BASE-AGENT:END -->
 
 ---
 
@@ -188,9 +163,8 @@ event:<review-type>-complete Overall: <verdict>. Key concerns: <1–3 concerns, 
 If the artifact to review cannot be located (no PLAN note, no PR URL), **do not exit silently**. Post an error comment, set the task to `Attention`, signal the orchestrator, and exit:
 
 ```bash
-notecove task comments add <slug> --user "PR Reviewer" "event:<review-type>-complete No artifact found — <explain what was missing>."
-printf '%s	pr-reviewer  	error-no-artifact	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:<review-type>-complete No artifact found — <explain what was missing>."
+printf '%s\t{{LOG_PREFIX}}\terror-no-artifact\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Attention
 signal_fire "event:<review-type>-complete"
 exit 0
@@ -205,102 +179,3 @@ exit 0
 - **Do not update `signals/<slug>.seq`** — the worker owns this file. The orchestrator uses it to resume the worker. The reviewer must not overwrite it. (`signal_fire` does not touch it; `signal_attention` would — never call `signal_attention` in a reviewer.)
 - **The task will be in `in-review` state** — do not check or validate the state; proceed regardless.
 - **Do not create a new task, folder, or triage tasks** — reviewers are read-only agents with a narrow scope.
-<!-- BASE-AGENT:END -->
-
----
-
-## Phase 3: PR Review
-
-### 3a. Find the PR URL
-
-Extract the PR URL from the task's comments (the worker adds "PR created: <url>" when signaling In Review):
-
-```bash
-printf '%s\tpr-reviewer  \tpr-review-started\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-
-PR_URL=$(notecove task show <slug> --format markdown-with-comments | grep "PR created:" | tail -1 | sed 's/.*PR created:[[:space:]]*//')
-
-if [ -z "$PR_URL" ]; then
-  # Fallback: check COMPLETION note
-  COMPLETION_NOTE_ID=$(notecove note list --folder <task-folder-id> --json | python3 -c "
-import sys, json
-notes = json.load(sys.stdin)
-n = next((n for n in notes if 'COMPLETION' in n.get('title', '')), None)
-print(n['id'] if n else '')
-")
-  if [ -n "$COMPLETION_NOTE_ID" ]; then
-    PR_URL=$(notecove note show "$COMPLETION_NOTE_ID" --format markdown | grep -oE "https://github.com/[^/]+/[^/]+/pull/[0-9]+" | head -1)
-  fi
-fi
-```
-
-If no PR URL is found, add a comment to the task explaining the issue, set the task back to `Attention`, signal the orchestrator, and exit.
-
-### 3b. Gather PR information
-
-```bash
-gh pr view "$PR_URL" --json title,body,author,additions,deletions,changedFiles,headRefName,baseRefName,commits
-gh pr diff "$PR_URL"
-```
-
-### 3c. Read changed files for context
-
-Parse the diff output to identify changed file paths. Use the Read and Grep tools to examine the full content of the changed files in the local repository — not just the diff hunks — to understand context, existing patterns, and whether the changes fit correctly. Also check for related tests in the same directories.
-
-### 3d. Post GitHub PR review comment
-
-Post a comment on the GitHub PR. Use `--comment` only — **never** `--approve` or `--request-changes`:
-
-```bash
-gh pr review "$PR_URL" --comment --body "$(cat <<'REVIEW_BODY'
-## AI Code Review
-
-**Verdict: <VERDICT>**
-
-### Summary
-<review summary>
-
-### Issues
-<issues list, or "None found.">
-
-### Suggestions
-<suggestions list, or "None.">
-
----
-*Automated review by AgentMesh pr-reviewer on behalf of the user*
-REVIEW_BODY
-)"
-```
-
-### 3e. Add task comment and set Attention
-
-Add a review summary comment directly on the task, then set the task to `Attention` to surface the review to the user via the orchestrator:
-
-```bash
-notecove task comments add <slug> --user "PR Reviewer" "event:pr-review-complete Verdict: <VERDICT>. Review posted to GitHub PR."
-```
-```bash
-printf '%s\tpr-reviewer  \tpr-review-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker's seq must remain intact
-#       so the orchestrator can resume the worker with the correct signal
-notecove task change <slug> --state Attention
-signal_fire "event:pr-review-complete"
-```
-
-The reviewer exits immediately after firing the signal — it does **not** block on a resume. The orchestrator will handle the attention event and, based on the user's decision, will fire the appropriate resume signal to the worker.
-
----
-
-## NoteCove Conventions
-
-The reviewer does not create any NoteCove notes. It writes its review directly to the GitHub PR and adds a brief summary comment to the NoteCove task.
-
-**Notes:** The reviewer does not create any NoteCove notes, tasks, or folders.
-
----
-
-## Critical Rules
-
-*(See Shared Critical Rules above. PR Reviewer-specific additions:)*
-
-- **Never approve or merge the PR** — only post review comments via `gh pr review --comment`.

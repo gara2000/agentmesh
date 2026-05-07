@@ -1,6 +1,6 @@
 ---
 name: planner
-extends: ../../shared/base-agent.md
+extends: ../../shared/base-implementer.md
 description: Planner agent that receives a task the orchestrator has marked for decomposition, proposes subtasks for user review, and creates them as NoteCove children of the parent task upon approval
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, git *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep
@@ -29,6 +29,15 @@ events:
 **Arguments:** $ARGUMENTS
 
 <!-- BASE-AGENT:START (do not edit — run ./build.sh to refresh) -->
+<!-- Implementer-family base file (base-agent.md → base-implementer.md → worker/planner/brainstormer).
+     Contains shared signal protocol (from base-agent.md) plus folder management, exploration,
+     questions, and proactive issue reporting conventions used only by implementer agents.
+
+     Authoring: edit the implementer-specific sections below the BASE-AGENT block freely.
+     To propagate base-agent.md changes into this file, run:
+       ./build.sh --update-family-bases
+     The BASE-AGENT block is auto-managed — do not edit it manually. -->
+
 Parse arguments:
 - `--task <slug>` — required, task slug assigned by the orchestrator (e.g. `WORK-42`)
 - `--project <key>` — required, NoteCove project key
@@ -90,14 +99,35 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 
 ## Step 1: Initialize
 
-Initialize the signal helper and resolve the Triage folder:
+Initialize the signal helper:
 ```bash
 LOG=~/agentmesh/signals/events.log
 source ~/agentmesh/scripts/signal-agent.sh
 signal_init "<slug>"
-TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 printf '%s	planner      	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+---
+
+## Shared Critical Rules
+
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	planner      	<event>	<slug>
+' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
+- **Never interact with the user directly.**
+- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
+- **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
+- **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
+- **Never mark task Done** — only the orchestrator does that, after user approval.
+- **Signal before exiting** — even on error, signal so the orchestrator can clean up.
+
+---
+
+## Step 1 (continued): Resolve Triage Folder and Fetch Task
+
+Resolve the Triage folder and fetch the assigned task:
+```bash
+TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 ```
 
 The orchestrator has already initialized NoteCove and set the task to `Doing`. Fetch the task:
@@ -240,16 +270,8 @@ EOF
 
 ---
 
-## Shared Critical Rules
+## Shared Critical Rules (Implementer Additions)
 
-- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	planner      	<event>	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
-- **Never interact with the user directly.**
-- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
-- **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
-- **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
-- **Never mark task Done** — only the orchestrator does that, after user approval.
-- **Signal before exiting** — even on error, signal so the orchestrator can clean up.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 <!-- BASE-AGENT:END -->
 

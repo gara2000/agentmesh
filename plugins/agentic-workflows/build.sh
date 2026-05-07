@@ -6,51 +6,117 @@
 #            and expands the {{AGENTMESH}} path variable in all skill files.
 #
 # Usage:
-#   ./build.sh              # refresh all skills with 'extends' frontmatter
-#   ./build.sh worker       # refresh a specific skill by name
+#   ./build.sh                        # refresh all skills with 'extends' frontmatter
+#   ./build.sh worker                 # refresh a specific skill by name
+#   ./build.sh --update-family-bases  # propagate base-agent.md changes into family base files
 #
-# How it works:
+# Inheritance model:
+#   base-agent.md (pure signal protocol)
+#     └── base-implementer.md  (+ folder management, exploration, questions, triage)
+#     └── base-reviewer.md     (+ fire-and-done role, folder lookup, review conventions)
+#           └── skills via 'extends:' frontmatter
+#
+# When a skill 'extends' a family base file (e.g. base-implementer.md), build.sh reads the
+# family file as the base content and injects it into the skill's BASE-AGENT block. The family
+# file itself contains a nested BASE-AGENT block (the embedded base-agent.md content). To avoid
+# double-nesting in the built skill, build.sh strips the two BASE-AGENT delimiter lines from the
+# family file before injection — keeping all content between them. The result is a flat,
+# idempotent BASE-AGENT block in the skill that contains everything from the family file.
+#
+# --update-family-bases:
+#   Propagates base-agent.md content into base-implementer.md and base-reviewer.md.
+#   This is ONLY a marker-replacement step — it does NOT run SIGNAL macro expansion,
+#   variable substitution ({{AGENT_USER}} etc.), or EVENTS-TABLE generation. Those steps
+#   require per-skill frontmatter values and are only valid during skill builds.
+#   Run --update-family-bases whenever base-agent.md changes, then run ./build.sh to
+#   rebuild all skills.
+#
+# How skill building works:
 #   1. Scans skills/*/SKILL.md for an 'extends: <path>' frontmatter key.
 #   2. Resolves the path relative to the skill directory.
-#   3. Replaces the content between <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END -->
-#      with the content of the referenced base file.
-#   4. Expands <!-- SIGNAL: <name> --> markers into full bash signal-block code snippets.
+#   3. Reads the base file; strips its inner BASE-AGENT delimiter lines (flattens nested markers).
+#   4. Replaces the skill's BASE-AGENT block with the flattened base content.
+#   5. Expands <!-- SIGNAL: <name> --> markers into full bash signal-block code snippets.
 #      Errors clearly if an unknown macro name is encountered.
-#      Must run after BASE-AGENT injection (so base-agent macros are included) and
-#      before variable substitution (so {{AGENT_USER}}/{{LOG_PREFIX}} in expansions
-#      are resolved in the same pass).
-#   5. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
-#      'agent-user', 'log-prefix', and 'role' keys into the built skill file.
-#      Errors if any of these keys is missing.
-#   6. Reads the 'events:' list from frontmatter and generates a per-skill "Events This Agent
-#      Fires" markdown table, injecting it between <!-- EVENTS-TABLE:START --> and
-#      <!-- EVENTS-TABLE:END --> markers. Errors if an unknown event name is encountered or
-#      if markers are missing when an 'events:' list is present.
-#   7. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
-#
-# The {{AGENTMESH}} placeholder allows skill source files to stay portable across
-# machines — run ./build.sh after cloning to stamp the correct absolute path.
+#   6. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter.
+#      Errors if any key is missing.
+#   7. Generates per-skill EVENTS-TABLE from 'events:' frontmatter list.
+#   8. Expands {{AGENTMESH}} in all skill files.
 #
 # To add a new role that inherits the shared base:
-#   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-agent.md' in frontmatter.
+#   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-implementer.md'
+#      (or base-reviewer.md for reviewer roles) in frontmatter.
 #      Declare 'agent-user', 'log-prefix', and 'role' keys — all three are required.
-#   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where the shared
+#   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where shared
 #      content should be injected.
-#   3. Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the
-#      frontmatter block (before the skill title) and add an 'events:' list to the frontmatter.
-#   4. Use <!-- SIGNAL: <name> --> markers where signal blocks are needed. See SIGNAL_MACROS
-#      in the Python expansion step below for the list of valid macro names.
+#   3. Add <!-- EVENTS-TABLE:START --> / <!-- EVENTS-TABLE:END --> markers and 'events:'
+#      frontmatter list.
+#   4. Use <!-- SIGNAL: <name> --> markers where signal blocks are needed.
 #   5. Run ./build.sh to populate the markers.
 
 set -euo pipefail
 
 PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$PLUGIN_DIR/skills"
+SHARED_DIR="$PLUGIN_DIR/shared"
+BASE_AGENT="$SHARED_DIR/base-agent.md"
 FILTER="${1:-}"
 
 # Use ~/agentmesh as the canonical path — portable across machines without hardcoding
 # the absolute home directory path. The shell expands ~ at runtime when the skill runs.
 AGENTMESH_PATH="~/agentmesh"
+
+# ---------------------------------------------------------------------------
+# --update-family-bases: propagate base-agent.md into family base files only.
+# This is a pure marker-replacement pass — no macro expansion, no variable
+# substitution, no EVENTS-TABLE generation (those require per-skill frontmatter).
+# ---------------------------------------------------------------------------
+if [ "$FILTER" = "--update-family-bases" ]; then
+    if [ ! -f "$BASE_AGENT" ]; then
+        echo "ERROR: base-agent.md not found: $BASE_AGENT" >&2
+        exit 1
+    fi
+    family_updated=0
+    for family_file in "$SHARED_DIR"/base-*.md; do
+        fname="$(basename "$family_file")"
+        [ "$fname" = "base-agent.md" ] && continue  # skip the root itself
+        if ! grep -q '<!-- BASE-AGENT:START' "$family_file" 2>/dev/null; then
+            continue  # not a family base file
+        fi
+        python3 - "$family_file" "$BASE_AGENT" << 'PYEOF'
+import sys, re
+
+family_file = sys.argv[1]
+base_file   = sys.argv[2]
+
+with open(family_file) as f:
+    content = f.read()
+with open(base_file) as f:
+    base_content = f.read().rstrip('\n')
+
+start_marker = '<!-- BASE-AGENT:START (do not edit — run ./build.sh --update-family-bases to refresh) -->'
+end_marker   = '<!-- BASE-AGENT:END -->'
+replacement  = f'{start_marker}\n{base_content}\n{end_marker}'
+
+pattern = r'<!-- BASE-AGENT:START.*?-->.*?<!-- BASE-AGENT:END -->'
+if not re.search(pattern, content, re.DOTALL):
+    print(f"ERROR: BASE-AGENT markers not found in {family_file}", file=sys.stderr)
+    sys.exit(1)
+
+new_content = re.sub(pattern, replacement, content, flags=re.DOTALL, count=1)
+
+with open(family_file, 'w') as f:
+    f.write(new_content)
+
+print(f"  ✓ {family_file.split('/')[-1]}  ←  base-agent.md")
+PYEOF
+        family_updated=$((family_updated + 1))
+    done
+    echo ""
+    echo "Done. $family_updated family base file(s) updated."
+    echo "Run ./build.sh to rebuild all skills."
+    exit 0
+fi
 
 updated=0
 skipped=0
@@ -87,7 +153,12 @@ for skill_md in "$SKILLS_DIR"/*/SKILL.md; do
         exit 1
     fi
 
-    # Replace content between markers using Python (handles multiline reliably)
+    # Replace content between markers using Python (handles multiline reliably).
+    # If the base file is a family file (base-implementer.md, base-reviewer.md), it contains
+    # its own BASE-AGENT marker block wrapping the embedded base-agent.md content. Strip those
+    # two delimiter lines before injection so the skill ends up with a single flat BASE-AGENT
+    # block — no nested markers. Only the delimiter lines are removed; all content between them
+    # (and after the end marker) is preserved verbatim.
     python3 - "$skill_md" "$base_file" << 'PYEOF'
 import sys, re
 
@@ -98,6 +169,13 @@ with open(skill_file) as f:
     content = f.read()
 with open(base_file) as f:
     base_content = f.read().rstrip('\n')
+
+# Flatten any nested BASE-AGENT marker delimiter lines in the base file content.
+# This handles family files that embed base-agent.md via their own BASE-AGENT block.
+# Strip only the two delimiter lines; keep all content between them and after END.
+base_content = re.sub(r'^<!-- BASE-AGENT:START[^\n]*-->\n', '', base_content, flags=re.MULTILINE)
+base_content = re.sub(r'^<!-- BASE-AGENT:END -->\n?', '', base_content, flags=re.MULTILINE)
+base_content = base_content.rstrip('\n')
 
 start_marker = '<!-- BASE-AGENT:START (do not edit — run ./build.sh to refresh) -->'
 end_marker   = '<!-- BASE-AGENT:END -->'

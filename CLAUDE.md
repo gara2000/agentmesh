@@ -228,10 +228,20 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
 | `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
+Skills inherit from a two-level base hierarchy:
+
+```
+shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
+  ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
+  │     └── worker, planner, brainstormer
+  └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
+        └── plan-reviewer, pr-reviewer
+```
+
 After editing a skill, bump the plugin version and reload it:
 
 1. **Bump the version** in `plugins/agentic-workflows/.claude-plugin/plugin.json` (increment the patch version, e.g. `2.11.0` → `2.11.1`).
-2. **Rebuild** (only if the skill extends `shared/base-agent.md`):
+2. **Rebuild** (only if the skill extends a shared base file):
    ```bash
    ./plugins/agentic-workflows/build.sh
    ```
@@ -239,6 +249,13 @@ After editing a skill, bump the plugin version and reload it:
    ```bash
    claude plugin update agentic-workflows@agentmesh
    ```
+
+If you edit `shared/base-agent.md`, first propagate the changes into the family base files, then rebuild:
+
+```bash
+./plugins/agentic-workflows/build.sh --update-family-bases   # stamps base-agent.md into family files
+./plugins/agentic-workflows/build.sh                          # rebuilds all skills
+```
 
 > Every plugin change — skill edits, new skills, script updates — must include a version bump so the installed plugin stays in sync with the repo.
 
