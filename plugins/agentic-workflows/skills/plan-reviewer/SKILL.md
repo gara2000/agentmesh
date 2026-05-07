@@ -180,14 +180,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	plan-reviewer	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplan-reviewer\tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Plan Reviewer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	plan-reviewer	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplan-reviewer\tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:

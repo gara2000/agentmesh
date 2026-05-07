@@ -186,14 +186,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	brainstormer 	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tbrainstormer \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Brainstormer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	brainstormer 	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tbrainstormer \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -447,13 +445,14 @@ Parse checked items: lines matching `- [x]` (case-insensitive on the x).
 
 **If zero ideas are checked:**
 ```bash
+printf '%s\tbrainstormer \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Brainstormer" "event:completion"
 notecove task change <slug> --state Attention
-# Signal completion (orchestrator auto-acks brainstormer completion)
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:completion" "done"
-# Exit
+printf '%s\tbrainstormer \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
+Then exit.
 
 Also parse the **Proposed Dependencies** and **Merge Conflict Analysis** sections for any adjustments the user made. Both sets of relationships will be applied as `--block` links in Phase 5.
 
@@ -552,12 +551,12 @@ notecove task change <slug> --state Done
 ## Phase 6: Signal Completion
 
 ```bash
-printf '%s\tbrainstormer \tsignaling-attention-completion\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tbrainstormer \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Brainstormer" "event:completion"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:completion" "done"
-printf '%s\tbrainstormer \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tbrainstormer \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 Brainstormer exits after confirmed `done` state (orchestrator auto-acks brainstormer completion).

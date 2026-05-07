@@ -184,14 +184,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	planner      	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplanner      \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Planner" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	planner      	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplanner      \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -312,10 +310,12 @@ EOF
 
 Set task to Attention and signal for decomposition review:
 ```bash
+printf '%s\tplanner      \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Planner" "event:plan-ready"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:plan-ready" "doing"
+printf '%s\tplanner      \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -427,12 +427,12 @@ notecove task change <slug> --state Done
 ## Phase 5: Signal Completion
 
 ```bash
-printf '%s\tworker       \tsignaling-attention-completion\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplanner      \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Planner" "event:completion"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:completion" "done"
-printf '%s\tworker       \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tplanner      \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 Planner exits after confirmed `done` state (orchestrator auto-acks planner completion).

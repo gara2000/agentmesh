@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
+#            expands <!-- SIGNAL: <name> --> macros to full bash signal blocks,
 #            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}, {{ROLE}}),
 #            generates per-skill EVENTS-TABLE sections from 'events:' frontmatter,
 #            and expands the {{AGENTMESH}} path variable in all skill files.
@@ -13,14 +14,19 @@
 #   2. Resolves the path relative to the skill directory.
 #   3. Replaces the content between <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END -->
 #      with the content of the referenced base file.
-#   4. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
+#   4. Expands <!-- SIGNAL: <name> --> markers into full bash signal-block code snippets.
+#      Errors clearly if an unknown macro name is encountered.
+#      Must run after BASE-AGENT injection (so base-agent macros are included) and
+#      before variable substitution (so {{AGENT_USER}}/{{LOG_PREFIX}} in expansions
+#      are resolved in the same pass).
+#   5. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
 #      'agent-user', 'log-prefix', and 'role' keys into the built skill file.
 #      Errors if any of these keys is missing.
-#   5. Reads the 'events:' list from frontmatter and generates a per-skill "Events This Agent
+#   6. Reads the 'events:' list from frontmatter and generates a per-skill "Events This Agent
 #      Fires" markdown table, injecting it between <!-- EVENTS-TABLE:START --> and
 #      <!-- EVENTS-TABLE:END --> markers. Errors if an unknown event name is encountered or
 #      if markers are missing when an 'events:' list is present.
-#   6. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
+#   7. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
 #
 # The {{AGENTMESH}} placeholder allows skill source files to stay portable across
 # machines — run ./build.sh after cloning to stamp the correct absolute path.
@@ -32,7 +38,9 @@
 #      content should be injected.
 #   3. Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the
 #      frontmatter block (before the skill title) and add an 'events:' list to the frontmatter.
-#   4. Run ./build.sh to populate the markers.
+#   4. Use <!-- SIGNAL: <name> --> markers where signal blocks are needed. See SIGNAL_MACROS
+#      in the Python expansion step below for the list of valid macro names.
+#   5. Run ./build.sh to populate the markers.
 
 set -euo pipefail
 
@@ -104,6 +112,159 @@ new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 
 with open(skill_file, 'w') as f:
     f.write(new_content)
+PYEOF
+
+    # Expand <!-- SIGNAL: <name> --> macros into full bash signal blocks.
+    # Must run after BASE-AGENT injection (macros may come from base-agent.md)
+    # and before variable substitution (so {{AGENT_USER}}/{{LOG_PREFIX}} in
+    # the expansions are resolved in the same substitution pass).
+    python3 - "$skill_md" << 'PYEOF'
+import sys, re
+
+skill_file = sys.argv[1]
+
+# ---------------------------------------------------------------------------
+# Signal macro definitions.
+# Each macro expands to a ```bash ... ``` code block.
+# {{AGENT_USER}} and {{LOG_PREFIX}} are resolved by the variable-substitution
+# step that runs immediately after this one.
+# ---------------------------------------------------------------------------
+SIGNAL_MACROS = {
+    # --- blocking macros (signal_attention) ---
+    'questions': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:questions"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:questions" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'plan-ready': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:plan-ready"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:plan-ready" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'plan-revised': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:plan-revised"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:plan-revised" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'ideas-ready': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:ideas-ready"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:ideas-ready" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'selection-ready': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:selection-ready"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:selection-ready" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'completion': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:completion"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:completion" "done"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    # --- PR blocking macros (signal_attention, break on done OR doing) ---
+    'pr-ready': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-ready:$PR_URL"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+# Break on either \'done\' (approved) or \'doing\' (feedback given)
+signal_attention "event:pr-ready:$PR_URL" "done" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'pr-revised': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-revised:$PR_URL"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+# Break on either \'done\' (approved) or \'doing\' (feedback given)
+signal_attention "event:pr-revised:$PR_URL" "done" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'pr-ready-final': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-ready-final:$PR_URL"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+# Break on either \'done\' (approved) or \'doing\' (feedback given)
+signal_attention "event:pr-ready-final:$PR_URL" "done" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    # --- fire-and-done macros (signal_fire, no blocking) ---
+    'plan-review-complete': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tplan-review-complete\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker\'s seq must remain intact
+#       so the orchestrator can resume the worker with the correct signal
+notecove task change <slug> --state Attention
+signal_fire "event:plan-review-complete"
+```''',
+
+    'pr-review-complete': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tpr-review-complete\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker\'s seq must remain intact
+#       so the orchestrator can resume the worker with the correct signal
+notecove task change <slug> --state Attention
+signal_fire "event:pr-review-complete"
+```''',
+}
+
+with open(skill_file) as f:
+    content = f.read()
+
+def expand_macro(m):
+    name = m.group(1).strip()
+    if name not in SIGNAL_MACROS:
+        print(f"ERROR: unknown SIGNAL macro name '{name}' in {skill_file}", file=sys.stderr)
+        print(f"       Valid names: {sorted(SIGNAL_MACROS.keys())}", file=sys.stderr)
+        sys.exit(1)
+    return SIGNAL_MACROS[name]
+
+new_content = re.sub(r'<!-- SIGNAL: ([^>]+) -->', expand_macro, content)
+
+with open(skill_file, 'w') as f:
+    f.write(new_content)
+
+skill_name = skill_file.split('/')[-2]
+count = len(re.findall(r'<!-- SIGNAL: [^>]+ -->', content))
+if count:
+    print(f"  ✓ {skill_name} — expanded {count} SIGNAL macro(s)")
 PYEOF
 
     # Substitute {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
