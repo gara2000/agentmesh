@@ -54,8 +54,20 @@ events:
     requires_user_input: true
     meaning: "SELECTION note ready for user to check ideas"
 
+  design-ready:
+    fired_by: [designer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "DESIGN note written (first submission), awaiting user review"
+
+  design-revised:
+    fired_by: [designer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "Design revised after user feedback; re-review requested"
+
   completion:
-    fired_by: [brainstormer, planner]
+    fired_by: [brainstormer, planner, designer]
     next_state: done
     requires_user_input: false
     meaning: "Subtasks created (or skipped), parent marked Done"

@@ -18,6 +18,7 @@ Session: orchestrator          ← user attaches here only
 Session: workers
   window 0: WORK-42            ← /worker skill (Claude Code, yolo mode)
   window 1: WORK-57            ← /worker skill (Claude Code, yolo mode)
+  window N: WORK-abc           ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: plan-rev-WORK-42   ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-42     ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -147,7 +148,9 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:pr-ready-final:<url>` | Worker | PR is ready for user approval — no further automated review needed |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
-| `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
+| `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
+| `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
+| `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
 
@@ -414,7 +417,7 @@ sequenceDiagram
 bash ~/agentmesh/scripts/spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>
 ```
 
-It runs `new-window`, starts Claude in yolo mode, waits 3 seconds for the shell to initialize, then sends the skill invocation. Used by the orchestrator to spawn workers, planners, brainstormers, plan-reviewers, and pr-reviewers.
+It runs `new-window`, starts Claude in yolo mode, waits 3 seconds for the shell to initialize, then sends the skill invocation. Used by the orchestrator to spawn workers, planners, brainstormers, designers, plan-reviewers, and pr-reviewers.
 
 ---
 

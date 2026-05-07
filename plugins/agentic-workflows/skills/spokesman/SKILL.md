@@ -194,6 +194,8 @@ case "$event_rest" in
   event:review-limit-reached:pr:*) → PR review limit escalation (requires user decision)
   event:ideas-ready)      → brainstormer ideation
   event:selection-ready)  → brainstormer selection
+  event:design-ready)     → designer design ready for review
+  event:design-revised)   → designer design revised (same as design-ready attention)
   event:crash-limit-reached) → worker crash limit (warn user, no auto-resume)
   *)                      → unknown (log and tell user)
 esac
@@ -215,6 +217,7 @@ Decide agent type using your judgment — you have access to the full task title
 
 - **brainstormer**: the task explicitly asks to generate ideas, explore options, brainstorm approaches, or produce a menu of possibilities for the user to choose from
 - **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
+- **designer**: the task involves building a UI, frontend interface, design system, or visual component — requires aesthetic design thinking and decomposition into frontend implementation subtasks
 - **worker**: any other concrete, well-defined implementation task (the default)
 
 Then dispatch: log `task-triaged` → `send_cmd <slug> spawn <agent-type>`
@@ -223,7 +226,7 @@ Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
 
 ---
 
-### Event: `event:completion` — brainstormer/planner completion
+### Event: `event:completion` — brainstormer/planner/designer completion
 
 Auto-acknowledge — no user input needed.
 
@@ -529,6 +532,30 @@ When done, say 'continue'.
 ```
 
 Wait for the user to say 'continue', then: log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
+
+---
+
+### Event: `event:design-ready` — designer design ready for review
+
+```
+── Designer: Design Ready ───────────────────────
+Task: <slug> — <title>
+The designer has a design plan ready for review.
+Open NoteCove to read the DESIGN note, then say 'continue'.
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'continue':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
+
+**If user provides feedback (design revision):** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
+
+---
+
+### Event: `event:design-revised` — designer design revised
+
+Handle identically to `event:design-ready`: display the design-ready attention block, wait for user to say 'continue' or give feedback.
 
 ---
 
