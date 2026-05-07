@@ -4,7 +4,7 @@
 
 events:
   questions:
-    fired_by: [worker, planner, brainstormer]
+    fired_by: [worker, planner, brainstormer, designer]
     next_state: doing
     requires_user_input: true
     meaning: "Agent has questions for the user"

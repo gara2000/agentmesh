@@ -420,11 +420,6 @@ After creating all tasks and links, add a summary comment:
 notecove task comments add <slug> --user "Designer" "Design complete. Created <N> subtasks: <slug-1>, <slug-2>, ..."
 ```
 
-Then mark the parent task Done:
-```bash
-notecove task change <slug> --state Done
-```
-
 ---
 
 ## Phase 5: Signal Completion
@@ -459,7 +454,8 @@ Designer exits after confirmed `done` state (orchestrator auto-acks designer com
 *(See Shared Critical Rules above. Designer-specific additions:)*
 
 - **Never create child tasks before the design is approved** — the `event:design-ready` Attention signal is the approval gate.
-- **Mark parent Done before signaling completion** — child tasks carry the implementation work; the parent design task is complete.
+- **Do NOT set task state to Done in Phase 4** — `completion.sh` handles the Done transition. Setting Done before signaling `event:completion` creates a misleading `Done → Attention → Done` sequence.
+- **`--user "Designer"` for all comments** — Note: the injected base-agent questions block uses `--user "Worker"` (base template limitation); all designer-authored comments in Phases 3–5 must explicitly use `--user "Designer"`.
 - **DESCRIPTION notes must be rich and unambiguous** — include aesthetic direction, design notes, exact files to create/modify, and acceptance criteria. The implementing worker must not need to speculate about design intent.
 - **Orchestrator comment identifiers**: use `--user "Designer"` for all comments so the orchestrator can distinguish designer attention events.
 - **Aesthetic choices must be bold and specific** — avoid generic AI aesthetics (Inter/Roboto fonts, purple gradients, predictable layouts). Commit to a clear conceptual direction and specify it precisely in the DESIGN note so implementing workers can execute it faithfully.
