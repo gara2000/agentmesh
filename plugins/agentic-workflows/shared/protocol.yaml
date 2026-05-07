@@ -1,0 +1,73 @@
+# protocol.yaml — AgentMesh orchestrator interaction protocol
+# Single source of truth for all event types fired by agents.
+# Used by build.sh (event table generation) and orchestrator.py (dispatch validation).
+
+events:
+  questions:
+    fired_by: [worker, planner, brainstormer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "Agent has questions for the user"
+
+  plan-ready:
+    fired_by: [worker, planner]
+    next_state: doing
+    requires_user_input: false
+    meaning: "Plan note written (first submission), awaiting review"
+
+  plan-revised:
+    fired_by: [worker]
+    next_state: doing
+    requires_user_input: false
+    meaning: "Plan revised after reviewer feedback; re-review requested"
+
+  pr-ready:
+    fired_by: [worker]
+    url_bearing: true
+    next_state: doing
+    requires_user_input: false
+    meaning: "PR created, signaling readiness to orchestrator"
+
+  pr-revised:
+    fired_by: [worker]
+    url_bearing: true
+    next_state: doing
+    requires_user_input: false
+    meaning: "PR revised after reviewer feedback; re-review requested"
+
+  pr-ready-final:
+    fired_by: [worker]
+    url_bearing: true
+    next_state: doing
+    requires_user_input: true
+    meaning: "PR ready for user approval — no further automated review needed"
+
+  ideas-ready:
+    fired_by: [brainstormer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "IDEAS note ready for user feedback"
+
+  selection-ready:
+    fired_by: [brainstormer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "SELECTION note ready for user to check ideas"
+
+  completion:
+    fired_by: [brainstormer, planner]
+    next_state: done
+    requires_user_input: false
+    meaning: "Subtasks created (or skipped), parent marked Done"
+
+  plan-review-complete:
+    fired_by: [plan-reviewer]
+    next_state: doing
+    requires_user_input: false
+    meaning: "Plan review note written, summary in comment"
+
+  pr-review-complete:
+    fired_by: [pr-reviewer]
+    next_state: doing
+    requires_user_input: false
+    meaning: "PR review posted to GitHub, summary in comment"
