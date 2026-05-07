@@ -328,7 +328,8 @@ class Orchestrator:
             subprocess.run(["bash", str(EVENTS / "pr-ready-final.sh"), slug, pr_url])
         elif event_type == "event:pr-review-complete":
             subprocess.run(["bash", str(EVENTS / "pr-review-complete.sh"), slug, resume_sig, self.mode])
-        elif event_type in ("event:questions", "event:ideas-ready", "event:selection-ready"):
+        elif event_type in ("event:questions", "event:ideas-ready", "event:selection-ready",
+                             "event:design-ready", "event:design-revised"):
             self._forward_to_spokesman(slug, event_type)
         else:
             log("orchestrator ", f"unknown-event:{event_type}", slug)
@@ -380,7 +381,7 @@ class Orchestrator:
             # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
             # validating against a hardcoded allowlist — once all skills declare role: this
             # list can be driven by discovered skill files rather than maintained here.
-            agent_type = args if args in ("worker", "planner", "brainstormer") else "worker"
+            agent_type = args if args in ("worker", "planner", "brainstormer", "designer") else "worker"
             self._in_flight.discard(slug)
             spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
             with open(SIGNALS / "workers", "a") as f:

@@ -66,7 +66,9 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:pr-ready-final:<url>` | Worker | PR is ready for user approval — no further automated review needed |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
-| `event:completion` | Brainstormer / Planner | Subtasks created (or skipped), parent marked Done |
+| `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
+| `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
+| `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
 | `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
@@ -132,6 +134,20 @@ Responsibilities:
 - Signal `Attention` when PR is ready — block on resume (approved → exit, feedback → continue)
 - Exit only after receiving the orchestrator's resume signal (which means the user approved)
 - Never interact with the user directly
+- Never mark its own task `Done`
+
+### Designer
+
+**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
+
+Responsibilities:
+- Pick up the assigned frontend/UI design task from NoteCove
+- Explore task context and the codebase to understand what's being built
+- Ask questions via `QUESTIONS-<N>` notes if requirements are ambiguous
+- Create a DESIGN note with aesthetic direction, component breakdown, and proposed subtasks; signal `event:design-ready` for user review
+- After design approval, create child tasks with rich DESCRIPTION notes (aesthetic guidance, acceptance criteria, specific files to create/modify)
+- Signal `event:completion` — orchestrator auto-acks and marks Done
+- Never implement code — designs and decomposes only
 - Never mark its own task `Done`
 
 ### Dispatcher
@@ -207,6 +223,7 @@ Session: orchestrator       ← user attaches here only
 Session: workers
   window 0: WORK-pm4         ← /worker skill (Claude Code, yolo mode)
   window 1: WORK-xyz         ← /worker skill (Claude Code, yolo mode)
+  window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -225,6 +242,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/worker` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/worker/SKILL.md` |
 | `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
 | `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
+| `/designer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/designer/SKILL.md` |
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
 | `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
@@ -363,6 +381,15 @@ timestamp       component       event_type                  slug
 2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  worker          approved                    WORK-xyz
 2026-04-26T...  worker          feedback-received           WORK-xyz
+2026-04-26T...  designer        started                     WORK-xyz
+2026-04-26T...  designer        signaling-attention         WORK-xyz
+2026-04-26T...  designer        resumed                     WORK-xyz
+2026-04-26T...  designer        signaling-design            WORK-xyz
+2026-04-26T...  designer        resumed-from-design         WORK-xyz
+2026-04-26T...  designer        signaling-design-revised    WORK-xyz
+2026-04-26T...  designer        resumed-from-design-revised WORK-xyz
+2026-04-26T...  designer        signaling-completion        WORK-xyz
+2026-04-26T...  designer        approved                    WORK-xyz
 ```
 
 ---
