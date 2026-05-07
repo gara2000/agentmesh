@@ -151,14 +151,7 @@ EOF
 ```
 
 Set task to Attention and signal:
-```bash
-printf '%s\t{{LOG_PREFIX}}\tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:questions"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:questions" "doing"
-printf '%s\t{{LOG_PREFIX}}\tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```
+<!-- SIGNAL: questions -->
 
 After confirmed resume:
 1. Read the task's latest comments for any feedback the orchestrator may have left: `notecove task show <slug> --format markdown-with-comments`

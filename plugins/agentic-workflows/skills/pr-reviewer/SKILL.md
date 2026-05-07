@@ -180,14 +180,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	pr-reviewer  	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tpr-reviewer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "PR Reviewer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	pr-reviewer  	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tpr-reviewer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -330,10 +328,9 @@ Add a review summary comment directly on the task, then set the task to `Attenti
 
 ```bash
 notecove task comments add <slug> --user "PR Reviewer" "event:pr-review-complete Verdict: <VERDICT>. Review posted to GitHub PR."
-
+```
+```bash
 printf '%s\tpr-reviewer  \tpr-review-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-
-# Signal orchestrator: set Attention and fire worker-any-event
 # NOTE: signal_fire does NOT update signals/<slug>.seq — the worker's seq must remain intact
 #       so the orchestrator can resume the worker with the correct signal
 notecove task change <slug> --state Attention

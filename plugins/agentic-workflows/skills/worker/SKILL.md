@@ -190,14 +190,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s	worker       	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Worker" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s	worker       	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -281,12 +279,12 @@ EOF
 
 Set task to Attention and signal for plan review:
 ```bash
-printf '%s\tworker       \tsignaling-plan\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Worker" "event:plan-ready"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:plan-ready" "doing"
-printf '%s\tworker       \tresumed-from-plan\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -294,10 +292,12 @@ After confirmed resume:
 2. If no significant changes needed → proceed directly to Phase 4 without re-signaling.
 3. If plan requires revision → update the `<slug>/PLAN` note, then signal `event:plan-revised` to request another review:
 ```bash
+printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Worker" "event:plan-revised"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:plan-revised" "doing"
+printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 Repeat step 1–3 as needed; the orchestrator enforces the re-review cycle limit.
 
@@ -548,15 +548,18 @@ notecove note create "<slug>/COMPLETION" --folder <task-folder-id> --content-fil
 EOF
 ```
 
-Signal `Attention` (PR ready):
+Log the PR creation and signal `Attention` (PR ready):
 ```bash
 printf '%s\tworker       \tpr-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-printf '%s\tworker       \tsignaling-attention-pr-ready\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+```bash
+printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task comments add <slug> --user "Worker" "event:pr-ready:$PR_URL"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 # Break on either 'done' (approved) or 'doing' (feedback given)
 signal_attention "event:pr-ready:$PR_URL" "done" "doing"
+printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After unblocking, check which state was set:
@@ -565,18 +568,30 @@ After unblocking, check which state was set:
   ```bash
   gh pr view "$PR_URL" --comments
   ```
-  Apply any needed fixes (amend or push additional commits), then re-signal with the appropriate event tag:
-  - **`event:pr-revised:<PR-URL>`** — use when significant changes were made and another automated review pass is warranted (orchestrator will spawn pr-reviewer again, subject to the review limit).
-  - **`event:pr-ready-final:<PR-URL>`** — use when the PR is ready for the user to make the final call (no further automated review needed). Use this after addressing auto-reviewer feedback when you consider the PR complete, OR after addressing user feedback.
+  Apply any needed fixes (amend or push additional commits), then re-signal with the appropriate event.
 
+  Use `event:pr-revised` when significant changes were made and another automated review pass is warranted (orchestrator will spawn pr-reviewer again, subject to the review limit):
   ```bash
-  # Re-signal with the chosen event tag (replace <EVENT-TAG> with pr-revised or pr-ready-final):
-  notecove task comments add <slug> --user "Worker" "event:<EVENT-TAG>:<PR-URL>"
+  printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  notecove task comments add <slug> --user "Worker" "event:pr-revised:$PR_URL"
   notecove task change <slug> --state Attention
   # IMPORTANT: call this Bash block with timeout=600000
   # Break on either 'done' (approved) or 'doing' (feedback given)
-  signal_attention "event:<EVENT-TAG>:<PR-URL>" "done" "doing"
+  signal_attention "event:pr-revised:$PR_URL" "done" "doing"
+  printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   ```
+
+  Use `event:pr-ready-final` when the PR is ready for the user's final call (no further automated review needed — use this after addressing auto-reviewer feedback when you consider the PR complete, OR after addressing user feedback):
+  ```bash
+  printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  notecove task comments add <slug> --user "Worker" "event:pr-ready-final:$PR_URL"
+  notecove task change <slug> --state Attention
+  # IMPORTANT: call this Bash block with timeout=600000
+  # Break on either 'done' (approved) or 'doing' (feedback given)
+  signal_attention "event:pr-ready-final:$PR_URL" "done" "doing"
+  printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  ```
+
   Repeat until state is `done`.
 
 ---
