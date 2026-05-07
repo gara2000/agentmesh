@@ -13,7 +13,7 @@ MODE="${3:?mode required}"
 if [[ "$MODE" == "auto-review" ]]; then
     log_event "attention-resumed" "$SLUG"
     $NOTECOVE task comments add "$SLUG" --user "Orchestrator" \
-        "Plan review complete (auto-review mode). Review the reviewer's comment and the REVIEW note in your task folder before implementing."
+        "Plan review complete (auto-review mode). Review the reviewer's comment and the REVIEW-PLAN note in your task folder before implementing."
     $NOTECOVE task change "$SLUG" --state Doing
     tmux wait-for -S "$RESUME_SIG"
     tmux kill-window -t "workers:plan-rev-${SLUG}" 2>/dev/null || true
