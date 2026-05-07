@@ -7,6 +7,7 @@ allowed-tools: Bash(notecove *, tmux *, git *, echo *, cat *, mkdir *, python3 *
 hint: "Planner agent for task decomposition. Required: --task <slug> --project <key>"
 agent-user: "Planner"
 log-prefix: "planner      "
+role: planner
 events:
   - questions
   - plan-ready

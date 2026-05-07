@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
-#            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}),
+#            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}, {{ROLE}}),
 #            generates per-skill EVENTS-TABLE sections from 'events:' frontmatter,
 #            and expands the {{AGENTMESH}} path variable in all skill files.
 #
@@ -13,8 +13,9 @@
 #   2. Resolves the path relative to the skill directory.
 #   3. Replaces the content between <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END -->
 #      with the content of the referenced base file.
-#   4. Substitutes {{AGENT_USER}} and {{LOG_PREFIX}} from frontmatter 'agent-user' and
-#      'log-prefix' keys into the built skill file. Errors if either key is missing.
+#   4. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
+#      'agent-user', 'log-prefix', and 'role' keys into the built skill file.
+#      Errors if any of these keys is missing.
 #   5. Reads the 'events:' list from frontmatter and generates a per-skill "Events This Agent
 #      Fires" markdown table, injecting it between <!-- EVENTS-TABLE:START --> and
 #      <!-- EVENTS-TABLE:END --> markers. Errors if an unknown event name is encountered or
@@ -26,6 +27,7 @@
 #
 # To add a new role that inherits the shared base:
 #   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-agent.md' in frontmatter.
+#      Declare 'agent-user', 'log-prefix', and 'role' keys — all three are required.
 #   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where the shared
 #      content should be injected.
 #   3. Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the
@@ -104,7 +106,7 @@ with open(skill_file, 'w') as f:
     f.write(new_content)
 PYEOF
 
-    # Substitute {{AGENT_USER}} and {{LOG_PREFIX}} from frontmatter
+    # Substitute {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter
     python3 - "$skill_md" << 'PYEOF'
 import sys, re
 
@@ -131,6 +133,7 @@ def extract_fm_value(fm, key):
 
 agent_user = extract_fm_value(fm, 'agent-user')
 log_prefix = extract_fm_value(fm, 'log-prefix')
+role       = extract_fm_value(fm, 'role')
 
 if agent_user is None:
     print(f"ERROR: 'agent-user' not declared in frontmatter of {skill_file}", file=sys.stderr)
@@ -138,13 +141,19 @@ if agent_user is None:
 if log_prefix is None:
     print(f"ERROR: 'log-prefix' not declared in frontmatter of {skill_file}", file=sys.stderr)
     sys.exit(1)
+if role is None:
+    print(f"ERROR: 'role' not declared in frontmatter of {skill_file}", file=sys.stderr)
+    sys.exit(1)
 
-new_content = content.replace('{{AGENT_USER}}', agent_user).replace('{{LOG_PREFIX}}', log_prefix)
+new_content = (content
+    .replace('{{AGENT_USER}}', agent_user)
+    .replace('{{LOG_PREFIX}}', log_prefix)
+    .replace('{{ROLE}}', role))
 
 with open(skill_file, 'w') as f:
     f.write(new_content)
 
-print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_user!r}, {{LOG_PREFIX}}={log_prefix!r}")
+print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_user!r}, {{LOG_PREFIX}}={log_prefix!r}, {{ROLE}}={role!r}")
 PYEOF
 
     # Generate and inject EVENTS-TABLE from frontmatter 'events:' list

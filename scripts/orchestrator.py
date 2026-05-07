@@ -325,7 +325,10 @@ class Orchestrator:
         _print(f"cmd {cmd} ({slug})" + (f" args={args}" if args else ""))
 
         if cmd == "spawn":
-            # Spokesman has triaged the task and decided the agent type
+            # Spokesman has triaged the task and decided the agent type.
+            # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
+            # validating against a hardcoded allowlist — once all skills declare role: this
+            # list can be driven by discovered skill files rather than maintained here.
             agent_type = args if args in ("worker", "planner", "brainstormer") else "worker"
             self._in_flight.discard(slug)
             spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)

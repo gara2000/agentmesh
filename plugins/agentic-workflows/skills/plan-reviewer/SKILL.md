@@ -7,6 +7,7 @@ allowed-tools: Bash(notecove *, tmux *, echo *, cat *, mkdir *, python3 *), Read
 hint: "Plan reviewer agent. Required: --task <target-slug> --project <key>"
 agent-user: "Plan Reviewer"
 log-prefix: "plan-reviewer"
+role: plan-reviewer
 events:
   - plan-review-complete
 ---

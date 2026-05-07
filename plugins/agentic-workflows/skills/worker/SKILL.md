@@ -7,6 +7,7 @@ allowed-tools: Bash(notecove *, tmux *, git *, gh pr *, echo *, cat *, mkdir *, 
 hint: "Worker agent for an assigned task. Required: --task <slug> --project <key>"
 agent-user: "Worker"
 log-prefix: "worker       "
+role: worker
 events:
   - questions
   - plan-ready
