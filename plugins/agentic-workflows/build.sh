@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
+#            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}),
 #            and expands the {{AGENTMESH}} path variable in all skill files.
 #
 # Usage:
@@ -11,7 +12,9 @@
 #   2. Resolves the path relative to the skill directory.
 #   3. Replaces the content between <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END -->
 #      with the content of the referenced base file.
-#   4. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
+#   4. Substitutes {{AGENT_USER}} and {{LOG_PREFIX}} from frontmatter 'agent-user' and
+#      'log-prefix' keys into the built skill file. Errors if either key is missing.
+#   5. Expands {{AGENTMESH}} to the repo root (resolved via git) in every skill file.
 #
 # The {{AGENTMESH}} placeholder allows skill source files to stay portable across
 # machines — run ./build.sh after cloning to stamp the correct absolute path.
@@ -92,6 +95,49 @@ new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 
 with open(skill_file, 'w') as f:
     f.write(new_content)
+PYEOF
+
+    # Substitute {{AGENT_USER}} and {{LOG_PREFIX}} from frontmatter
+    python3 - "$skill_md" << 'PYEOF'
+import sys, re
+
+skill_file = sys.argv[1]
+
+with open(skill_file) as f:
+    content = f.read()
+
+# Extract frontmatter (between first two '---' lines)
+fm_match = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL)
+if not fm_match:
+    print(f"ERROR: no YAML frontmatter found in {skill_file}", file=sys.stderr)
+    sys.exit(1)
+fm = fm_match.group(1)
+
+def extract_fm_value(fm, key):
+    # Match quoted value: key: "value with spaces"
+    m = re.search(rf'^{key}:\s*"([^"\n]*)"', fm, re.MULTILINE)
+    if m:
+        return m.group(1)
+    # Match unquoted value (strip trailing whitespace only)
+    m = re.search(rf'^{key}:\s*([^"\n]+)', fm, re.MULTILINE)
+    return m.group(1).rstrip() if m else None
+
+agent_user = extract_fm_value(fm, 'agent-user')
+log_prefix = extract_fm_value(fm, 'log-prefix')
+
+if agent_user is None:
+    print(f"ERROR: 'agent-user' not declared in frontmatter of {skill_file}", file=sys.stderr)
+    sys.exit(1)
+if log_prefix is None:
+    print(f"ERROR: 'log-prefix' not declared in frontmatter of {skill_file}", file=sys.stderr)
+    sys.exit(1)
+
+new_content = content.replace('{{AGENT_USER}}', agent_user).replace('{{LOG_PREFIX}}', log_prefix)
+
+with open(skill_file, 'w') as f:
+    f.write(new_content)
+
+print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_user!r}, {{LOG_PREFIX}}={log_prefix!r}")
 PYEOF
 
     echo "  ✓ $skill_name  ←  $(basename "$base_file")"

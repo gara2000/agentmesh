@@ -5,6 +5,8 @@ description: Worker agent that picks up an assigned NoteCove task, works through
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, git *, gh pr *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep, Edit, Write
 hint: "Worker agent for an assigned task. Required: --task <slug> --project <key>"
+agent-user: "Worker"
+log-prefix: "worker       "
 ---
 
 # Worker — NoteCove Task Worker Agent
