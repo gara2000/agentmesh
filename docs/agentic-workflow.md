@@ -83,11 +83,16 @@ Workers use distinct event tags to remove ambiguity from the orchestrator's rout
 flowchart TD
     A([NoteCove: Ready tasks]) --> B{Orchestrator picks up\nup to max-workers tasks}
     B --> C[Mark task Doing]
-    C --> D{Worker type?}
-    D -->|simple task| E[Spawn /worker]
-    D -->|complex / multi-PR task| F[Spawn /planner]
-    E & F --> G[Register in signals/workers]
-    G --> H([Enter event loop])
+    C --> D[Forward to Spokesman\nvia spokesman-queue\nevent:task-ready]
+    D --> E[Spokesman decides\nagent type via LLM triage]
+    E --> F[Spokesman sends\nspawn cmd to orchestrator]
+    F --> G{Agent type}
+    G -->|worker| W[Spawn /worker]
+    G -->|planner| P[Spawn /planner]
+    G -->|brainstormer| BR[Spawn /brainstormer]
+    G -->|designer| DE[Spawn /designer]
+    W & P & BR & DE --> H[Register in signals/workers]
+    H --> I([Enter event loop])
 ```
 
 ### Signal Protocol
@@ -136,11 +141,13 @@ sequenceDiagram
 
 ### Event Tag Dispatch
 
-When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a short `event:<type>` comment as the final comment before signaling. The orchestrator extracts this tag and dispatches via a `case` statement — no content heuristics.
+The orchestrator dispatches on the event type extracted directly from the queue entry (`<slug>:<event-type>`). Agents write this entry to `signals/queue` before signaling `worker-any-event` — the queue is the source of truth and orchestrator.py never needs to read NoteCove comments for routing. Reading the last comment is a **legacy fallback** only, triggered when a bare slug with no `:` separator appears in the queue (should not occur in normal operation).
+
+After extracting the event type, orchestrator.py validates the base event name against `plugins/agentic-workflows/shared/protocol.yaml`. Unknown events are escalated to the Spokesman as `event:anomaly-detected:unknown-event`.
 
 | Event Tag | Fired by | Meaning |
 |---|---|---|
-| `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
+| `event:questions` | Worker / Planner / Brainstormer / Designer | Agent has questions for the user |
 | `event:plan-ready` | Worker | Plan note written (first submission), awaiting review |
 | `event:plan-revised` | Worker | Plan revised after reviewer feedback; re-review requested |
 | `event:pr-ready:<url>` | Worker | PR created at `<url>` (first submission), signaling readiness |
@@ -153,6 +160,10 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
+| `event:crash-limit-reached` | watchdog.sh | Worker crashed 3 consecutive times — task set to Blocked, escalated to Spokesman |
+| `event:anomaly-detected:<key>` | Orchestrator | Structural invariant violation detected — escalated to Spokesman for user notification |
+| `event:review-limit-reached:plan` | orchestrator.py | Auto-review cycle limit reached for plan reviews — escalated to Spokesman |
+| `event:review-limit-reached:pr:<url>` | orchestrator.py | Auto-review cycle limit reached for PR reviews — escalated to Spokesman |
 
 The orchestrator translates worker events into Spokesman events: `event:pr-ready:<url>` and `event:pr-revised:<url>` → `event:pr-submitted:<url>` (standard mode); `event:pr-ready-final:<url>` → `event:pr-ready:<url>` (auto-review mode, post-review).
 
