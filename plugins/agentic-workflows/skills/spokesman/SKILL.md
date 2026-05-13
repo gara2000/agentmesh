@@ -213,14 +213,59 @@ task_md=$(notecove task show <slug> --format markdown-with-comments)
 title=$(echo "$task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
 ```
 
-Decide agent type using your judgment — you have access to the full task title, description, and any linked context:
+**Step 1 — check task type.** Extract `typeIds` from the task JSON and look up the agent type from the mapping (first match wins; comparison is case-insensitive):
+
+```python
+import sys, json
+task = json.load(sys.stdin)
+type_ids = task.get("typeIds") or []
+type_map = {
+    "feature":       "implementer",
+    "bug":           "implementer",
+    "plan":          "planner",
+    "brainstorming": "brainstormer",
+    "documentation": "documenter",
+    "design":        "designer",
+    "investigation": "investigator",
+}
+# first-match wins if a task carries multiple type labels
+agent_type = next(
+    (type_map[t.lower()] for t in type_ids if t.lower() in type_map),
+    None,
+)
+print(agent_type or "")
+```
+
+Run this via: `agent_type=$(echo "$task_json" | python3 -c "<script above>")`
+
+If `agent_type` is non-empty → use it directly (skip Step 2). Also capture the matched typeId for the user message:
+```bash
+matched_type=$(echo "$task_json" | python3 -c "
+import sys, json
+task = json.load(sys.stdin)
+type_ids = task.get('typeIds') or []
+type_map = {'feature','bug','plan','brainstorming','documentation','design','investigation'}
+matched = next((t for t in type_ids if t.lower() in type_map), '')
+print(matched)
+")
+```
+
+Log and dispatch: `printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` → `send_cmd <slug> spawn <agent-type>`
+
+Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>** (typeId: `<matched_type>`)."
+
+Skip Step 2.
+
+**Step 2 — LLM fallback (no type mapping found).** If no typeId matched, decide agent type using your judgment — you have access to the full task title, description, and any linked context:
 
 - **brainstormer**: the task explicitly asks to generate ideas, explore options, brainstorm approaches, or produce a menu of possibilities for the user to choose from
 - **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
 - **designer**: the task involves building a UI, frontend interface, design system, or visual component — requires aesthetic design thinking and decomposition into frontend implementation subtasks
+- **investigator**: the task asks to research, investigate, gather context, survey the codebase, or produce a structured findings report without writing code or creating PRs
+- **documenter**: the task asks to write, update, or improve documentation (README, API docs, inline comments, architecture notes) without changing logic or adding features
 - **implementer**: any other concrete, well-defined implementation task (the default)
 
-Then dispatch: log `task-triaged` → `send_cmd <slug> spawn <agent-type>`
+Log and dispatch: `printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` → `send_cmd <slug> spawn <agent-type>`
 
 Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
 
