@@ -1,6 +1,6 @@
 {
   "name": "agentic-workflows",
-  "version": "2.13.2",
+  "version": "2.14.0",
   "description": "Agentic workflows with NoteCove integration for brainstorming, task decomposition, planning, and implementation",
   "author": {
     "name": "Firas Gara"
