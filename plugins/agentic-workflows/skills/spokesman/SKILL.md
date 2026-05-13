@@ -238,7 +238,23 @@ print(agent_type or "")
 
 Run this via: `agent_type=$(echo "$task_json" | python3 -c "<script above>")`
 
-If `agent_type` is non-empty → use it directly (skip Step 2).
+If `agent_type` is non-empty → use it directly (skip Step 2). Also capture the matched typeId for the user message:
+```bash
+matched_type=$(echo "$task_json" | python3 -c "
+import sys, json
+task = json.load(sys.stdin)
+type_ids = task.get('typeIds') or []
+type_map = {'feature','bug','plan','brainstorming','documentation','design','investigation'}
+matched = next((t for t in type_ids if t.lower() in type_map), '')
+print(matched)
+")
+```
+
+Log and dispatch: `printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` → `send_cmd <slug> spawn <agent-type>`
+
+Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>** (typeId: `<matched_type>`)."
+
+Skip Step 2.
 
 **Step 2 — LLM fallback (no type mapping found).** If no typeId matched, decide agent type using your judgment — you have access to the full task title, description, and any linked context:
 
@@ -249,9 +265,9 @@ If `agent_type` is non-empty → use it directly (skip Step 2).
 - **documenter**: the task asks to write, update, or improve documentation (README, API docs, inline comments, architecture notes) without changing logic or adding features
 - **implementer**: any other concrete, well-defined implementation task (the default)
 
-Then dispatch: log `task-triaged` → `send_cmd <slug> spawn <agent-type>`
+Log and dispatch: `printf '%s\tspokesman    \ttask-triaged\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` → `send_cmd <slug> spawn <agent-type>`
 
-Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**." (if type mapping was used, append: `(type: <typeId>)`)
+Tell the user: "Triaged `<slug> — <title>` → spawning **<agent-type>**."
 
 ---
 
