@@ -16,8 +16,8 @@ Session: orchestrator          ← user attaches here only
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
-  window 0: WORK-42            ← /worker skill (Claude Code, yolo mode)
-  window 1: WORK-57            ← /worker skill (Claude Code, yolo mode)
+  window 0: WORK-42            ← /implementer skill (Claude Code, yolo mode)
+  window 1: WORK-57            ← /implementer skill (Claude Code, yolo mode)
   window N: WORK-abc           ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: plan-rev-WORK-42   ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-42     ← /pr-reviewer skill (Claude Code, one per PR under review)
@@ -87,7 +87,7 @@ flowchart TD
     D --> E[Spokesman decides\nagent type via LLM triage]
     E --> F[Spokesman sends\nspawn cmd to orchestrator]
     F --> G{Agent type}
-    G -->|worker| W[Spawn /worker]
+    G -->|implementer| W[Spawn /implementer]
     G -->|planner| P[Spawn /planner]
     G -->|brainstormer| BR[Spawn /brainstormer]
     G -->|designer| DE[Spawn /designer]

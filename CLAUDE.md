@@ -58,12 +58,12 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 <!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
 | Event Tag | Fired by | Meaning |
 |---|---|---|
-| `event:questions` | Worker / Planner / Brainstormer | Agent has questions for the user |
-| `event:plan-ready` | Worker | Plan note written (first submission), awaiting review |
-| `event:plan-revised` | Worker | Plan revised after reviewer feedback; re-review requested |
-| `event:pr-ready:<url>` | Worker | PR created at `<url>` (first submission), signaling readiness to orchestrator |
-| `event:pr-revised:<url>` | Worker | PR revised after reviewer feedback; re-review requested |
-| `event:pr-ready-final:<url>` | Worker | PR is ready for user approval — no further automated review needed |
+| `event:questions` | Implementer / Planner / Brainstormer | Agent has questions for the user |
+| `event:plan-ready` | Implementer | Plan note written (first submission), awaiting review |
+| `event:plan-revised` | Implementer | Plan revised after reviewer feedback; re-review requested |
+| `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
+| `event:pr-revised:<url>` | Implementer | PR revised after reviewer feedback; re-review requested |
+| `event:pr-ready-final:<url>` | Implementer | PR is ready for user approval — no further automated review needed |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
@@ -96,7 +96,7 @@ The orchestrator translates worker events into Spokesman events:
 Responsibilities:
 - Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
 - Block on `spokesman-event` and drain `spokesman-queue` after each unblock
-- Triage new tasks (`event:task-ready`): decide agent type (worker/planner/brainstormer) using LLM judgment and send `spawn` command back to orchestrator.py
+- Triage new tasks (`event:task-ready`): decide agent type (implementer/planner/brainstormer) using LLM judgment and send `spawn` command back to orchestrator.py
 - Present user-attention events to the user (questions, plan ready, PR ready, review results)
 - Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
 - When all tasks complete: tell orchestrator.py to shut down and exit
@@ -121,7 +121,7 @@ Responsibilities:
 
 **Kept for compatibility.** The original `/orchestrator` Claude Code skill (`plugins/agentic-workflows/skills/orchestrator/SKILL.md`) remains unchanged. Use `/spokesman` as the new entry point for the Spokesman + orchestrator.py architecture.
 
-### Worker
+### Implementer
 
 **N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
 
@@ -221,8 +221,8 @@ Session: orchestrator       ← user attaches here only
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
-  window 0: WORK-pm4         ← /worker skill (Claude Code, yolo mode)
-  window 1: WORK-xyz         ← /worker skill (Claude Code, yolo mode)
+  window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
+  window 1: WORK-xyz         ← /implementer skill (Claude Code, yolo mode)
   window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
@@ -239,7 +239,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 |---|---|---|
 | `/spokesman` | User (manually) | `plugins/agentic-workflows/skills/spokesman/SKILL.md` |
 | `/orchestrator` | User (manually, legacy) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
-| `/worker` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/worker/SKILL.md` |
+| `/implementer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/implementer/SKILL.md` |
 | `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
 | `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
 | `/designer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/designer/SKILL.md` |
@@ -251,7 +251,7 @@ Skills inherit from a two-level base hierarchy:
 ```
 shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
   ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
-  │     └── worker, planner, brainstormer
+  │     └── implementer, planner, brainstormer
   └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
         └── plan-reviewer, pr-reviewer
 ```
@@ -369,18 +369,18 @@ timestamp       component       event_type                  slug
 2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
 2026-04-26T...  pr-reviewer     pr-review-started           WORK-xyz
 2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
-2026-04-26T...  worker          started                     WORK-xyz
-2026-04-26T...  worker          signaling-attention         WORK-xyz
-2026-04-26T...  worker          resumed                     WORK-xyz
-2026-04-26T...  worker          signaling-plan              WORK-xyz
-2026-04-26T...  worker          resumed-from-plan           WORK-xyz
-2026-04-26T...  worker          implementing                WORK-xyz
-2026-04-26T...  worker          pr-created                  WORK-xyz
-2026-04-26T...  worker          ci-wait-start               WORK-xyz
-2026-04-26T...  worker          ci-wait-complete            WORK-xyz
-2026-04-26T...  worker          signaling-attention-pr-ready WORK-xyz
-2026-04-26T...  worker          approved                    WORK-xyz
-2026-04-26T...  worker          feedback-received           WORK-xyz
+2026-04-26T...  implementer     started                     WORK-xyz
+2026-04-26T...  implementer     signaling-attention         WORK-xyz
+2026-04-26T...  implementer     resumed                     WORK-xyz
+2026-04-26T...  implementer     signaling-plan              WORK-xyz
+2026-04-26T...  implementer     resumed-from-plan           WORK-xyz
+2026-04-26T...  implementer     implementing                WORK-xyz
+2026-04-26T...  implementer     pr-created                  WORK-xyz
+2026-04-26T...  implementer     ci-wait-start               WORK-xyz
+2026-04-26T...  implementer     ci-wait-complete            WORK-xyz
+2026-04-26T...  implementer     signaling-attention-pr-ready WORK-xyz
+2026-04-26T...  implementer     approved                    WORK-xyz
+2026-04-26T...  implementer     feedback-received           WORK-xyz
 2026-04-26T...  designer        started                     WORK-xyz
 2026-04-26T...  designer        signaling-attention         WORK-xyz
 2026-04-26T...  designer        resumed                     WORK-xyz
@@ -458,13 +458,13 @@ Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
 | Mode | Behavior |
 |---|---|
 | `standard` (default) | User manually reviews plans and PRs; reviewers spawn only on explicit user request |
-| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; review is passed back to workers automatically; user only approves the final PR |
+| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; review is passed back to implementers automatically; user only approves the final PR |
 
 **`auto-review` mode flow:**
-1. When a plan is ready → plan-reviewer spawns automatically, review passed back to worker (no user prompt)
-2. When a PR is ready → pr-reviewer spawns automatically, review passed back to worker (no user prompt); worker applies fixes and re-signals when ready
-3. After worker re-signals PR-ready (post-review) → user sees the final PR and approves or gives feedback
-4. Worker questions → user is always asked (no automation for Q&A)
+1. When a plan is ready → plan-reviewer spawns automatically, review passed back to implementer (no user prompt)
+2. When a PR is ready → pr-reviewer spawns automatically, review passed back to implementer (no user prompt); implementer applies fixes and re-signals when ready
+3. After implementer re-signals PR-ready (post-review) → user sees the final PR and approves or gives feedback
+4. Implementer questions → user is always asked (no automation for Q&A)
 
 Example:
 ```bash

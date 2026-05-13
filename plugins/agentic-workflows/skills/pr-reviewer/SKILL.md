@@ -46,10 +46,10 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE={{AGENTMESH}}/signals/queue
-SEQ_FILE={{AGENTMESH}}/signals/<slug>.seq
-LOG={{AGENTMESH}}/signals/events.log
-SIGNAL_HELPER={{AGENTMESH}}/scripts/signal-agent.sh
+QUEUE=~/agentmesh/signals/queue
+SEQ_FILE=~/agentmesh/signals/<slug>.seq
+LOG=~/agentmesh/signals/events.log
+SIGNAL_HELPER=~/agentmesh/scripts/signal-agent.sh
 ```
 
 ---
@@ -98,8 +98,8 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 
 Initialize the signal helper:
 ```bash
-LOG={{AGENTMESH}}/signals/events.log
-source {{AGENTMESH}}/scripts/signal-agent.sh
+LOG=~/agentmesh/signals/events.log
+source ~/agentmesh/scripts/signal-agent.sh
 signal_init "<slug>"
 printf '%s	pr-reviewer  	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
@@ -109,7 +109,7 @@ printf '%s	pr-reviewer  	started	<slug>
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source {{AGENTMESH}}/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	pr-reviewer  	<event>	<slug>
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	pr-reviewer  	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.

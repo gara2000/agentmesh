@@ -218,7 +218,7 @@ Decide agent type using your judgment — you have access to the full task title
 - **brainstormer**: the task explicitly asks to generate ideas, explore options, brainstorm approaches, or produce a menu of possibilities for the user to choose from
 - **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
 - **designer**: the task involves building a UI, frontend interface, design system, or visual component — requires aesthetic design thinking and decomposition into frontend implementation subtasks
-- **worker**: any other concrete, well-defined implementation task (the default)
+- **implementer**: any other concrete, well-defined implementation task (the default)
 
 Then dispatch: log `task-triaged` → `send_cmd <slug> spawn <agent-type>`
 

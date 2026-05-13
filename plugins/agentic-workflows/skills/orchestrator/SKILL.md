@@ -91,7 +91,7 @@ When in doubt between planner and worker → use worker (decomposition should on
 ### Spawning a worker
 
 ```bash
-bash ~/agentmesh/scripts/spawn-agent.sh workers <task-slug> /worker <task-slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers <task-slug> /implementer <task-slug> <PROJECT>
 echo "<task-slug> <task-slug>" >> ~/agentmesh/signals/workers
 printf '%s\torchestrator \tworker-spawned\t<task-slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
@@ -673,7 +673,7 @@ bash $AGENTMESH/scripts/task-done.sh <slug> <PROJECT>
 ```bash
 # Spawn a fresh worker directly in the workers session
 notecove task change <slug> --state Doing
-bash ~/agentmesh/scripts/spawn-agent.sh workers <slug> /worker <slug> <PROJECT>
+bash ~/agentmesh/scripts/spawn-agent.sh workers <slug> /implementer <slug> <PROJECT>
 echo "<slug> <slug>" >> ~/agentmesh/signals/workers
 ```
 
