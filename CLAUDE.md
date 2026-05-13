@@ -96,7 +96,7 @@ The orchestrator translates worker events into Spokesman events:
 Responsibilities:
 - Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
 - Block on `spokesman-event` and drain `spokesman-queue` after each unblock
-- Triage new tasks (`event:task-ready`): decide agent type (implementer/planner/brainstormer) using LLM judgment and send `spawn` command back to orchestrator.py
+- Triage new tasks (`event:task-ready`): use the task's `typeIds` field to map to an agent type, then fall back to LLM judgment if no mapping is found; send `spawn` command back to orchestrator.py
 - Present user-attention events to the user (questions, plan ready, PR ready, review results)
 - Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
 - When all tasks complete: tell orchestrator.py to shut down and exit

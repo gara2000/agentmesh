@@ -85,7 +85,7 @@ flowchart TD
     A([NoteCove: Ready tasks]) --> B{Orchestrator picks up\nup to max-workers tasks}
     B --> C[Mark task Doing]
     C --> D[Forward to Spokesman\nvia spokesman-queue\nevent:task-ready]
-    D --> E[Spokesman decides\nagent type via LLM triage]
+    D --> E[Spokesman decides agent type:\n1. typeIds mapping\n2. LLM fallback]
     E --> F[Spokesman sends\nspawn cmd to orchestrator]
     F --> G{Agent type}
     G -->|implementer| W[Spawn /implementer]
