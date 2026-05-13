@@ -395,6 +395,7 @@ class Orchestrator:
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
+            self.pick_up_ready_tasks()
         elif cmd in ("done", "pr-approved"):
             log("orchestrator ", "review-approved", slug)
             subprocess.run(["bash", str(EVENTS / "pr-approved.sh"), slug, resume_sig, self.project])
@@ -421,6 +422,9 @@ class Orchestrator:
             log("orchestrator ", "reviewer-spawned", slug)
             _print(f"spawned pr-reviewer for {slug}")
             (SIGNALS / f"{slug}.review-start").touch()
+        elif cmd == "scan":
+            # No-op command; just triggers pick_up_ready_tasks() to check for new Ready tasks.
+            self.pick_up_ready_tasks()
         else:
             log("orchestrator ", f"unknown-cmd:{cmd}", slug)
             _print(f"unknown cmd: {cmd} ({slug})")
