@@ -448,6 +448,19 @@ printf '%s\timplementer  \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%
 sleep 15
 ```
 
+**No-CI short-circuit** — if no checks are registered after the initial delay, treat as already green and skip polling. `gh pr checks` (without `--required`) blocks indefinitely on repos with no CI configured, so this check must come first:
+```bash
+_ALL_CHECKS=$(gh pr checks "$PR_URL" --json name,bucket 2>/dev/null || echo "[]")
+_TOTAL_CHECKS=$(echo "$_ALL_CHECKS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+if [ "$_TOTAL_CHECKS" = "0" ]; then
+  CI_RESULT="pass"
+  printf '%s\timplementer  \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  echo "CI_RESULT=pass (no CI checks configured)"
+fi
+```
+
+If `CI_RESULT` is already `pass` after the short-circuit, skip the polling loop below and continue to Phase 5c.
+
 **Polling loop** — poll every 30 seconds for up to 10 minutes per Bash call. Use the `bucket` field (not `state`) which `gh pr checks --json` normalizes to one of: `pass`, `fail`, `pending`, `skipping`, `cancel`. Use `--required` to filter to required checks only.
 
 Track the call number in `CI_POLL_ROUND` (set before each re-call). Stop and escalate when `CI_POLL_ROUND` reaches 3 (total ~30 minutes across calls).
