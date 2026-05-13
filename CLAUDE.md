@@ -164,6 +164,21 @@ Responsibilities:
 - Never create subtasks — it is a leaf agent
 - Never mark its own task `Done`
 
+### Documenter
+
+**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
+
+Responsibilities:
+- Pick up the assigned documentation task from NoteCove
+- Read code to understand it; write or update README files, API docs, inline comments, and architecture notes
+- Ask questions via `QUESTIONS-<N>` notes if documentation scope is ambiguous
+- Skip the plan phase — proceed directly from exploration to writing (low risk, docs-only)
+- Create a docs-only PR (no logic changes, no test-breaking changes)
+- Signal `Attention` when PR is ready — standard approval/feedback loop
+- Exit only after receiving the orchestrator's resume signal (user approved)
+- Never change logic, fix bugs, add features, or rename variables
+- Never mark its own task `Done`
+
 ### Dispatcher
 
 **One instance.** Runs in the `orchestrator` session, window `dispatcher`. Pure bash, no Claude.
@@ -239,6 +254,7 @@ Session: workers
   window 1: WORK-xyz         ← /implementer skill (Claude Code, yolo mode)
   window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: WORK-def         ← /investigator skill (Claude Code, yolo mode) — for research/context-gathering tasks
+  window N: WORK-ghi         ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -259,6 +275,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
 | `/designer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/designer/SKILL.md` |
 | `/investigator` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/investigator/SKILL.md` |
+| `/documenter` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/documenter/SKILL.md` |
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
 | `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
@@ -267,7 +284,7 @@ Skills inherit from a two-level base hierarchy:
 ```
 shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
   ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
-  │     └── implementer, planner, brainstormer, investigator
+  │     └── implementer, planner, brainstormer, investigator, documenter
   └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
         └── plan-reviewer, pr-reviewer
 ```
@@ -412,6 +429,16 @@ timestamp       component       event_type                  slug
 2026-04-26T...  investigator    researching                 WORK-xyz
 2026-04-26T...  investigator    signaling-completion        WORK-xyz
 2026-04-26T...  investigator    approved                    WORK-xyz
+2026-04-26T...  documenter      started                     WORK-xyz
+2026-04-26T...  documenter      signaling-attention         WORK-xyz
+2026-04-26T...  documenter      resumed                     WORK-xyz
+2026-04-26T...  documenter      implementing                WORK-xyz
+2026-04-26T...  documenter      ci-wait-start               WORK-xyz
+2026-04-26T...  documenter      ci-wait-complete            WORK-xyz
+2026-04-26T...  documenter      pr-created                  WORK-xyz
+2026-04-26T...  documenter      signaling-attention-pr-ready WORK-xyz
+2026-04-26T...  documenter      approved                    WORK-xyz
+2026-04-26T...  documenter      feedback-received           WORK-xyz
 ```
 
 ---

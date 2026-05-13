@@ -19,6 +19,7 @@ Session: workers
   window 0: WORK-42            ← /implementer skill (Claude Code, yolo mode)
   window 1: WORK-57            ← /implementer skill (Claude Code, yolo mode)
   window N: WORK-abc           ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
+  window N: WORK-def           ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
   window N: plan-rev-WORK-42   ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-42     ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -91,7 +92,8 @@ flowchart TD
     G -->|planner| P[Spawn /planner]
     G -->|brainstormer| BR[Spawn /brainstormer]
     G -->|designer| DE[Spawn /designer]
-    W & P & BR & DE --> H[Register in signals/workers]
+    G -->|documenter| DOC[Spawn /documenter]
+    W & P & BR & DE & DOC --> H[Register in signals/workers]
     H --> I([Enter event loop])
 ```
 
