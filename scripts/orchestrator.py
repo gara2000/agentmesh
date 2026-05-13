@@ -381,7 +381,7 @@ class Orchestrator:
             # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
             # validating against a hardcoded allowlist — once all skills declare role: this
             # list can be driven by discovered skill files rather than maintained here.
-            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer") else "implementer"
+            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator") else "implementer"
             self._in_flight.discard(slug)
             spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
             with open(SIGNALS / "workers", "a") as f:

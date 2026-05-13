@@ -58,7 +58,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 <!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
 | Event Tag | Fired by | Meaning |
 |---|---|---|
-| `event:questions` | Implementer / Planner / Brainstormer | Agent has questions for the user |
+| `event:questions` | Implementer / Planner / Brainstormer / Investigator | Agent has questions for the user |
 | `event:plan-ready` | Implementer | Plan note written (first submission), awaiting review |
 | `event:plan-revised` | Implementer | Plan revised after reviewer feedback; re-review requested |
 | `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
@@ -68,7 +68,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
 | `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
-| `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
+| `event:completion` | Brainstormer / Planner / Designer / Investigator | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
 | `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
@@ -150,6 +150,20 @@ Responsibilities:
 - Never implement code — designs and decomposes only
 - Never mark its own task `Done`
 
+### Investigator
+
+**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
+
+Responsibilities:
+- Pick up the assigned research task from NoteCove
+- Explore task context, the codebase, and external resources (WebSearch/WebFetch)
+- Ask questions via `QUESTIONS-<N>` notes if scope is ambiguous
+- Write structured Context notes under a `Context/` subfolder in the task folder
+- Signal `event:completion` — orchestrator auto-acks and marks Done
+- Never write code or create PRs — research and documentation only
+- Never create subtasks — it is a leaf agent
+- Never mark its own task `Done`
+
 ### Dispatcher
 
 **One instance.** Runs in the `orchestrator` session, window `dispatcher`. Pure bash, no Claude.
@@ -224,6 +238,7 @@ Session: workers
   window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
   window 1: WORK-xyz         ← /implementer skill (Claude Code, yolo mode)
   window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
+  window N: WORK-def         ← /investigator skill (Claude Code, yolo mode) — for research/context-gathering tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -243,6 +258,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
 | `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
 | `/designer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/designer/SKILL.md` |
+| `/investigator` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/investigator/SKILL.md` |
 | `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
 | `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
 
@@ -251,7 +267,7 @@ Skills inherit from a two-level base hierarchy:
 ```
 shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
   ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
-  │     └── implementer, planner, brainstormer
+  │     └── implementer, planner, brainstormer, investigator
   └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
         └── plan-reviewer, pr-reviewer
 ```
@@ -390,6 +406,12 @@ timestamp       component       event_type                  slug
 2026-04-26T...  designer        resumed-from-design-revised WORK-xyz
 2026-04-26T...  designer        signaling-completion        WORK-xyz
 2026-04-26T...  designer        approved                    WORK-xyz
+2026-04-26T...  investigator    started                     WORK-xyz
+2026-04-26T...  investigator    signaling-attention         WORK-xyz
+2026-04-26T...  investigator    resumed                     WORK-xyz
+2026-04-26T...  investigator    researching                 WORK-xyz
+2026-04-26T...  investigator    signaling-completion        WORK-xyz
+2026-04-26T...  investigator    approved                    WORK-xyz
 ```
 
 ---

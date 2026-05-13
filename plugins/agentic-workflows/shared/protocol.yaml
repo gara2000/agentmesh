@@ -4,7 +4,7 @@
 
 events:
   questions:
-    fired_by: [implementer, planner, brainstormer, designer]
+    fired_by: [implementer, planner, brainstormer, designer, investigator]
     next_state: doing
     requires_user_input: true
     meaning: "Agent has questions for the user"
@@ -67,7 +67,7 @@ events:
     meaning: "Design revised after user feedback; re-review requested"
 
   completion:
-    fired_by: [brainstormer, planner, designer]
+    fired_by: [brainstormer, planner, designer, investigator]
     next_state: done
     requires_user_input: false
     meaning: "Subtasks created (or skipped), parent marked Done"
