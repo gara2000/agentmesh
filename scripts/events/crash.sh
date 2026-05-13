@@ -15,5 +15,9 @@ rm -f "${SIGNALS}/${SLUG}.merged" "${SIGNALS}/${SLUG}.reviewed" "${SIGNALS}/${SL
 rm -f "${SIGNALS}/${SLUG}.plan-review-count" "${SIGNALS}/${SLUG}.pr-review-count"
 bash "${SCRIPTS}/task-done.sh" "$SLUG" "$PROJECT"
 $NOTECOVE task change "$SLUG" --state Doing
-bash "${SCRIPTS}/spawn-agent.sh" workers "$SLUG" /worker "$SLUG" "$PROJECT"
-echo "${SLUG} ${SLUG}" >> "${SIGNALS}/workers"
+# Re-spawn using the original agent type recorded in the workers registry (3rd field).
+# Fall back to implementer if the entry is missing or has no type field.
+_agent_type=$(grep "^${SLUG} " "${SIGNALS}/workers" 2>/dev/null | awk '{print $3}' | head -1)
+_agent_type=${_agent_type:-implementer}
+bash "${SCRIPTS}/spawn-agent.sh" workers "$SLUG" "/${_agent_type}" "$SLUG" "$PROJECT"
+echo "${SLUG} ${SLUG} ${_agent_type}" >> "${SIGNALS}/workers"
