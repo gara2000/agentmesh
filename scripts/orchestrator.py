@@ -440,8 +440,11 @@ class Orchestrator:
         )
         if running.returncode == 0:
             return  # already running
-        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 2>/dev/null || true")
-        tmux(f"send-keys -t 'orchestrator:pr-mon-{slug}' 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}' Enter")
+        # Pass the command directly to new-window so tmux runs it immediately without
+        # going through an interactive shell. The send-keys approach is unreliable when
+        # called from a Python subprocess: the zsh initialization in the new window
+        # (loading .zshrc) can cause the buffered send-keys input to be lost.
+        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}'")
         log("orchestrator ", "pr-monitor-spawned", slug)
         _print(f"spawned pr-monitor for {slug} ({pr_url})")
 
