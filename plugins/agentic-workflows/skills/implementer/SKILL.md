@@ -1,13 +1,13 @@
 ---
-name: worker
+name: implementer
 extends: ../../shared/base-implementer.md
-description: Worker agent that picks up an assigned NoteCove task, works through it autonomously, and signals the orchestrator when input is needed or work is done — never interacts with the user directly
+description: Implementer agent that picks up an assigned NoteCove task, implements it by writing code and creating a PR, and signals the orchestrator when input is needed or work is done — never interacts with the user directly
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, git *, gh pr *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep, Edit, Write
-hint: "Worker agent for an assigned task. Required: --task <slug> --project <key>"
-agent-user: "Worker"
-log-prefix: "worker       "
-role: worker
+hint: "Implementer agent for an assigned task. Required: --task <slug> --project <key>"
+agent-user: "Implementer"
+log-prefix: "implementer  "
+role: implementer
 events:
   - questions
   - plan-ready
@@ -30,12 +30,12 @@ events:
 | `event:pr-ready-final:<url>` | `<slug>:event:pr-ready-final:<url>` | PR ready for user approval — no further automated review needed |
 <!-- EVENTS-TABLE:END -->
 
-# Worker — NoteCove Task Worker Agent
+# Implementer — NoteCove Task Implementer Agent
 
 **Arguments:** $ARGUMENTS
 
 <!-- BASE-AGENT:START (do not edit — run ./build.sh to refresh) -->
-<!-- Implementer-family base file (base-agent.md → base-implementer.md → worker/planner/brainstormer).
+<!-- Implementer-family base file (base-agent.md → base-implementer.md → implementer/planner/brainstormer).
      Contains shared signal protocol (from base-agent.md) plus folder management, exploration,
      questions, and proactive issue reporting conventions used only by implementer agents.
 
@@ -55,10 +55,10 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE={{AGENTMESH}}/signals/queue
-SEQ_FILE={{AGENTMESH}}/signals/<slug>.seq
-LOG={{AGENTMESH}}/signals/events.log
-SIGNAL_HELPER={{AGENTMESH}}/scripts/signal-agent.sh
+QUEUE=~/agentmesh/signals/queue
+SEQ_FILE=~/agentmesh/signals/<slug>.seq
+LOG=~/agentmesh/signals/events.log
+SIGNAL_HELPER=~/agentmesh/scripts/signal-agent.sh
 ```
 
 ---
@@ -107,10 +107,10 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 
 Initialize the signal helper:
 ```bash
-LOG={{AGENTMESH}}/signals/events.log
-source {{AGENTMESH}}/scripts/signal-agent.sh
+LOG=~/agentmesh/signals/events.log
+source ~/agentmesh/scripts/signal-agent.sh
 signal_init "<slug>"
-printf '%s	worker       	started	<slug>
+printf '%s	implementer  	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
@@ -118,7 +118,7 @@ printf '%s	worker       	started	<slug>
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source {{AGENTMESH}}/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	implementer  	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
 - **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
@@ -220,12 +220,12 @@ EOF
 
 Set task to Attention and signal:
 ```bash
-printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:questions"
+printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Implementer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -301,12 +301,12 @@ EOF
 
 Set task to Attention and signal for plan review:
 ```bash
-printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:plan-ready"
+printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Implementer" "event:plan-ready"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:plan-ready" "doing"
-printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
@@ -314,12 +314,12 @@ After confirmed resume:
 2. If no significant changes needed → proceed directly to Phase 4 without re-signaling.
 3. If plan requires revision → update the `<slug>/PLAN` note, then signal `event:plan-revised` to request another review:
 ```bash
-printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:plan-revised"
+printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Implementer" "event:plan-revised"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:plan-revised" "doing"
-printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 Repeat step 1–3 as needed; the orchestrator enforces the re-review cycle limit.
 
@@ -350,7 +350,7 @@ Using a worktree per task ensures parallel workers never conflict on branch chec
 
 Log the start of implementation:
 ```bash
-printf '%s\tworker       \timplementing\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \timplementing\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 - Write tests first, then implement
@@ -386,7 +386,7 @@ If changes are detected, read `docs/agentic-workflow.md` and the changed files, 
 
 Add a task comment summarizing what was done:
 ```bash
-notecove task comments add <slug> --user "Worker" "Implementation complete: <brief summary>"
+notecove task comments add <slug> --user "Implementer" "Implementation complete: <brief summary>"
 ```
 
 Proceed directly to Phase 5. After creating the PR, signal `Attention` so the orchestrator can surface the work to the user.
@@ -444,7 +444,7 @@ After PR creation, poll required CI checks before surfacing the PR to the user. 
 
 **Initial delay** — checks may not register on GitHub immediately after PR creation:
 ```bash
-printf '%s\tworker       \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 sleep 15
 ```
 
@@ -486,7 +486,7 @@ else:
   sleep 30
 done
 
-printf '%s\tworker       \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 echo "CI_RESULT=$CI_RESULT"
 ```
 
@@ -531,12 +531,12 @@ Options:
 **Answer:** _(write here)_
 EOF
 
-printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:questions"
+printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Implementer" "event:questions"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 signal_attention "event:questions" "doing"
-printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 **Reading the user's response** — the `notecove note create` call above returns JSON with the new note's `id`. Capture it and use it to read back the note after resuming:
@@ -572,21 +572,21 @@ EOF
 
 Log the PR creation and signal `Attention` (PR ready):
 ```bash
-printf '%s\tworker       \tpr-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tpr-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 ```bash
-printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:pr-ready:$PR_URL"
+printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Implementer" "event:pr-ready:$PR_URL"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
 # Break on either 'done' (approved) or 'doing' (feedback given)
 signal_attention "event:pr-ready:$PR_URL" "done" "doing"
-printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After unblocking, check which state was set:
-- **`done`** — user approved. Log `printf '%s\tworker       \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Worker exits. Do not mark task Done yourself — the orchestrator does that.
-- **`doing`** — feedback received (from an auto-reviewer or the user). Log `printf '%s\tworker       \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments and fetch PR comments:
+- **`done`** — user approved. Log `printf '%s\timplementer  \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Worker exits. Do not mark task Done yourself — the orchestrator does that.
+- **`doing`** — feedback received (from an auto-reviewer or the user). Log `printf '%s\timplementer  \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments and fetch PR comments:
   ```bash
   gh pr view "$PR_URL" --comments
   ```
@@ -594,24 +594,24 @@ After unblocking, check which state was set:
 
   Use `event:pr-revised` when significant changes were made and another automated review pass is warranted (orchestrator will spawn pr-reviewer again, subject to the review limit):
   ```bash
-  printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-  notecove task comments add <slug> --user "Worker" "event:pr-revised:$PR_URL"
+  printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  notecove task comments add <slug> --user "Implementer" "event:pr-revised:$PR_URL"
   notecove task change <slug> --state Attention
   # IMPORTANT: call this Bash block with timeout=600000
   # Break on either 'done' (approved) or 'doing' (feedback given)
   signal_attention "event:pr-revised:$PR_URL" "done" "doing"
-  printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   ```
 
   Use `event:pr-ready-final` when the PR is ready for the user's final call (no further automated review needed — use this after addressing auto-reviewer feedback when you consider the PR complete, OR after addressing user feedback):
   ```bash
-  printf '%s\tworker       \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-  notecove task comments add <slug> --user "Worker" "event:pr-ready-final:$PR_URL"
+  printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  notecove task comments add <slug> --user "Implementer" "event:pr-ready-final:$PR_URL"
   notecove task change <slug> --state Attention
   # IMPORTANT: call this Bash block with timeout=600000
   # Break on either 'done' (approved) or 'doing' (feedback given)
   signal_attention "event:pr-ready-final:$PR_URL" "done" "doing"
-  printf '%s\tworker       \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   ```
 
   Repeat until state is `done`.
@@ -626,14 +626,14 @@ After unblocking, check which state was set:
 | Plan | `<slug>/PLAN` |
 | Completion | `<slug>/COMPLETION` |
 
-**Task states used by worker**: `Doing` (working), `Attention` (needs user input, plan review, or PR ready)
+**Task states used by implementer**: `Doing` (working), `Attention` (needs user input, plan review, or PR ready)
 **Task states set by orchestrator**: `Done` (approved), `Doing` (resumed), `In Review` (reviewer agent dispatched)
 
 ---
 
 ## Critical Rules
 
-*(See Shared Critical Rules above. Worker-specific additions:)*
+*(See Shared Critical Rules above. Implementer-specific additions:)*
 
 - **Never push to `main`** — always work in the task worktree (`WORKTREE_PATH`) on branch `<slug>-impl`. Phase 5b includes a guard that aborts if `git branch --show-current` returns `main`.
 - **The PR-ready Attention loop breaks on `done` OR `doing`** — `done` means approved (exit), `doing` means feedback (continue working and re-signal `Attention` when ready).

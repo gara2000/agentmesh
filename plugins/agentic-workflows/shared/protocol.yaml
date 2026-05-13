@@ -4,39 +4,39 @@
 
 events:
   questions:
-    fired_by: [worker, planner, brainstormer, designer]
+    fired_by: [implementer, planner, brainstormer, designer]
     next_state: doing
     requires_user_input: true
     meaning: "Agent has questions for the user"
 
   plan-ready:
-    fired_by: [worker, planner]
+    fired_by: [implementer, planner]
     next_state: doing
     requires_user_input: false
     meaning: "Plan note written (first submission), awaiting review"
 
   plan-revised:
-    fired_by: [worker]
+    fired_by: [implementer]
     next_state: doing
     requires_user_input: false
     meaning: "Plan revised after reviewer feedback; re-review requested"
 
   pr-ready:
-    fired_by: [worker]
+    fired_by: [implementer]
     url_bearing: true
     next_state: doing
     requires_user_input: false
     meaning: "PR created, signaling readiness to orchestrator"
 
   pr-revised:
-    fired_by: [worker]
+    fired_by: [implementer]
     url_bearing: true
     next_state: doing
     requires_user_input: false
     meaning: "PR revised after reviewer feedback; re-review requested"
 
   pr-ready-final:
-    fired_by: [worker]
+    fired_by: [implementer]
     url_bearing: true
     next_state: doing
     requires_user_input: true

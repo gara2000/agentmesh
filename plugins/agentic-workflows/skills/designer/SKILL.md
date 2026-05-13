@@ -5,6 +5,9 @@ description: Designer agent that receives a frontend/UI task, applies design thi
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, git *, echo *, cat *, mkdir *, python3 *), Read, Glob, Grep
 hint: "Designer agent for frontend task decomposition. Required: --task <slug> --project <key>"
+agent-user: "Designer"
+log-prefix: "designer     "
+role: designer
 ---
 
 # Designer — NoteCove Frontend Design & Task Decomposition Agent
@@ -23,9 +26,9 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE=/Users/firas.gara/agentmesh/signals/queue
-SEQ_FILE=/Users/firas.gara/agentmesh/signals/<slug>.seq
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+QUEUE=~/agentmesh/signals/queue
+SEQ_FILE=~/agentmesh/signals/<slug>.seq
+LOG=~/agentmesh/signals/events.log
 SIGNAL_HELPER=~/agentmesh/scripts/signal-agent.sh
 ```
 
@@ -73,169 +76,27 @@ Where `<expected-state>` is `doing` after signaling `Attention` for questions or
 
 ## Step 1: Initialize
 
-Initialize the signal helper and resolve the Triage folder:
+Initialize the signal helper:
 ```bash
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+LOG=~/agentmesh/signals/events.log
 source ~/agentmesh/scripts/signal-agent.sh
 signal_init "<slug>"
-TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
-printf '%s	worker       	started	<slug>
+printf '%s	designer     	started	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
-
-The orchestrator has already initialized NoteCove and set the task to `Doing`. Fetch the task:
-
-```bash
-notecove task show <slug> --format json
-```
-
-Verify state is `doing`. If not, stop.
-
-Fetch full task content:
-```bash
-notecove task show <slug> --format markdown-with-comments
-```
-
-### Find or create task folder
-
-Follow this lookup order:
-
-1. **Check task description** for a `[[F:<folder-id>|...]]` link. If found → use that folder ID.
-2. **If no link found**, check whether a folder named `<slug>` already exists under the task's parent folder (`folderId` from JSON):
-   ```bash
-   notecove folder list --json | python3 -c "
-   import sys, json
-   folders = json.load(sys.stdin)
-   match = next((f for f in folders if f['name'] == '<slug>' and f['parentId'] == '<task-parent-folder-id>'), None)
-   print(match['id'] if match else '')
-   "
-   ```
-   If a folder is found → use it and update the task description with the link:
-   ```bash
-   notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
-   ```
-3. **If no folder exists**, create one:
-   ```bash
-   notecove folder create "<slug>" --parent <task-parent-folder-id>
-   ```
-   Then append to task description: `[[F:<folder-longid>|<folder-path>]]`
-
-**In all cases where the folder already existed** (steps 1 or 2), list and read any existing notes to get context from prior work:
-```bash
-notecove note list --folder <task-folder-id> --json
-```
-For each note found, read its content with `notecove note show <note-id> --format markdown`. This gives you context from prior sessions (existing QUESTIONS rounds, PLAN, COMPLETION, etc.) before proceeding.
-
-All notes go directly in the task folder.
-
----
-
-## Phase 1: Exploration
-
-Study the task and all linked context.
-
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
-- Read linked tasks, notes, folders found in the description
-- Explore the codebase (Read, Glob, Grep)
-
-While exploring, note any issues, inconsistencies, or improvements you observe — even if unrelated to your task. Log them as triage tasks (see **Proactive Issue Reporting** below).
-
-Proceed automatically to Phase 2.
-
----
-
-## Phase 2: Questions (if needed)
-
-If the task is ambiguous or you need clarification before proceeding confidently, write a questions note for the user:
-
-```bash
-notecove note create "<slug>/QUESTIONS-<N>" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# Questions — Round <N>
-
-> **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
-
-## Q1: <question>
-
-**Answer:** _(write your answer here)_
-
-## Q2: <question>
-
-**Answer:** _(write your answer here)_
-EOF
-```
-
-Set task to Attention and signal:
-```bash
-printf '%s	worker       	signaling-attention	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Worker" "event:questions"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:questions" "doing"
-printf '%s	worker       	resumed	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```
-
-After confirmed resume:
-1. Read the task's latest comments for any feedback the orchestrator may have left: `notecove task show <slug> --format markdown-with-comments`
-2. Re-read the latest `<slug>/QUESTIONS-<N>` note to check for **inline answers** the user may have written directly in the note:
-   ```bash
-   notecove note show <questions-note-id> --format markdown
-   ```
-3. Also check for any `<slug>/ANSWER-<N>` notes the user may have written as a separate note.
-4. Combine all answers found (inline in the QUESTIONS note or in separate ANSWER notes).
-5. If more questions, create `QUESTIONS-<N+1>` and repeat.
-6. Only proceed when fully confident.
-
-Skip this phase entirely if the task is clear enough to proceed without ambiguity.
-
----
-
-## Proactive Issue Reporting
-
-During any phase of your work, if you notice anything worth tracking — bugs, inconsistencies, missing tests, documentation gaps, outdated code, security concerns, or improvement opportunities — create a task for it in the **Triage** folder, even if it is unrelated to your assigned task.
-
-```bash
-notecove task create "<clear, concise title>" \
-  --folder ${TRIAGE_FOLDER} \
-  --project WORK \
-  --content-file - --content-format markdown --json << 'EOF'
-## Observed issue
-
-<brief description of what you noticed and where>
-
-## Context
-
-Noticed while working on <slug> during <phase>.
-EOF
-```
-
-**When to file**: any time during exploration, implementation, or review — don't batch them up, file immediately so nothing is lost.
-
-**What qualifies**:
-- Bugs or error-prone patterns in code you read but didn't change
-- Missing or misleading documentation
-- Inconsistencies between docs and implementation
-- Tests that are absent, weak, or incorrect
-- Security or reliability concerns
-- Stale TODOs or dead code worth cleaning up
-
-**What does NOT qualify**: speculative future features, minor style preferences, or anything already tracked.
 
 ---
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	worker       	<event>	<slug>
+- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	designer     	<event>	<slug>
 ' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
 - **Never interact with the user directly.**
-- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type (event:questions, event:plan-ready, event:pr-ready:<url>, event:ideas-ready, event:selection-ready, event:completion, event:plan-review-complete, event:pr-review-complete). This replaces string-content heuristics.
+- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
 - **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
 - **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
 - **Never mark task Done** — only the orchestrator does that, after user approval.
 - **Signal before exiting** — even on error, signal so the orchestrator can clean up.
-- **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 <!-- BASE-AGENT:END -->
 
 ---
@@ -455,7 +316,7 @@ Designer exits after confirmed `done` state (orchestrator auto-acks designer com
 
 - **Never create child tasks before the design is approved** — the `event:design-ready` Attention signal is the approval gate.
 - **Do NOT set task state to Done in Phase 4** — `completion.sh` handles the Done transition. Setting Done before signaling `event:completion` creates a misleading `Done → Attention → Done` sequence.
-- **`--user "Designer"` for all comments** — Note: the injected base-agent questions block uses `--user "Worker"` (base template limitation); all designer-authored comments in Phases 3–5 must explicitly use `--user "Designer"`.
+- **`--user "Designer"` for all comments** — all designer-authored comments must explicitly use `--user "Designer"`.
 - **DESCRIPTION notes must be rich and unambiguous** — include aesthetic direction, design notes, exact files to create/modify, and acceptance criteria. The implementing worker must not need to speculate about design intent.
 - **Orchestrator comment identifiers**: use `--user "Designer"` for all comments so the orchestrator can distinguish designer attention events.
 - **Aesthetic choices must be bold and specific** — avoid generic AI aesthetics (Inter/Roboto fonts, purple gradients, predictable layouts). Commit to a clear conceptual direction and specify it precisely in the DESIGN note so implementing workers can execute it faithfully.

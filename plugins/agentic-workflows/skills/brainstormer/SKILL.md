@@ -31,7 +31,7 @@ events:
 **Arguments:** $ARGUMENTS
 
 <!-- BASE-AGENT:START (do not edit — run ./build.sh to refresh) -->
-<!-- Implementer-family base file (base-agent.md → base-implementer.md → worker/planner/brainstormer).
+<!-- Implementer-family base file (base-agent.md → base-implementer.md → implementer/planner/brainstormer).
      Contains shared signal protocol (from base-agent.md) plus folder management, exploration,
      questions, and proactive issue reporting conventions used only by implementer agents.
 
