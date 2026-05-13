@@ -381,11 +381,11 @@ class Orchestrator:
             # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
             # validating against a hardcoded allowlist — once all skills declare role: this
             # list can be driven by discovered skill files rather than maintained here.
-            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator") else "implementer"
+            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator", "documenter") else "implementer"
             self._in_flight.discard(slug)
             spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
             with open(SIGNALS / "workers", "a") as f:
-                f.write(f"{slug} {slug}\n")
+                f.write(f"{slug} {slug} {agent_type}\n")
             log("orchestrator ", f"{agent_type}-spawned", slug)
             _print(f"spawned {agent_type} for {slug}")
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
