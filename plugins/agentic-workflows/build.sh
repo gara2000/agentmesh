@@ -259,6 +259,26 @@ signal_attention "event:selection-ready" "doing"
 printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```''',
 
+    'design-ready': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-design\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:design-ready"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:design-ready" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed-from-design\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
+    'design-revised': '''\
+```bash
+printf '%s\\t{{LOG_PREFIX}}\\tsignaling-design-revised\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "{{AGENT_USER}}" "event:design-revised"
+notecove task change <slug> --state Attention
+# IMPORTANT: call this Bash block with timeout=600000
+signal_attention "event:design-revised" "doing"
+printf '%s\\t{{LOG_PREFIX}}\\tresumed-from-design-revised\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```''',
+
     'completion': '''\
 ```bash
 printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
