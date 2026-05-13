@@ -42,7 +42,9 @@ spawn_pr_monitor() {
     if tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qF "pr-mon-${slug}"; then
         return 0
     fi
-    tmux new-window -t orchestrator -n "pr-mon-${slug}" 2>/dev/null || true
-    tmux send-keys -t "orchestrator:pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" Enter
+    # Pass the command directly to new-window so tmux runs it immediately without
+    # going through an interactive shell. The send-keys approach is unreliable: the
+    # zsh initialization in the new window (.zshrc) can cause buffered input to be lost.
+    tmux new-window -t orchestrator -n "pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" 2>/dev/null || true
     log_event "pr-monitor-spawned" "$slug"
 }
