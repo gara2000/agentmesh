@@ -13,11 +13,12 @@ $NOTECOVE task comments add "$SLUG" --user "Orchestrator" "Worker crashed — re
 tmux kill-window -t "orchestrator:pr-mon-${SLUG}" 2>/dev/null || true
 rm -f "${SIGNALS}/${SLUG}.merged" "${SIGNALS}/${SLUG}.reviewed" "${SIGNALS}/${SLUG}.review-start"
 rm -f "${SIGNALS}/${SLUG}.plan-review-count" "${SIGNALS}/${SLUG}.pr-review-count"
-bash "${SCRIPTS}/task-done.sh" "$SLUG" "$PROJECT"
-$NOTECOVE task change "$SLUG" --state Doing
 # Re-spawn using the original agent type recorded in the workers registry (3rd field).
 # Fall back to implementer if the entry is missing or has no type field.
+# Read BEFORE task-done.sh, which removes the entry from signals/workers.
 _agent_type=$(grep "^${SLUG} " "${SIGNALS}/workers" 2>/dev/null | awk '{print $3}' | head -1)
 _agent_type=${_agent_type:-implementer}
+bash "${SCRIPTS}/task-done.sh" "$SLUG" "$PROJECT"
+$NOTECOVE task change "$SLUG" --state Doing
 bash "${SCRIPTS}/spawn-agent.sh" workers "$SLUG" "/${_agent_type}" "$SLUG" "$PROJECT"
 echo "${SLUG} ${SLUG} ${_agent_type}" >> "${SIGNALS}/workers"
