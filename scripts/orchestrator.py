@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from anomaly_checks import AnomalyChecker
@@ -458,11 +459,20 @@ class Orchestrator:
         )
         if running.returncode == 0:
             return  # already running
-        # Pass the command directly to new-window so tmux runs it immediately without
-        # going through an interactive shell. The send-keys approach is unreliable when
-        # called from a Python subprocess: the zsh initialization in the new window
-        # (loading .zshrc) can cause the buffered send-keys input to be lost.
-        tmux(f"new-window -t orchestrator -n pr-mon-{slug} 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}'")
+        # -d: do not switch focus to the new window so the orchestrator stays in its current window.
+        result = tmux(f"new-window -d -t orchestrator -n pr-mon-{slug} 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}'")
+        if result.returncode != 0:
+            log("orchestrator ", "pr-monitor-spawn-failed", slug)
+            _print(f"ERROR: failed to create pr-monitor window for {slug} (rc={result.returncode}, stderr={result.stderr.strip()!r})")
+            return
+        time.sleep(0.5)
+        verify = run_bash(
+            f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qF 'pr-mon-{slug}'"
+        )
+        if verify.returncode != 0:
+            log("orchestrator ", "pr-monitor-missing-after-spawn", slug)
+            _print(f"WARNING: pr-monitor window gone immediately after spawn for {slug} — script may have exited")
+            return
         log("orchestrator ", "pr-monitor-spawned", slug)
         _print(f"spawned pr-monitor for {slug} ({pr_url})")
 

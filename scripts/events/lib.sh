@@ -35,16 +35,3 @@ increment_review_count() {
     echo "$count" > "$f"
     echo "$count"
 }
-
-spawn_pr_monitor() {
-    local slug="${1:?slug required}" pr_url="${2:?pr_url required}"
-    # Idempotency guard: skip if a monitor for this slug is already running.
-    if tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qF "pr-mon-${slug}"; then
-        return 0
-    fi
-    # Pass the command directly to new-window so tmux runs it immediately without
-    # going through an interactive shell. The send-keys approach is unreliable: the
-    # zsh initialization in the new window (.zshrc) can cause buffered input to be lost.
-    tmux new-window -t orchestrator -n "pr-mon-${slug}" "bash ${SCRIPTS}/pr-monitor.sh ${slug} ${pr_url}" 2>/dev/null || true
-    log_event "pr-monitor-spawned" "$slug"
-}
