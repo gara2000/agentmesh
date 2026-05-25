@@ -84,17 +84,20 @@ Workers use distinct event tags to remove ambiguity from the orchestrator's rout
 flowchart TD
     A([NoteCove: Ready tasks]) --> B{Orchestrator picks up\nup to max-workers tasks}
     B --> C[Mark task Doing]
-    C --> D[Forward to Spokesman\nvia spokesman-queue\nevent:task-ready]
-    D --> E[Spokesman decides agent type:\n1. typeIds mapping\n2. LLM fallback]
-    E --> F[Spokesman sends\nspawn cmd to orchestrator]
-    F --> G{Agent type}
-    G -->|implementer| W[Spawn /implementer]
-    G -->|planner| P[Spawn /planner]
-    G -->|brainstormer| BR[Spawn /brainstormer]
-    G -->|designer| DE[Spawn /designer]
-    G -->|documenter| DOC[Spawn /documenter]
-    W & P & BR & DE & DOC --> H[Register in signals/workers]
-    H --> I([Enter event loop])
+    C --> D{typeId in TYPE_MAP?}
+    D -->|Yes| E[Orchestrator spawns\nworker directly\nlogs task-triaged]
+    D -->|No| F[Forward to Spokesman\nvia spokesman-queue\nevent:task-ready]
+    F --> G[Spokesman: LLM judgment\ndecides agent type]
+    G --> H[Spokesman sends\nspawn cmd to orchestrator]
+    H --> E
+    E --> I{Agent type}
+    I -->|implementer| W[Spawn /implementer]
+    I -->|planner| P[Spawn /planner]
+    I -->|brainstormer| BR[Spawn /brainstormer]
+    I -->|designer| DE[Spawn /designer]
+    I -->|documenter| DOC[Spawn /documenter]
+    W & P & BR & DE & DOC --> J[Register in signals/workers]
+    J --> K([Enter event loop])
 ```
 
 ### Signal Protocol
