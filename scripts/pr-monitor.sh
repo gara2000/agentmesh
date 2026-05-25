@@ -3,7 +3,7 @@
 # Usage: pr-monitor.sh <slug> <pr-url> [<interval-seconds>]
 # Runs in a background orchestrator window (orchestrator:pr-mon-<slug>).
 # Exits automatically after firing the merge event.
-set -euo pipefail
+set -uo pipefail
 
 SLUG="${1:?slug required}"
 PR_URL="${2:?pr-url required}"
