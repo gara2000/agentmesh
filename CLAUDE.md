@@ -409,8 +409,6 @@ timestamp       component       event_type                  slug
 2026-04-26T...  implementer     resumed-from-plan           WORK-xyz
 2026-04-26T...  implementer     implementing                WORK-xyz
 2026-04-26T...  implementer     pr-created                  WORK-xyz
-2026-04-26T...  implementer     ci-wait-start               WORK-xyz
-2026-04-26T...  implementer     ci-wait-complete            WORK-xyz
 2026-04-26T...  implementer     signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  implementer     approved                    WORK-xyz
 2026-04-26T...  implementer     feedback-received           WORK-xyz
@@ -433,8 +431,6 @@ timestamp       component       event_type                  slug
 2026-04-26T...  documenter      signaling-attention         WORK-xyz
 2026-04-26T...  documenter      resumed                     WORK-xyz
 2026-04-26T...  documenter      implementing                WORK-xyz
-2026-04-26T...  documenter      ci-wait-start               WORK-xyz
-2026-04-26T...  documenter      ci-wait-complete            WORK-xyz
 2026-04-26T...  documenter      pr-created                  WORK-xyz
 2026-04-26T...  documenter      signaling-attention-pr-ready WORK-xyz
 2026-04-26T...  documenter      approved                    WORK-xyz

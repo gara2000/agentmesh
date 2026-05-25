@@ -397,50 +397,6 @@ EOF
 echo "PR created: $PR_URL"
 ```
 
-### 4b-ci. Wait for CI checks to pass
-
-After PR creation, poll required CI checks (same as implementer Phase 5b-ci). Documenter follows the same CI gate — if required checks fail, escalate via `event:questions`.
-
-```bash
-printf '%s\tdocumenter   \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-sleep 15
-```
-
-Polling loop (same logic as implementer — poll every 30s, CI_POLL_ROUND up to 3, escalate on fail/timeout):
-
-```bash
-CI_RESULT="pending"
-CI_DEADLINE=$(( $(date +%s) + 570 ))
-# CI_POLL_ROUND must be set by the caller before each invocation (starts at 1)
-
-while true; do
-  [ "$(date +%s)" -ge "$CI_DEADLINE" ] && break
-  if CHECKS_JSON=$(gh pr checks "$PR_URL" --required --json name,bucket 2>/dev/null); then
-    CI_RESULT=$(echo "$CHECKS_JSON" | python3 -c "
-import sys, json
-checks = json.load(sys.stdin)
-if not checks:
-    print('pass'); sys.exit()
-buckets = {c['bucket'] for c in checks}
-if any(b in ('fail', 'cancel') for b in buckets):
-    print('fail')
-elif any(b == 'pending' for b in buckets):
-    print('pending')
-else:
-    print('pass')
-")
-  else
-    CI_RESULT="pending"
-  fi
-  [ "$CI_RESULT" = "pass" ] && break
-  [ "$CI_RESULT" = "fail" ] && break
-  sleep 30
-done
-
-printf '%s\tdocumenter   \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "CI_RESULT=$CI_RESULT"
-```
-
 ### 4c. Signal Attention (PR ready)
 
 Create a completion note:
