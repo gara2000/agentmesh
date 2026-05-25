@@ -419,7 +419,7 @@ if [ "$CURRENT_BRANCH" = "main" ]; then
 fi
 ```
 
-Capture the PR URL from `gh pr create` output — it is used in the CI gate and completion note:
+Capture the PR URL from `gh pr create` output — it is used in the completion note:
 ```bash
 git push -u origin "$CURRENT_BRANCH"
 PR_URL=$(gh pr create --title "<type>(<scope>): <summary> [<slug>]" --body "$(cat <<'EOF'
@@ -438,133 +438,6 @@ EOF
 echo "PR created: $PR_URL"
 ```
 
-### 5b-ci. Wait for CI checks to pass
-
-After PR creation, poll required CI checks before surfacing the PR to the user. This ensures the user only sees a PR that has already cleared automated testing.
-
-**Initial delay** — checks may not register on GitHub immediately after PR creation:
-```bash
-printf '%s\timplementer  \tci-wait-start\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-sleep 15
-```
-
-**No-CI short-circuit** — if no checks are registered after the initial delay, treat as already green and skip polling. `gh pr checks` (without `--required`) blocks indefinitely on repos with no CI configured, so this check must come first:
-```bash
-_ALL_CHECKS=$(gh pr checks "$PR_URL" --json name,bucket 2>/dev/null || echo "[]")
-_TOTAL_CHECKS=$(echo "$_ALL_CHECKS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
-if [ "$_TOTAL_CHECKS" = "0" ]; then
-  CI_RESULT="pass"
-  printf '%s\timplementer  \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-  echo "CI_RESULT=pass (no CI checks configured)"
-fi
-```
-
-If `CI_RESULT` is already `pass` after the short-circuit, skip the polling loop below and continue to Phase 5c.
-
-**Polling loop** — poll every 30 seconds for up to 10 minutes per Bash call. Use the `bucket` field (not `state`) which `gh pr checks --json` normalizes to one of: `pass`, `fail`, `pending`, `skipping`, `cancel`. Use `--required` to filter to required checks only.
-
-Track the call number in `CI_POLL_ROUND` (set before each re-call). Stop and escalate when `CI_POLL_ROUND` reaches 3 (total ~30 minutes across calls).
-
-```bash
-CI_RESULT="pending"
-CI_DEADLINE=$(( $(date +%s) + 570 ))   # 9.5 min — leaves buffer before 10-min tool timeout
-# CI_POLL_ROUND must be set by the caller before each Bash block invocation (starts at 1)
-
-while true; do
-  [ "$(date +%s)" -ge "$CI_DEADLINE" ] && break
-
-  # Distinguish gh errors (non-zero exit) from an empty required-checks list (exit 0).
-  # On error, treat this poll cycle as pending and retry — avoids silently bypassing CI gate.
-  if CHECKS_JSON=$(gh pr checks "$PR_URL" --required --json name,bucket 2>/dev/null); then
-    CI_RESULT=$(echo "$CHECKS_JSON" | python3 -c "
-import sys, json
-checks = json.load(sys.stdin)
-# bucket values returned by gh: pass, fail, pending, skipping, cancel
-if not checks:
-    print('pass'); sys.exit()  # no required checks configured — treat as pass
-buckets = {c['bucket'] for c in checks}
-if any(b in ('fail', 'cancel') for b in buckets):
-    print('fail')
-elif any(b == 'pending' for b in buckets):
-    print('pending')
-else:
-    print('pass')
-")
-  else
-    CI_RESULT="pending"  # gh error (network/auth blip) — retry next cycle
-  fi
-
-  [ "$CI_RESULT" = "pass" ] && break
-  [ "$CI_RESULT" = "fail" ] && break
-  sleep 30
-done
-
-printf '%s\timplementer  \tci-wait-complete\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-echo "CI_RESULT=$CI_RESULT"
-```
-
-**After the polling block:**
-- `CI_RESULT=pass` → continue to Phase 5c normally.
-- `CI_RESULT=fail` → escalate to user (see below).
-- `CI_RESULT=pending` (loop hit the 9.5-minute deadline, CI still running) → increment `CI_POLL_ROUND`, re-call the polling block. When `CI_POLL_ROUND` reaches 3 (total ~30 minutes), treat as timeout and escalate instead of re-calling.
-
-**On CI failure or timeout** — create a QUESTIONS note with details and signal `event:questions`:
-
-```bash
-# Collect failure detail for the note
-FAILED_CHECKS=$(gh pr checks "$PR_URL" --required --json name,bucket 2>/dev/null | python3 -c "
-import sys, json
-checks = json.load(sys.stdin)
-non_pass = [c for c in checks if c['bucket'] not in ('pass', 'skipping')]
-if non_pass:
-    for c in non_pass:
-        print(f\"  - {c['name']}: {c['bucket']}\")
-else:
-    print('  (checks may have expired or no details available)')
-" 2>/dev/null || echo "  (could not retrieve check details)")
-
-CI_QUESTIONS_N=<next-questions-round-number>
-notecove note create "<slug>/QUESTIONS-${CI_QUESTIONS_N}" --folder <task-folder-id> --content-file - --format markdown --json << EOF
-# CI Gate — Round ${CI_QUESTIONS_N}
-
-Required CI checks did not pass for PR: $PR_URL
-
-## Failed / stalled checks
-
-${FAILED_CHECKS}
-
-> **How to answer:** Edit this note or create a \`<slug>/ANSWER-${CI_QUESTIONS_N}\` note.
-
-## Q1: How should I proceed?
-
-Options:
-- **Fix**: Investigate and fix the CI failure. I will push a new commit and re-run CI before signaling PR-ready again.
-- **Override**: Proceed to signal PR-ready now (please explain why CI failure is acceptable).
-
-**Answer:** _(write here)_
-EOF
-
-printf '%s\timplementer  \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Implementer" "event:questions"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:questions" "doing"
-printf '%s\timplementer  \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```
-
-**Reading the user's response** — the `notecove note create` call above returns JSON with the new note's `id`. Capture it and use it to read back the note after resuming:
-```bash
-# Capture note ID at creation time:
-CI_QUESTIONS_NOTE_ID=$(notecove note create ... --json | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-# After resumed, read the note and any separate ANSWER note:
-notecove note show "$CI_QUESTIONS_NOTE_ID" --format markdown
-notecove note list --folder <task-folder-id> --json  # look for ANSWER-<N> notes
-```
-
-- If the response says **fix** → investigate the failure (read `gh run view` or `gh pr checks "$PR_URL"`), make the fix, push a new commit, then re-run the CI polling block (loop back to step 5b-ci). Increment `CI_QUESTIONS_N` for the next escalation if needed.
-- If the response says **override / proceed** → skip remaining CI checks and continue to Phase 5c.
-
 ### 5c. Signal Attention (PR ready)
 
 Create a completion note (now that the PR URL is available):
@@ -577,9 +450,6 @@ notecove note create "<slug>/COMPLETION" --folder <task-folder-id> --content-fil
 
 ## PR
 <PR-URL>
-
-## Test results
-<results>
 EOF
 ```
 
