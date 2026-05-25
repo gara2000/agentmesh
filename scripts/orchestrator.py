@@ -28,6 +28,20 @@ EVENTS = SCRIPTS / "events"
 NOTECOVE_BIN = "node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
 # ---------------------------------------------------------------------------
+# Type → agent-type mapping (mirrors the mapping in spokesman SKILL.md)
+# ---------------------------------------------------------------------------
+
+TYPE_MAP: dict[str, str] = {
+    "feature":       "implementer",
+    "bug":           "implementer",
+    "plan":          "planner",
+    "brainstorming": "brainstormer",
+    "documentation": "documenter",
+    "design":        "designer",
+    "investigation": "investigator",
+}
+
+# ---------------------------------------------------------------------------
 # Protocol — valid event types (loaded from shared/protocol.yaml)
 # ---------------------------------------------------------------------------
 
@@ -377,17 +391,13 @@ class Orchestrator:
         _print(f"cmd {cmd} ({slug})" + (f" args={args}" if args else ""))
 
         if cmd == "spawn":
-            # Spokesman has triaged the task and decided the agent type.
+            # Spokesman has triaged the task (LLM fallback) and decided the agent type.
             # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
             # validating against a hardcoded allowlist — once all skills declare role: this
             # list can be driven by discovered skill files rather than maintained here.
             agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator", "documenter") else "implementer"
             self._in_flight.discard(slug)
-            spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
-            with open(SIGNALS / "workers", "a") as f:
-                f.write(f"{slug} {slug} {agent_type}\n")
-            log("orchestrator ", f"{agent_type}-spawned", slug)
-            _print(f"spawned {agent_type} for {slug}")
+            self._spawn_worker(slug, agent_type)
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock
             self.pick_up_ready_tasks()
         elif cmd == "resume":
@@ -432,6 +442,14 @@ class Orchestrator:
     # -----------------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------------
+
+    def _spawn_worker(self, slug: str, agent_type: str) -> None:
+        """Spawn a worker agent window and register it in the workers file."""
+        spawn_agent("workers", slug, f"/{agent_type}", slug, self.project)
+        with open(SIGNALS / "workers", "a") as f:
+            f.write(f"{slug} {slug} {agent_type}\n")
+        log("orchestrator ", f"{agent_type}-spawned", slug)
+        _print(f"spawned {agent_type} for {slug}")
 
     def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
         """Spawn a pr-monitor window for slug/pr_url (idempotent — no-op if already running)."""
@@ -528,6 +546,7 @@ class Orchestrator:
         tasks.sort(key=lambda t: t.get("priority") if t.get("priority") is not None else float("inf"))
         tasks = tasks[:slots]
 
+        needs_spokesman = False
         for task in tasks:
             slug_obj = task.get("slug", {})
             slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
@@ -541,11 +560,28 @@ class Orchestrator:
             notecove(f"task change {full_slug} --state Doing")
             log("orchestrator ", "task-picked-up", slug)
             _print(f"picked up {slug}: {title}")
-            self._in_flight.add(slug)
-            append_spokesman_queue(slug, "event:task-ready")
-            log("orchestrator ", "task-triage-forwarded", slug)
 
-        tmux_signal("spokesman-event")
+            # Best-effort triage: check typeIds against TYPE_MAP (first match wins,
+            # case-insensitive). Direct-spawn avoids a spokesman round-trip for known types.
+            type_ids = task.get("typeIds") or []
+            agent_type = next(
+                (TYPE_MAP[t.lower()] for t in type_ids if t.lower() in TYPE_MAP),
+                None,
+            )
+
+            if agent_type:
+                log("orchestrator ", "task-triaged", slug)
+                _print(f"triaged {slug} → {agent_type} (typeId match)")
+                self._spawn_worker(slug, agent_type)
+            else:
+                # No type mapping — fall back to Spokesman LLM judgment.
+                self._in_flight.add(slug)
+                append_spokesman_queue(slug, "event:task-ready")
+                log("orchestrator ", "task-triage-forwarded", slug)
+                needs_spokesman = True
+
+        if needs_spokesman:
+            tmux_signal("spokesman-event")
 
 
 # ---------------------------------------------------------------------------
