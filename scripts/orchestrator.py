@@ -320,6 +320,8 @@ class Orchestrator:
         elif event_type == "event:pr-merged":
             subprocess.run(["bash", str(EVENTS / "pr-merged.sh"), slug, resume_sig, self.project])
             self.pick_up_ready_tasks()
+        elif event_type == "event:research-ready":
+            subprocess.run(["bash", str(EVENTS / "research-ready.sh"), slug])
         elif event_type == "event:completion":
             subprocess.run(["bash", str(EVENTS / "completion.sh"), slug, resume_sig, self.project])
             self.pick_up_ready_tasks()

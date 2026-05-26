@@ -66,8 +66,14 @@ events:
     requires_user_input: true
     meaning: "Design revised after user feedback; re-review requested"
 
+  research-ready:
+    fired_by: [investigator]
+    next_state: done
+    requires_user_input: true
+    meaning: "Research complete, Context notes written — awaiting user review and approval"
+
   completion:
-    fired_by: [brainstormer, planner, designer, investigator]
+    fired_by: [brainstormer, planner, designer]
     next_state: done
     requires_user_input: false
     meaning: "Subtasks created (or skipped), parent marked Done"
