@@ -96,7 +96,7 @@ The orchestrator translates worker events into Spokesman events:
 Responsibilities:
 - Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
 - Block on `spokesman-event` and drain `spokesman-queue` after each unblock
-- Triage new tasks (`event:task-ready`): orchestrator.py already attempted type-map triage; the Spokesman handles only the LLM fallback (tasks with no matching typeId); decide agent type using judgment and send `spawn` command back to orchestrator.py
+- Triage new tasks (`event:task-ready`): orchestrator.py already attempted type-map triage (by typeId then typeName); the Spokesman handles only the LLM fallback (tasks with no matching typeId or typeName); decide agent type using judgment and send `spawn` command back to orchestrator.py
 - Present user-attention events to the user (questions, plan ready, PR ready, review results)
 - Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
 - When all tasks complete: tell orchestrator.py to shut down and exit
@@ -106,7 +106,7 @@ Responsibilities:
 **One instance.** Runs in the `orchestrator` tmux session, window `orchestrator`. Pure Python, always running — never blocked by user interaction.
 
 Responsibilities:
-- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel), mark as `Doing`, and triage by typeId: known types → spawn worker directly; unknown types → forward to Spokesman for LLM triage via `spokesman-queue`
+- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel), mark as `Doing`, and triage by typeId then typeName against TYPE_MAP: matched types → spawn worker directly; unmatched types → forward to Spokesman for LLM triage via `spokesman-queue`
 - Block on `orchestrator-event` (from dispatcher); drain `signals/queue` on each unblock
 - Block on `orchestrator-cmd-event` (from Spokesman); drain `signals/orchestrator-cmds` on each unblock
 - Auto-handle events that don't require user input:

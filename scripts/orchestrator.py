@@ -571,17 +571,27 @@ class Orchestrator:
             log("orchestrator ", "task-picked-up", slug)
             _print(f"picked up {slug}: {title}")
 
-            # Best-effort triage: check typeIds against TYPE_MAP (first match wins,
-            # case-insensitive). Direct-spawn avoids a spokesman round-trip for known types.
+            # Best-effort triage: check typeIds then typeNames against TYPE_MAP (first match wins,
+            # case-insensitive). typeNames fallback handles projects where internal typeIds are
+            # opaque (e.g. "chore" for Investigation, UUID for Plan). Direct-spawn avoids a
+            # spokesman round-trip for known types.
             type_ids = task.get("typeIds") or []
+            type_names = task.get("typeNames") or []
             agent_type = next(
                 (TYPE_MAP[t.lower()] for t in type_ids if t.lower() in TYPE_MAP),
                 None,
             )
+            match_source = "typeId"
+            if agent_type is None:
+                agent_type = next(
+                    (TYPE_MAP[n.lower()] for n in type_names if n.lower() in TYPE_MAP),
+                    None,
+                )
+                match_source = "typeName"
 
             if agent_type:
                 log("orchestrator ", "task-triaged", slug)
-                _print(f"triaged {slug} → {agent_type} (typeId match)")
+                _print(f"triaged {slug} → {agent_type} ({match_source} match)")
                 self._spawn_worker(slug, agent_type)
             else:
                 # No type mapping — fall back to Spokesman LLM judgment.
