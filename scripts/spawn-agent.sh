@@ -14,7 +14,9 @@ SKILL=$3
 SLUG=$4
 PROJECT=$5
 
-tmux new-window -t "$SESSION" -n "$WINDOW"
+# Use "${SESSION}:" (trailing colon) to always append at the end of the window list,
+# avoiding index collisions when multiple windows are created in quick succession.
+tmux new-window -t "${SESSION}:" -n "$WINDOW"
 tmux send-keys -t "$SESSION:$WINDOW" "cd /Users/firas.gara/agentmesh && claude --dangerously-skip-permissions" Enter
 
 # Wait for Claude REPL prompt to appear before sending the skill command.
