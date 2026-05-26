@@ -460,7 +460,16 @@ class Orchestrator:
         if running.returncode == 0:
             return  # already running
         # -d: do not switch focus to the new window so the orchestrator stays in its current window.
-        result = tmux(f"new-window -d -t orchestrator -n pr-mon-{slug} 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}'")
+        # Use 'orchestrator:' (trailing colon) to always append at the end of the window list,
+        # avoiding index collisions when multiple windows are created in quick succession.
+        # Retry up to 3 times in case of residual races.
+        result = None
+        for attempt in range(3):
+            result = tmux(f"new-window -d -t 'orchestrator:' -n pr-mon-{slug} 'bash {SCRIPTS}/pr-monitor.sh {slug} {pr_url}'")
+            if result.returncode == 0:
+                break
+            if attempt < 2:
+                time.sleep(0.5)
         if result.returncode != 0:
             log("orchestrator ", "pr-monitor-spawn-failed", slug)
             _print(f"ERROR: failed to create pr-monitor window for {slug} (rc={result.returncode}, stderr={result.stderr.strip()!r})")
