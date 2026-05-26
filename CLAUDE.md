@@ -68,7 +68,8 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
 | `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
-| `event:completion` | Brainstormer / Planner / Designer / Investigator | Subtasks created (or skipped), parent marked Done |
+| `event:research-ready` | Investigator | Context notes written — awaiting user review and approval |
+| `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
 | `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
@@ -159,7 +160,7 @@ Responsibilities:
 - Explore task context, the codebase, and external resources (WebSearch/WebFetch)
 - Ask questions via `QUESTIONS-<N>` notes if scope is ambiguous
 - Write structured Context notes under a `Context/` subfolder in the task folder
-- Signal `event:completion` — orchestrator auto-acks and marks Done
+- Signal `event:research-ready` — Spokesman presents research to user for approval; block until approved or feedback received
 - Never write code or create PRs — research and documentation only
 - Never create subtasks — it is a leaf agent
 - Never mark its own task `Done`
@@ -381,6 +382,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    review-limit-reached:plan   WORK-xyz
 2026-04-26T...  orchestrator    review-limit-reached:pr     WORK-xyz
 2026-04-26T...  orchestrator    shutdown                    -
+2026-04-26T...  orchestrator    research-ready-forwarded    WORK-xyz
+2026-04-26T...  spokesman       research-approved           WORK-xyz
 2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz
 2026-04-26T...  spokesman       attention-resumed           WORK-xyz
 2026-04-26T...  spokesman       attention-feedback          WORK-xyz
@@ -425,8 +428,10 @@ timestamp       component       event_type                  slug
 2026-04-26T...  investigator    signaling-attention         WORK-xyz
 2026-04-26T...  investigator    resumed                     WORK-xyz
 2026-04-26T...  investigator    researching                 WORK-xyz
-2026-04-26T...  investigator    signaling-completion        WORK-xyz
+2026-04-26T...  investigator    signaling-research-ready    WORK-xyz
+2026-04-26T...  investigator    resumed                     WORK-xyz
 2026-04-26T...  investigator    approved                    WORK-xyz
+2026-04-26T...  investigator    feedback-received           WORK-xyz
 2026-04-26T...  documenter      started                     WORK-xyz
 2026-04-26T...  documenter      signaling-attention         WORK-xyz
 2026-04-26T...  documenter      resumed                     WORK-xyz

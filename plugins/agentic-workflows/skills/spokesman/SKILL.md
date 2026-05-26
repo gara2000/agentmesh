@@ -196,6 +196,7 @@ case "$event_rest" in
   event:selection-ready)  → brainstormer selection
   event:design-ready)     → designer design ready for review
   event:design-revised)   → designer design revised (same as design-ready attention)
+  event:research-ready)   → investigator research complete, awaiting user approval
   event:crash-limit-reached) → worker crash limit (warn user, no auto-resume)
   *)                      → unknown (log and tell user)
 esac
@@ -558,6 +559,29 @@ Wait for the user to respond.
 ### Event: `event:design-revised` — designer design revised
 
 Handle identically to `event:design-ready`: display the design-ready attention block, wait for user to say 'continue' or give feedback.
+
+---
+
+### Event: `event:research-ready` — investigator research complete
+
+```
+── Investigator: Research Ready ─────────────────
+Task: <slug> — <title>
+The investigator has completed its research.
+Open NoteCove to review the Context notes, then:
+  • 'approve'  — accept the research and close the task
+  • feedback   — request additional investigation
+  • 'abort'    — mark the task Won't Do
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'approve':** log `research-approved`, set `Done` → `send_cmd <slug> done`
+
+**If feedback provided:** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
+
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
 
 ---
 

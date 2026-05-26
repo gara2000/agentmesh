@@ -10,7 +10,7 @@ log-prefix: "investigator "
 role: investigator
 events:
   - questions
-  - completion
+  - research-ready
 ---
 
 <!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->
@@ -19,7 +19,7 @@ events:
 | Event tag | Queue entry | Meaning |
 |---|---|---|
 | `event:questions` | `<slug>:event:questions` | Agent has questions for the user |
-| `event:completion` | `<slug>:event:completion` | Subtasks created (or skipped), parent marked Done |
+| `event:research-ready` | `<slug>:event:research-ready` | Research complete, Context notes written — awaiting user review and approval |
 <!-- EVENTS-TABLE:END -->
 
 # Investigator — NoteCove Research & Context Gathering Agent
@@ -338,24 +338,42 @@ EOF
 
 ---
 
-## Phase 5: Signal Completion
+## Phase 5: Signal Research Ready
 
-After all Context notes are written, add a summary comment and signal completion:
+After all Context notes are written, add a summary comment and signal that research is ready for user review:
 
 ```bash
 notecove task comments add <slug> --user "Investigator" "Research complete. Context notes written: <list of note titles>"
 ```
 
 ```bash
-printf '%s\tinvestigator \tsignaling-completion\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Investigator" "event:completion"
+printf '%s\tinvestigator \tsignaling-research-ready\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+notecove task comments add <slug> --user "Investigator" "event:research-ready"
 notecove task change <slug> --state Attention
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:completion" "done"
-printf '%s\tinvestigator \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+# Break on either 'done' (approved) or 'doing' (feedback given)
+signal_attention "event:research-ready" "done" "doing"
+printf '%s\tinvestigator \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-Investigator exits after confirmed `done` state (orchestrator auto-acks investigator completion).
+After unblocking, check which state was set:
+- **`done`** — user approved. Log `printf '%s\tinvestigator \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Investigator exits.
+- **`doing`** — feedback received. Log `printf '%s\tinvestigator \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments for feedback:
+  ```bash
+  notecove task show <slug> --format markdown-with-comments
+  ```
+  Conduct additional research as requested, write new or updated Context notes, then re-signal:
+  ```bash
+  printf '%s\tinvestigator \tsignaling-research-ready\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  notecove task comments add <slug> --user "Investigator" "event:research-ready"
+  notecove task change <slug> --state Attention
+  # IMPORTANT: call this Bash block with timeout=600000
+  signal_attention "event:research-ready" "done" "doing"
+  printf '%s\tinvestigator \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  ```
+  Repeat until state is `done`.
+
+Investigator exits only after confirmed `done` state (user has approved the research).
 
 ---
 
@@ -366,8 +384,8 @@ Investigator exits after confirmed `done` state (orchestrator auto-acks investig
 | Questions | `<slug>/QUESTIONS-<N>` |
 | Context notes | `<slug>/Context/<topic-name>` |
 
-**Task states used by investigator**: `Doing` (working), `Attention` (needs user input or signaling completion)
-**Task states set by orchestrator**: `Done` (acknowledged), `Doing` (resumed)
+**Task states used by investigator**: `Doing` (working), `Attention` (needs user input or research ready for review)
+**Task states set by orchestrator**: `Done` (user approved), `Doing` (resumed after feedback)
 
 ---
 
@@ -377,6 +395,7 @@ Investigator exits after confirmed `done` state (orchestrator auto-acks investig
 
 - **Never write code changes** — the investigator is read-only. No file edits, no git commits, no PRs.
 - **Never create subtasks** — the investigator is a leaf agent. All output goes into Context notes.
-- **Context notes are the deliverable** — at least one must be written before signaling completion.
+- **Context notes are the deliverable** — at least one must be written before signaling research ready.
 - **`--user "Investigator"` for all comments** — all comments must use this identifier.
-- **Orchestrator auto-acks completion** — do not mark task Done yourself.
+- **Never mark task Done yourself** — only the orchestrator does that, after user approval.
+- **The research-ready Attention loop breaks on `done` OR `doing`** — `done` means approved (exit), `doing` means feedback (continue researching and re-signal when ready).
