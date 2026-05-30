@@ -501,7 +501,7 @@ CHILD_JSON=$(notecove task create "<idea-title>" \
   --parent <slug> \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
-  --state ${CHILD_STATE} \
+  --state Triage \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")
 CHILD_ID=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
@@ -554,9 +554,16 @@ For each relationship from the SELECTION note — both **logical dependencies** 
 notecove task change <blocked-slug> --block <blocker-slug>
 ```
 
-This sets the actual blocking relationship. The `--block <slug>` flag means "this task is blocked by `<slug>`", so it must be called on the *blocked* task with the *blocker* as the argument. Combined with the `Blocked` state set in Step A, this ensures the orchestrator will not dispatch blocked tasks before their prerequisites.
+This sets the actual blocking relationship. The `--block <slug>` flag means "this task is blocked by `<slug>`", so it must be called on the *blocked* task with the *blocker* as the argument.
 
 Apply this for **every** pair in the Merge Conflict Analysis, not only logical dependencies. Sharing a file is sufficient reason to serialize two tasks.
+
+**Step F — After all blocking links are set, transition each child task to its final state:**
+```bash
+notecove task change ${CHILD_SLUG} --state ${CHILD_STATE}
+```
+
+Tasks start in `Triage` (Step A) so the orchestrator cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
 
 After creating all tasks and links, add a summary comment:
 ```bash
