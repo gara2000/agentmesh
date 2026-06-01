@@ -74,14 +74,16 @@ echo "<mode>" > ~/agentmesh/signals/mode
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
-### Start background spokesman-watcher
+### Start background event watcher
 
-Immediately after bootstrap, start the spokesman-watcher if it is not already running. The watcher polls `spokesman-queue` every 2 seconds and fires `spokesman-event` (plus a visual `tmux display-message`) whenever new entries arrive — ensuring events are surfaced even when the Spokesman is blocked waiting for user input.
+Immediately after bootstrap, start a background loop in `orchestrator:spokesman-watcher` if it is not already running. This loop is the Spokesman's own signal monitor — it polls `spokesman-queue` every 2 seconds and fires `spokesman-event` whenever new entries arrive. This ensures the Spokesman's event loop is always woken up even if it missed the original signal while handling a previous event.
 
 ```bash
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "spokesman-watcher" || {
   tmux new-window -t orchestrator -n spokesman-watcher
-  tmux send-keys -t orchestrator:spokesman-watcher "bash ~/agentmesh/scripts/spokesman-watcher.sh" Enter
+  tmux send-keys -t orchestrator:spokesman-watcher \
+    'last_size=0; while true; do sleep 2; cs=$(wc -l < ~/agentmesh/signals/spokesman-queue 2>/dev/null | tr -d " " || echo 0); if [ "$cs" -gt "$last_size" ]; then tmux wait-for -S spokesman-event 2>/dev/null || true; fi; last_size=$cs; done' \
+    Enter
 }
 ```
 
@@ -176,6 +178,18 @@ while [ -s "$SPOKESMAN_QUEUE" ]; do
   done
 done
 ```
+
+**Multi-event announcement**: Before handling the first user-attention event in a drain cycle, count how many user-attention events are in the batch. If there are more than one, announce them all upfront:
+
+```
+Multiple tasks need your attention:
+  • WORK-abc — Add rate limiting (event: plan-ready)
+  • WORK-xyz — Fix login bug (event: pr-submitted)
+  • WORK-def — Write docs (event: questions)
+Processing each in order...
+```
+
+Auto-handled events (`event:task-ready`, `event:completion`, `event:pr-merged-auto-approved`, `event:shutdown`) do not count toward the multi-event summary — only events that require user input are listed. After printing the summary, handle each event in sequence as normal.
 
 ### 1c. Handle each event
 

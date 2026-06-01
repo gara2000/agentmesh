@@ -377,20 +377,19 @@ This replaces the inline `move_task_folder_to_done` helper that was previously c
 
 ## Spokesman Watcher
 
-The spokesman-watcher (`scripts/spokesman-watcher.sh`) runs continuously in the background and ensures the Spokesman is always notified of pending events in `spokesman-queue`, even if the original `spokesman-event` signal was fired while the Spokesman was busy handling a previous event.
+The Spokesman runs a background loop in `orchestrator:spokesman-watcher` — started inline by the Spokesman skill in Phase 0, not via a separate script. This is the Spokesman's own signal monitor.
 
 **How it works:**
 
 1. Polls `signals/spokesman-queue` every 2 seconds.
-2. Compares the current line count against the last observed count.
-3. When new entries appear:
-   - Fires `tmux wait-for -S spokesman-event` — wakes the Spokesman's event loop if it is currently blocking on `tmux wait-for spokesman-event`.
-   - Shows `tmux display-message` on `orchestrator:main` — provides a visual alert if the Spokesman is blocked waiting for user input rather than the signal.
-4. Resets its baseline whenever the queue is drained.
+2. When new entries appear (queue size grew), fires `tmux wait-for -S spokesman-event` to wake the Spokesman's event loop.
+3. Resets its baseline whenever the queue is drained.
 
-**Why both actions:** The `spokesman-event` signal wakes the Spokesman's blocking loop directly. The `tmux display-message` handles the case where the Spokesman is waiting for a human response — it can't receive the signal at that point, but the user sees the notification and knows more events are pending after they respond.
+**Why this is needed:** The orchestrator fires `spokesman-event` when writing to `spokesman-queue`. If the Spokesman is currently processing a previous event (or waiting for user input), it isn't blocking on `tmux wait-for spokesman-event` and the signal is silently dropped by tmux. The background loop detects queue growth and re-fires the signal. Combined with the Spokesman's "check queue before blocking" guard in step 1a, this ensures no events are ever missed.
 
-The spokesman-watcher is started by the **Spokesman skill** (Phase 0, immediately after bootstrap) and killed by `spokesman-exit.sh` on shutdown.
+**Multiple pending events:** When the Spokesman drains the queue and finds multiple user-attention events, it announces them all upfront before handling each one: "Multiple tasks need your attention: [list]". Auto-handled events (task-ready, completion, shutdown) are excluded from the summary.
+
+The spokesman-watcher window is started by the **Spokesman skill** and killed by `spokesman-exit.sh` on shutdown.
 
 ---
 

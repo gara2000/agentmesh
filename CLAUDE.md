@@ -239,15 +239,13 @@ The folder-cleanup window is killed by the orchestrator at shutdown.
 
 ### Spokesman Watcher
 
-**One instance.** Runs in the `orchestrator` session, window `spokesman-watcher`. Pure bash, no Claude. Started by the Spokesman skill (Phase 0) immediately after `bootstrap.sh`.
+**One instance.** Runs in the `orchestrator` session, window `spokesman-watcher`. Pure bash loop, no separate script file. Started by the Spokesman skill (Phase 0) via an inline command — this is the Spokesman's own background monitor.
 
 Responsibilities:
 - Poll `signals/spokesman-queue` every 2 seconds
-- When new entries appear (queue size grows):
-  - Fire `spokesman-event` to wake the Spokesman's blocking event loop (`tmux wait-for spokesman-event`)
-  - Show `tmux display-message` on `orchestrator:main` so the user sees a visual alert if the Spokesman is currently blocked waiting for their input on a previous event
+- When new entries appear (queue size grows), fire `tmux wait-for -S spokesman-event` to wake the Spokesman's blocking event loop
 
-The spokesman-watcher is the Spokesman's dedicated signal relay. It ensures no events are missed regardless of what the Spokesman is currently doing. It is killed by `spokesman-exit.sh` on shutdown.
+This is the Spokesman's own background loop — it ensures the Spokesman is always notified whenever new events arrive, even if the original `spokesman-event` was fired while the Spokesman was busy processing a previous event. It is killed by `spokesman-exit.sh` on shutdown.
 
 ---
 
@@ -341,7 +339,6 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
-│   ├── spokesman-watcher.sh  # background queue monitor; notifies user via tmux display-message when new events arrive
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
