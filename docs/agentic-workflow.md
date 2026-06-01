@@ -235,7 +235,7 @@ flowchart TD
     C -->|No| D[Create DECOMPOSITION note\nwith subtask breakdown\nSignal Attention\nBlock]
     D --> E{Decomposition approved?}
     E -->|Feedback| D
-    E -->|Approved| F[Create child tasks in NoteCove\nIndependent → Ready\nBlocked → Blocked]
+    E -->|Approved| F[Create child tasks in NoteCove\nwith --type set from DECOMPOSITION note\nIndependent → Ready\nBlocked → Blocked]
     F --> G[Establish blocking links between tasks]
     G --> H[Mark parent task Done]
     H --> I["Signal Attention completion<br/>Block"]

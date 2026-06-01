@@ -390,6 +390,7 @@ Each round of ideas is stored in a structured note. The format is:
 **Description:** One sentence explaining what this idea is.
 **Value:** Why this idea is useful — the problem it solves or the benefit it delivers.
 **Complexity:** Low / Medium / High — rough estimate of effort to implement as a task.
+**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
 ```
 
 ### Creating an IDEAS note
@@ -408,12 +409,14 @@ notecove note create "<slug>/IDEAS-${IDEAS_ROUND}" --folder <task-folder-id> --c
 **Description:** <one sentence>
 **Value:** <why this is useful>
 **Complexity:** Low / Medium / High
+**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
 
 ## Idea 2: <Short Title>
 
 **Description:** <one sentence>
 **Value:** <why this is useful>
 **Complexity:** Low / Medium / High
+**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
 
 ...
 EOF
@@ -458,9 +461,9 @@ Check the boxes next to the ideas you want to create as tasks.
 
 ## Ideas
 
-- [ ] **Idea 1** — <Short Title>: <one-line description> *(Complexity: Low)*
-- [ ] **Idea 2** — <Short Title>: <one-line description> *(Complexity: Medium)*
-- [ ] **Idea 3** — <Short Title>: <one-line description> *(Complexity: High)*
+- [ ] **Idea 1** — <Short Title>: <one-line description> *(Complexity: Low, Type: feature)*
+- [ ] **Idea 2** — <Short Title>: <one-line description> *(Complexity: Medium, Type: feature)*
+- [ ] **Idea 3** — <Short Title>: <one-line description> *(Complexity: High, Type: feature)*
 ...
 
 ## Proposed Dependencies
@@ -529,13 +532,18 @@ PARENT_TASK_ID=<id from the parent task JSON>
 ### For each selected idea (independent ones first, then those with dependencies):
 
 **Step A — Create the child task:**
+
+Read the `Type:` field for this idea from the approved SELECTION note (the user may have changed it during review — use the current value). Default to `feature` if the field is absent.
+
 ```bash
 CHILD_STATE="Ready"   # or "Blocked" if this idea depends on another
+CHILD_TYPE="feature"  # read from Type: field in SELECTION note for this idea
 
 CHILD_JSON=$(notecove task create "<idea-title>" \
   --parent <slug> \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
+  --type ${CHILD_TYPE} \
   --state ${CHILD_STATE} \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")

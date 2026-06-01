@@ -334,6 +334,7 @@ notecove note create "<slug>/DECOMPOSITION" --folder <task-folder-id> --content-
 
 ### Subtask 1: <name>
 - **Description:** <what this subtask accomplishes>
+- **Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
 - **Depends on:** None (or list subtask numbers)
 - **Key files:** <specific files this subtask modifies, e.g. `scripts/orchestrator.py`, `plugins/.../SKILL.md`>
 - **Acceptance criteria:**
@@ -342,6 +343,7 @@ notecove note create "<slug>/DECOMPOSITION" --folder <task-folder-id> --content-
 
 ### Subtask 2: <name>
 - **Description:** <what this subtask accomplishes>
+- **Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
 - **Depends on:** Subtask 1 (logical dependency)
 - **Key files:** <specific files this subtask modifies>
 - **Acceptance criteria:**
@@ -396,14 +398,19 @@ PARENT_TASK_FOLDER_ID=<folderId from the parent task JSON fetched in Step 1>
 For each proposed subtask (independent ones first, then those with blockers):
 
 **Step A — Create the child task with no content:**
+
+Read the `**Type:**` field for this subtask from the approved DECOMPOSITION note (the user may have changed it during review — use the current value). Default to `feature` if the field is absent.
+
 ```bash
 # Set state: 'Ready' if this subtask has no blockers; 'Blocked' if blocked by another subtask
 CHILD_STATE="Ready"   # or "Blocked" for tasks that depend on others
+CHILD_TYPE="feature"  # read from **Type:** field in DECOMPOSITION note for this subtask
 
 CHILD_JSON=$(notecove task create "<title>" \
   --parent <slug> \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
+  --type ${CHILD_TYPE} \
   --state ${CHILD_STATE} \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")
