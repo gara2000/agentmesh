@@ -237,6 +237,17 @@ Responsibilities:
 
 The folder-cleanup window is killed by the orchestrator at shutdown.
 
+### Spokesman Watcher
+
+**One instance.** Runs in the `orchestrator` session, window `spokesman-watcher`. Pure bash, no Claude. Started by `bootstrap.sh`.
+
+Responsibilities:
+- Poll `signals/spokesman-queue` every 2 seconds
+- When new entries appear (queue size grows), notify the user via `tmux display-message` on `orchestrator:main`
+- Ensures the user is always alerted to pending events even when the Spokesman is blocked waiting for their input on a previous event
+
+The spokesman-watcher window is killed by `spokesman-exit.sh` on shutdown.
+
 ---
 
 ## tmux Layout
@@ -248,6 +259,7 @@ Session: orchestrator       ← user attaches here only
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
+  window 5: spokesman-watcher ← scripts/spokesman-watcher.sh (bash loop)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
@@ -328,6 +340,7 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
+│   ├── spokesman-watcher.sh  # background queue monitor; notifies user via tmux display-message when new events arrive
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling

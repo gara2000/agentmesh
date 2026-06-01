@@ -13,6 +13,7 @@ Session: orchestrator          ← user attaches here only
   window 2: watchdog           ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
+  window 5: spokesman-watcher  ← scripts/spokesman-watcher.sh (bash loop)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
 Session: workers
@@ -256,6 +257,7 @@ flowchart TD
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
+9. **Spokesman watcher** — launches `scripts/spokesman-watcher.sh` in `orchestrator:spokesman-watcher`. Polls `spokesman-queue` every 2 seconds and notifies the user via `tmux display-message` when new events arrive, ensuring events are always surfaced even when the Spokesman is blocked on user input.
 
 Usage:
 ```bash
@@ -370,6 +372,23 @@ sequenceDiagram
 This replaces the inline `move_task_folder_to_done` helper that was previously called in each terminal path of the orchestrator skill, removing ~25 lines of repeated shell/Python from the skill.
 
 **Idempotent**: the daemon checks whether the subfolder is already under a `Done` folder before attempting a move, so repeated poll cycles are safe.
+
+---
+
+## Spokesman Watcher
+
+The spokesman-watcher (`scripts/spokesman-watcher.sh`) runs continuously in the background and ensures the user is always notified of pending events, even when the Spokesman is blocked waiting for their input on a previous event.
+
+**How it works:**
+
+1. Polls `signals/spokesman-queue` every 2 seconds.
+2. Compares the current line count against the last observed count.
+3. When new entries appear, fires a `tmux display-message` notification in `orchestrator:main` (the Spokesman's window), visible to the user for 10 seconds.
+4. Resets its baseline whenever the queue is drained.
+
+This is a purely observational daemon — it never modifies the queue or fires signals. The Spokesman's own event loop drains the queue and handles events; the watcher only ensures the user sees a visual alert so they know to finish their current response and let the Spokesman proceed.
+
+The spokesman-watcher window is started by `bootstrap.sh` and killed by `spokesman-exit.sh` on shutdown.
 
 ---
 

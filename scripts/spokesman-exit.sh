@@ -18,6 +18,7 @@ tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
 tmux kill-window -t orchestrator:dispatcher 2>/dev/null || true
 tmux kill-window -t orchestrator:watchdog 2>/dev/null || true
 tmux kill-window -t orchestrator:folder-cleanup 2>/dev/null || true
+tmux kill-window -t orchestrator:spokesman-watcher 2>/dev/null || true
 
 # Kill any remaining pr-monitor windows
 tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | { grep "^pr-mon-" || true; } | while read -r _win; do
