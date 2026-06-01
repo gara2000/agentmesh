@@ -96,12 +96,4 @@ tmux send-keys -t orchestrator:orchestrator \
   "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
   Enter
 
-# 0h. Launch spokesman-watcher in a background window
-# Polls spokesman-queue and notifies the user via tmux display-message when new events arrive.
-# This ensures events are always surfaced even when the Spokesman is blocked on user input.
-tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "spokesman-watcher" || {
-  tmux new-window -t orchestrator -n spokesman-watcher
-  tmux send-keys -t orchestrator:spokesman-watcher "bash $SCRIPTS/spokesman-watcher.sh" Enter
-}
-
-echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, orchestrator.py, and spokesman-watcher running"
+echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"

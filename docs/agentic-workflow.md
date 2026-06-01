@@ -257,7 +257,7 @@ flowchart TD
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
-9. **Spokesman watcher** — launches `scripts/spokesman-watcher.sh` in `orchestrator:spokesman-watcher`. Polls `spokesman-queue` every 2 seconds and notifies the user via `tmux display-message` when new events arrive, ensuring events are always surfaced even when the Spokesman is blocked on user input.
+Note: the spokesman-watcher is **not** started by `bootstrap.sh` — it is started by the Spokesman skill itself in Phase 0. See the [Spokesman Watcher](#spokesman-watcher) section.
 
 Usage:
 ```bash
@@ -377,18 +377,20 @@ This replaces the inline `move_task_folder_to_done` helper that was previously c
 
 ## Spokesman Watcher
 
-The spokesman-watcher (`scripts/spokesman-watcher.sh`) runs continuously in the background and ensures the user is always notified of pending events, even when the Spokesman is blocked waiting for their input on a previous event.
+The spokesman-watcher (`scripts/spokesman-watcher.sh`) runs continuously in the background and ensures the Spokesman is always notified of pending events in `spokesman-queue`, even if the original `spokesman-event` signal was fired while the Spokesman was busy handling a previous event.
 
 **How it works:**
 
 1. Polls `signals/spokesman-queue` every 2 seconds.
 2. Compares the current line count against the last observed count.
-3. When new entries appear, fires a `tmux display-message` notification in `orchestrator:main` (the Spokesman's window), visible to the user for 10 seconds.
+3. When new entries appear:
+   - Fires `tmux wait-for -S spokesman-event` — wakes the Spokesman's event loop if it is currently blocking on `tmux wait-for spokesman-event`.
+   - Shows `tmux display-message` on `orchestrator:main` — provides a visual alert if the Spokesman is blocked waiting for user input rather than the signal.
 4. Resets its baseline whenever the queue is drained.
 
-This is a purely observational daemon — it never modifies the queue or fires signals. The Spokesman's own event loop drains the queue and handles events; the watcher only ensures the user sees a visual alert so they know to finish their current response and let the Spokesman proceed.
+**Why both actions:** The `spokesman-event` signal wakes the Spokesman's blocking loop directly. The `tmux display-message` handles the case where the Spokesman is waiting for a human response — it can't receive the signal at that point, but the user sees the notification and knows more events are pending after they respond.
 
-The spokesman-watcher window is started by `bootstrap.sh` and killed by `spokesman-exit.sh` on shutdown.
+The spokesman-watcher is started by the **Spokesman skill** (Phase 0, immediately after bootstrap) and killed by `spokesman-exit.sh` on shutdown.
 
 ---
 

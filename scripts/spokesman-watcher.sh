@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# spokesman-watcher.sh — background queue monitor for the Spokesman
-# Polls spokesman-queue every 2 seconds and notifies the user via tmux display-message
-# when new events arrive. This ensures the user always sees pending events even while
-# the Spokesman is blocked waiting for their input on a previous event.
+# spokesman-watcher.sh — background signal watcher for the Spokesman
+# Polls spokesman-queue every 2 seconds. When new entries arrive, fires spokesman-event
+# to wake the Spokesman's event loop, and shows a tmux display-message so the user
+# sees a visual alert if the Spokesman is currently blocked waiting for their input.
 #
-# Runs in orchestrator:spokesman-watcher. Started by bootstrap.sh. Never exits until killed.
+# Runs in orchestrator:spokesman-watcher. Started by the Spokesman skill (Phase 0).
+# Never exits until killed by spokesman-exit.sh on shutdown.
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -29,7 +30,9 @@ while true; do
   if [ "$current_size" -gt "$last_size" ]; then
     new_count=$((current_size - last_size))
     log_event "queue-notification" "-"
-    # Notify the user via tmux status bar overlay (10 second display)
+    # Fire spokesman-event to wake the Spokesman's event loop (if it is currently blocking on it)
+    tmux wait-for -S spokesman-event 2>/dev/null || true
+    # Also show a visual overlay so the user sees the alert if the Spokesman is awaiting their input
     tmux display-message -t orchestrator:main -d 10000 \
       "⚡ ${new_count} new event(s) in queue — Spokesman will process when ready" 2>/dev/null || true
   fi

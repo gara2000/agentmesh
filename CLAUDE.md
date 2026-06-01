@@ -239,14 +239,15 @@ The folder-cleanup window is killed by the orchestrator at shutdown.
 
 ### Spokesman Watcher
 
-**One instance.** Runs in the `orchestrator` session, window `spokesman-watcher`. Pure bash, no Claude. Started by `bootstrap.sh`.
+**One instance.** Runs in the `orchestrator` session, window `spokesman-watcher`. Pure bash, no Claude. Started by the Spokesman skill (Phase 0) immediately after `bootstrap.sh`.
 
 Responsibilities:
 - Poll `signals/spokesman-queue` every 2 seconds
-- When new entries appear (queue size grows), notify the user via `tmux display-message` on `orchestrator:main`
-- Ensures the user is always alerted to pending events even when the Spokesman is blocked waiting for their input on a previous event
+- When new entries appear (queue size grows):
+  - Fire `spokesman-event` to wake the Spokesman's blocking event loop (`tmux wait-for spokesman-event`)
+  - Show `tmux display-message` on `orchestrator:main` so the user sees a visual alert if the Spokesman is currently blocked waiting for their input on a previous event
 
-The spokesman-watcher window is killed by `spokesman-exit.sh` on shutdown.
+The spokesman-watcher is the Spokesman's dedicated signal relay. It ensures no events are missed regardless of what the Spokesman is currently doing. It is killed by `spokesman-exit.sh` on shutdown.
 
 ---
 

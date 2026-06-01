@@ -74,6 +74,17 @@ echo "<mode>" > ~/agentmesh/signals/mode
 TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
 ```
 
+### Start background spokesman-watcher
+
+Immediately after bootstrap, start the spokesman-watcher if it is not already running. The watcher polls `spokesman-queue` every 2 seconds and fires `spokesman-event` (plus a visual `tmux display-message`) whenever new entries arrive — ensuring events are surfaced even when the Spokesman is blocked waiting for user input.
+
+```bash
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "spokesman-watcher" || {
+  tmux new-window -t orchestrator -n spokesman-watcher
+  tmux send-keys -t orchestrator:spokesman-watcher "bash ~/agentmesh/scripts/spokesman-watcher.sh" Enter
+}
+```
+
 Announce to the user: "Spokesman ready. Orchestrator running. Picking up Ready tasks..."
 
 ---
