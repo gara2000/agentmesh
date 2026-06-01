@@ -390,7 +390,7 @@ Each round of ideas is stored in a structured note. The format is:
 **Description:** One sentence explaining what this idea is.
 **Value:** Why this idea is useful — the problem it solves or the benefit it delivers.
 **Complexity:** Low / Medium / High — rough estimate of effort to implement as a task.
-**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
+**Type:** <feature|bug|plan|brainstorming|investigation|documentation|design>
 ```
 
 ### Creating an IDEAS note
@@ -409,14 +409,14 @@ notecove note create "<slug>/IDEAS-${IDEAS_ROUND}" --folder <task-folder-id> --c
 **Description:** <one sentence>
 **Value:** <why this is useful>
 **Complexity:** Low / Medium / High
-**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
+**Type:** <feature|bug|plan|brainstorming|investigation|documentation|design>
 
 ## Idea 2: <Short Title>
 
 **Description:** <one sentence>
 **Value:** <why this is useful>
 **Complexity:** Low / Medium / High
-**Type:** <type — one of: feature, bug, plan, brainstorming, documentation, design, investigation; default: feature>
+**Type:** <feature|bug|plan|brainstorming|investigation|documentation|design>
 
 ...
 EOF
@@ -534,6 +534,15 @@ PARENT_TASK_ID=<id from the parent task JSON>
 **Step A — Create the child task:**
 
 Read the `Type:` field for this idea from the approved SELECTION note (the user may have changed it during review — use the current value). Default to `feature` if the field is absent.
+
+**Type inference rules** (applied when writing the IDEAS/SELECTION notes — the user may override during review):
+- `feature` — a small, well-scoped task that can be implemented in one PR
+- `plan` — a large task that should itself be decomposed into further subtasks before implementation begins
+- `brainstorming` — a task that needs option exploration or idea generation before implementation
+- `investigation` — a task about gathering information, researching context, or surveying the codebase (no code/PR output)
+- `bug` — a bug fix
+- `documentation` — documentation-only work (no logic changes)
+- `design` — a frontend/UI task that requires aesthetic design thinking and decomposition before implementation
 
 ```bash
 CHILD_STATE="Ready"   # or "Blocked" if this idea depends on another
