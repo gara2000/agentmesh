@@ -125,13 +125,18 @@ LOG=~/agentmesh/signals/events.log
 SPOKESMAN_QUEUE=~/agentmesh/signals/spokesman-queue
 ```
 
-Then block — but first check whether the queue already has pending events. The orchestrator always writes to `spokesman-queue` **before** firing `spokesman-event`. If the signal fired during the previous processing cycle (while the Spokesman was handling events or waiting for user input), it is silently dropped by tmux. Checking the queue here closes that race window:
+Then check whether the queue already has pending events. The orchestrator always writes to `spokesman-queue` **before** firing `spokesman-event`. If the signal fired during the previous processing cycle (while the Spokesman was handling events or waiting for user input), it is silently dropped by tmux. Checking the queue here closes that race window:
 
 ```bash
 if [ ! -s "$SPOKESMAN_QUEUE" ]; then
   tmux wait-for spokesman-event
 fi
 ```
+
+**CRITICAL — always run in background:** Call the Bash block containing `tmux wait-for spokesman-event` with `run_in_background=true`. This keeps the conversation responsive — the user can send messages to the Spokesman at any time, and new worker signals are never missed.
+
+- **When the background task completes** (you receive a notification from the Bash tool): immediately proceed to step 1b to drain the queue — do NOT wait for user input first.
+- **When the user sends a message while the background task is still running**: handle their input (it is a response to a previously presented attention event), then check whether the queue is non-empty and drain it. After handling, re-launch the background `tmux wait-for spokesman-event` (step 1a) if it is no longer running.
 
 ### 1a.5. Check orchestrator heartbeat
 
@@ -174,6 +179,8 @@ task_info=$(notecove task show <slug> --json)
 title=$(echo "$task_info" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
 seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 ```
+
+**Rule for user-input events:** For every event that requires user input (questions, plan-ready, plan-revised, pr-submitted, pr-ready, plan-review-complete, pr-review-complete, review-limit-reached, ideas-ready, selection-ready, design-ready, design-revised, research-ready, unknown), immediately re-launch `tmux wait-for spokesman-event` in background (Bash tool, `run_in_background=true`) right after presenting the attention block — **before** waiting for user response. This ensures new worker signals are captured while the user is reading and deciding.
 
 Dispatch on event type:
 
@@ -658,6 +665,8 @@ Wait for user response and act accordingly.
 
 After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles.
 
+If a background `tmux wait-for spokesman-event` is already running (re-launched in step 1c during a user-input event), skip re-launching in step 1a until that background task completes or the user responds.
+
 ---
 
 ## Exit
@@ -678,7 +687,9 @@ Tell the user: "All tasks complete. Spokesman shutting down."
 - **The spokesman always sets NoteCove state BEFORE sending commands** — state must be set before the resume signal fires (invariant from Critical Rules).
 - **Queue-as-source-of-truth** — the spokesman-queue entry carries the full event type; no NoteCove comment parsing for routing.
 - **Always drain the full spokesman-queue** before going back to wait.
-- **Check queue before blocking on spokesman-event** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
+- **`tmux wait-for spokesman-event` always runs in background** — call this Bash command with `run_in_background=true` so the user can always talk to the Spokesman. When the background task completes, drain the queue immediately without waiting for user input.
+- **Re-launch background wait before awaiting user response** — for every user-input event (questions, plan-ready, PR-ready, etc.), re-launch `tmux wait-for spokesman-event` in background immediately after presenting the attention block, before waiting for user response. New worker signals must never be missed while the user is deciding.
+- **Check queue before launching background wait** — the orchestrator writes to `spokesman-queue` before firing the signal. If the signal fires while the Spokesman is processing a previous event, tmux drops it silently. Step 1a guards against this by skipping the `tmux wait-for spokesman-event` call when the queue is already non-empty.
 - **Always write NoteCove state changes BEFORE sending the command to orchestrator.py** — orchestrator.py fires the tmux signal immediately; if state hasn't been updated yet, the worker reads wrong state.
 - **The spokesman is the only human-facing layer** — it never does any work autonomously beyond routing and display.
 - **Zero in-memory state across wakeup cycles** — `MODE`, `TRIAGE_FOLDER`, and `LOG` are re-read from `signals/mode`, `signals/triage_folder`, and a fixed path at the top of every wakeup cycle. No bash variable set in one cycle is relied upon in the next. This makes the Spokesman fully restartable: a new session picks up from NoteCove state with no data loss.
