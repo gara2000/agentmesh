@@ -364,11 +364,13 @@ notecove note create "<slug>/DESIGN" --folder <task-folder-id> --content-file - 
 
 ### Subtask 1: <name>
 - **Covers:** Component 1 (and component 2 if tightly coupled)
+- **Type:** <feature|design|investigation — almost always `feature`; see type inference rules in Phase 4>
 - **Depends on:** None
 - **Files:** <list>
 
 ### Subtask 2: <name>
 - **Covers:** Component 2
+- **Type:** <feature|design|investigation — almost always `feature`; see type inference rules in Phase 4>
 - **Depends on:** Subtask 1 (shared files / logical dependency)
 - **Files:** <list>
 
@@ -424,13 +426,23 @@ PARENT_TASK_ID=<id from the parent task JSON>
 For each proposed subtask (independent ones first, then those with blockers):
 
 **Step A — Create the child task:**
+
+Read the `**Type:**` field for this subtask from the approved DESIGN note (the user may have changed it during review — use the current value). Default to `feature` if the field is absent.
+
+**Type inference rules** (applied when writing the DESIGN note — the user may override during review):
+- `feature` — a frontend implementation subtask (most designer subtasks fall here)
+- `design` — a subtask that itself requires further aesthetic design thinking and decomposition before coding
+- `investigation` — a subtask about researching a UI pattern or accessibility requirement (no code output)
+
 ```bash
 CHILD_STATE="Ready"   # or "Blocked" if blocked by another subtask
+CHILD_TYPE="feature"  # read from **Type:** field in DESIGN note for this subtask (usually "feature")
 
 CHILD_JSON=$(notecove task create "<subtask-title>" \
   --parent <slug> \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
+  --type ${CHILD_TYPE} \
   --state ${CHILD_STATE} \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")
