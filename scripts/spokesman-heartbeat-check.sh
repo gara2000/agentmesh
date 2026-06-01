@@ -9,7 +9,7 @@ HEARTBEAT="$AGENTMESH/signals/orchestrator.heartbeat"
 RESTART_CMD=$(cat "$AGENTMESH/signals/orchestrator-restart-cmd" 2>/dev/null || echo "")
 
 if [ -n "$RESTART_CMD" ] && [ -f "$HEARTBEAT" ]; then
-  last_modified=$(stat -f %m "$HEARTBEAT" 2>/dev/null || stat -c %Y "$HEARTBEAT" 2>/dev/null)
+  last_modified=$(stat -c %Y "$HEARTBEAT" 2>/dev/null || stat -f %m "$HEARTBEAT" 2>/dev/null)
   now=$(date +%s)
   age=$((now - last_modified))
   if [ "$age" -gt 90 ]; then
