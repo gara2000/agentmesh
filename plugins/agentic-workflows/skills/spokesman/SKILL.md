@@ -253,9 +253,15 @@ Tell the user: "PR for `<slug> — <title>` was merged automatically — approve
 
 Received from orchestrator.py when active worker count is zero and no Ready tasks remain.
 
-Tell the user: "All tasks complete. Shutting down."
+Ask the user for confirmation before shutting down:
 
-Run the Exit phase immediately (see below).
+```
+All tasks complete.
+Shut down AgentMesh and kill all tmux sessions? (yes/no)
+```
+
+- **If 'yes' (or 'y'):** proceed to the Exit phase (see below).
+- **If 'no' (or 'n'):** tell the user "Shutdown cancelled. You can continue using the system." and return to the event loop (step 1a).
 
 ---
 
