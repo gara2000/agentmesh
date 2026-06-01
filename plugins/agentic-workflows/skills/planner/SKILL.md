@@ -157,15 +157,50 @@ Follow this lookup order:
    print(match['id'] if match else '')
    "
    ```
-   If a folder is found → use it and update the task description with the link:
+   If a folder is found → use it and prepend the folder link to the existing description (preserving any existing content):
    ```bash
-   notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
+   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
+   import sys
+   text = sys.stdin.read()
+   if 'Description:
+' in text:
+       print(text.split('Description:
+', 1)[1].strip())
+   else:
+       print('')
+   ")
+   if [ -n "$EXISTING_DESC" ]; then
+       printf '%s
+
+%s' "[[F:<folder-id>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+   else
+       notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
+   fi
    ```
 3. **If no folder exists**, create one:
    ```bash
    notecove folder create "<slug>" --parent <task-parent-folder-id>
    ```
-   Then append to task description: `[[F:<folder-longid>|<folder-path>]]`
+   Then prepend the folder link to the existing description (preserving any existing content):
+   ```bash
+   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
+   import sys
+   text = sys.stdin.read()
+   if 'Description:
+' in text:
+       print(text.split('Description:
+', 1)[1].strip())
+   else:
+       print('')
+   ")
+   if [ -n "$EXISTING_DESC" ]; then
+       printf '%s
+
+%s' "[[F:<folder-longid>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+   else
+       notecove task change <slug> --content "[[F:<folder-longid>|<folder-path>]]" --content-format markdown
+   fi
+   ```
 
 **In all cases where the folder already existed** (steps 1 or 2), list and read any existing notes to get context from prior work:
 ```bash
@@ -369,7 +404,7 @@ CHILD_JSON=$(notecove task create "<title>" \
   --parent <slug> \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
-  --state Triage \
+  --state ${CHILD_STATE} \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")
 CHILD_ID=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
@@ -428,16 +463,9 @@ For each dependency identified in the DECOMPOSITION — both **logical dependenc
 notecove task change <blocked-slug> --block <blocker-slug>
 ```
 
-This creates the actual "Blocks / Blocked by" relationship in NoteCove. It must be done after all tasks exist so both slugs are known. The `--block <slug>` flag means "add a blocking task" (i.e., `<slug>` blocks the subject), so it must be called on the *blocked* task with the *blocker* as the argument.
+This creates the actual "Blocks / Blocked by" relationship in NoteCove. It must be done after all tasks exist so both slugs are known. The `--block <slug>` flag means "add a blocking task" (i.e., `<slug>` blocks the subject), so it must be called on the *blocked* task with the *blocker* as the argument — combined with the `Blocked` state set in Step A, this ensures the orchestrator will not dispatch blocked tasks.
 
 Apply this for **every** pair in the Merge Conflict Analysis, not just logical dependencies. A shared file is sufficient reason to serialize two tasks.
-
-**Step F — After all blocking links are set, transition each child task to its final state:**
-```bash
-notecove task change ${CHILD_SLUG} --state ${CHILD_STATE}
-```
-
-Tasks start in `Triage` (Step A) so the orchestrator cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
 
 After creating all child tasks and establishing all links, add a comment listing them:
 ```bash
