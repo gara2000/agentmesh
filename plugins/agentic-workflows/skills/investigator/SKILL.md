@@ -155,15 +155,50 @@ Follow this lookup order:
    print(match['id'] if match else '')
    "
    ```
-   If a folder is found → use it and update the task description with the link:
+   If a folder is found → use it and prepend the folder link to the existing description (preserving any existing content):
    ```bash
-   notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
+   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
+   import sys
+   text = sys.stdin.read()
+   if 'Description:
+' in text:
+       print(text.split('Description:
+', 1)[1].strip())
+   else:
+       print('')
+   ")
+   if [ -n "$EXISTING_DESC" ]; then
+       printf '%s
+
+%s' "[[F:<folder-id>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+   else
+       notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
+   fi
    ```
 3. **If no folder exists**, create one:
    ```bash
    notecove folder create "<slug>" --parent <task-parent-folder-id>
    ```
-   Then append to task description: `[[F:<folder-longid>|<folder-path>]]`
+   Then prepend the folder link to the existing description (preserving any existing content):
+   ```bash
+   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
+   import sys
+   text = sys.stdin.read()
+   if 'Description:
+' in text:
+       print(text.split('Description:
+', 1)[1].strip())
+   else:
+       print('')
+   ")
+   if [ -n "$EXISTING_DESC" ]; then
+       printf '%s
+
+%s' "[[F:<folder-longid>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+   else
+       notecove task change <slug> --content "[[F:<folder-longid>|<folder-path>]]" --content-format markdown
+   fi
+   ```
 
 **In all cases where the folder already existed** (steps 1 or 2), list and read any existing notes to get context from prior work:
 ```bash
