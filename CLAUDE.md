@@ -395,6 +395,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  spokesman       crash-limit-reached         WORK-xyz
 2026-04-26T...  spokesman       review-rejected             WORK-xyz
 2026-04-26T...  spokesman       review-aborted              WORK-xyz
+2026-04-26T...  spokesman       worker-respawned            WORK-xyz
 2026-04-26T...  spokesman       orchestrator-restarted      -
 2026-04-26T...  spokesman       shutdown                    -
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz

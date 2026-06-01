@@ -80,21 +80,64 @@ Announce to the user: "Spokesman ready. Orchestrator running. Picking up Ready t
 
 ## Phase 0.5: Startup Recovery
 
-After bootstrap, scan for any tasks currently in `Attention` state. These represent events that were fired before this Spokesman session started (e.g., from a previous session that crashed). Re-queue them so the event loop surfaces them to the user.
+After bootstrap, scan for any tasks currently in `Attention` state. These represent events that were fired before this Spokesman session started (e.g., from a previous session that crashed). For each recovered task, check whether the worker window still exists:
+
+- **Worker window exists** → re-queue the event to `spokesman-queue` for normal processing (current behavior).
+- **Worker window is gone** → spawn a new worker instead of sending a resume signal to a window that no longer exists.
 
 ```bash
 _attention_slugs=$(notecove task list --project <PROJECT> --state Attention --json | \
   python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]" 2>/dev/null || echo "")
 
+_respawned_count=0
 for _slug in $_attention_slugs; do
   # Derive event type from last event:* comment on the task
   _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
     grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "")
-  # Dedup guard: skip if already queued (prevents double-entry race with orchestrator.py)
-  if [ -n "$_last_event" ] && ! grep -q "^${_slug}:" ~/agentmesh/signals/spokesman-queue 2>/dev/null; then
-    echo "${_slug}:${_last_event}" >> ~/agentmesh/signals/spokesman-queue
+  [ -z "$_last_event" ] && continue
+
+  # Check if the worker window still exists (worker windows are named after the slug)
+  _worker_alive=false
+  if tmux list-windows -t workers -F '#{window_name}' 2>/dev/null | grep -qxF "$_slug"; then
+    _worker_alive=true
+  fi
+
+  if [ "$_worker_alive" = "true" ]; then
+    # Worker is alive: re-queue the event for normal processing
+    # Dedup guard: skip if already queued (prevents double-entry race with orchestrator.py)
+    if ! grep -q "^${_slug}:" ~/agentmesh/signals/spokesman-queue 2>/dev/null; then
+      echo "${_slug}:${_last_event}" >> ~/agentmesh/signals/spokesman-queue
+    fi
+  else
+    # Worker is gone: spawn a new one instead of sending a dead resume signal.
+    # Infer agent type from typeIds/typeNames — same TYPE_MAP as orchestrator.py triage.
+    _agent_type=$(notecove task show "$_slug" --json | python3 -c "
+import sys, json
+TYPE_MAP = {
+    'feature': 'implementer', 'bug': 'implementer',
+    'plan': 'planner', 'brainstorming': 'brainstormer',
+    'documentation': 'documenter', 'design': 'designer',
+    'investigation': 'investigator',
+}
+task = json.load(sys.stdin)
+type_ids = task.get('typeIds') or []
+type_names = task.get('typeNames') or []
+result = next((TYPE_MAP[t.lower()] for t in type_ids if t.lower() in TYPE_MAP), None)
+if result is None:
+    result = next((TYPE_MAP[n.lower()] for n in type_names if n.lower() in TYPE_MAP), None)
+print(result or 'implementer')
+" 2>/dev/null || echo "implementer")
+
+    printf '%s\tspokesman    \tworker-respawned\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_slug" >> "$LOG"
+    notecove task change "$_slug" --state Doing
+    send_cmd "$_slug" "spawn" "$_agent_type"
+    _respawned_count=$((_respawned_count + 1))
   fi
 done
+
+if [ "$_respawned_count" -gt 0 ]; then
+  echo "Recovery: respawned workers for $_respawned_count task(s) whose worker windows were gone."
+fi
 ```
 
 After the recovery loop, check whether the `spokesman-queue` file is non-empty — regardless of whether recovery added anything. This guards against pre-existing entries that orchestrator.py may have written (e.g. `event:task-ready`) before the Spokesman started listening:
