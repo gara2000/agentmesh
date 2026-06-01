@@ -180,7 +180,7 @@ class Orchestrator:
         self.review_limit = review_limit
         # Lock protects shared signal files and active-worker state
         self._lock = threading.Lock()
-        # Set when orchestrator should stop (all workers done, no Ready tasks)
+        # Set when orchestrator should stop (only by external kill — spokesman-exit.sh kills the session)
         self._stop = threading.Event()
         # Slugs forwarded to Spokesman for triage but not yet spawned
         self._in_flight: set[str] = set()
@@ -212,7 +212,7 @@ class Orchestrator:
         t_heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
         t_heartbeat.start()
 
-        # Block until _stop is set (by _maybe_shutdown or shutdown command)
+        # Block until _stop is set (or until the session is killed by spokesman-exit.sh)
         self._stop.wait()
 
     # -----------------------------------------------------------------------
@@ -502,7 +502,11 @@ class Orchestrator:
     # -----------------------------------------------------------------------
 
     def _maybe_shutdown(self) -> None:
-        """Signal Spokesman and stop if no active workers, no in-flight tasks, and no Ready tasks remain."""
+        """Notify Spokesman when no active workers, no in-flight tasks, and no Ready tasks remain.
+
+        The orchestrator never self-terminates. spokesman-exit.sh kills the entire
+        orchestrator tmux session when the user confirms shutdown.
+        """
         if self._in_flight:
             return
         workers_file = SIGNALS / "workers"
@@ -515,7 +519,7 @@ class Orchestrator:
         if active > 0:
             return
 
-        # Don't shut down if there are pending commands from Spokesman (e.g. spawn after restart)
+        # Don't notify if there are pending commands from Spokesman (e.g. spawn after restart)
         cmds_file = SIGNALS / "orchestrator-cmds"
         if cmds_file.exists() and cmds_file.stat().st_size > 0:
             return
@@ -530,10 +534,9 @@ class Orchestrator:
             pass
 
         log("orchestrator ", "shutdown")
-        _print("all tasks complete — shutting down")
+        _print("all tasks complete — notifying Spokesman")
         append_spokesman_queue("-", "event:shutdown")
         tmux_signal("spokesman-event")
-        self._stop.set()
 
     # -----------------------------------------------------------------------
     # Task pickup
