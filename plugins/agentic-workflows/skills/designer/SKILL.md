@@ -443,7 +443,7 @@ CHILD_JSON=$(notecove task create "<subtask-title>" \
   --folder ${PARENT_TASK_FOLDER_ID} \
   --project <PROJECT> \
   --type ${CHILD_TYPE} \
-  --state ${CHILD_STATE} \
+  --state Triage \
   --json)
 CHILD_SLUG=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['slug']['short'])")
 CHILD_ID=$(echo "$CHILD_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
@@ -500,6 +500,13 @@ For each dependency from the DESIGN note — both logical dependencies and merge
 ```bash
 notecove task change <blocked-slug> --block <blocker-slug>
 ```
+
+**Step F — After all blocking links are set, transition each child task to its final state:**
+```bash
+notecove task change ${CHILD_SLUG} --state ${CHILD_STATE}
+```
+
+Tasks start in `Triage` (Step A) so the orchestrator cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
 
 After creating all tasks and links, add a summary comment:
 ```bash
