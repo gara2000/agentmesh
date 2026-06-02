@@ -473,6 +473,24 @@ EOF
 echo "PR created: $PR_URL"
 ```
 
+Register a beads `gh:pr` gate so the shared `gate-check.sh` daemon can detect the merge
+(runs in parallel with `pr-monitor.sh` during the transition period):
+```bash
+# Extract PR number from URL (e.g. https://github.com/owner/repo/pull/42 → 42)
+PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+
+# Look up this implementer's bead ID by searching for the task slug
+BEAD_ID=$(bd search "$SLUG" --json 2>/dev/null \
+  | python3 -c "import sys,json; issues=json.load(sys.stdin); print(issues[0]['id'] if issues else '')" \
+  2>/dev/null || echo "")
+
+# Register gh:pr gate — encode slug in reason so gate-check.sh can map back to the task
+if [ -n "$BEAD_ID" ] && [ -n "$PR_NUMBER" ]; then
+  bd gate create --type=gh:pr --blocks "$BEAD_ID" --await-id="$PR_NUMBER" \
+    --reason="slug:$SLUG PR #$PR_NUMBER" 2>/dev/null || true
+fi
+```
+
 ### 5c. Signal Attention (PR ready)
 
 Create a completion note (now that the PR URL is available):

@@ -20,6 +20,10 @@ rm -f "$AGENTMESH/signals/mode"
 # Kill the workers session entirely (all worker and reviewer windows)
 tmux kill-session -t workers 2>/dev/null || true
 
+# Kill individual orchestrator daemons that don't die with the session kill below
+# (gate-check is a named window; idempotent if window doesn't exist)
+tmux kill-window -t orchestrator:gate-check 2>/dev/null || true
+
 # Kill the orchestrator session entirely — this also terminates the current process
 # (the Spokesman runs in orchestrator:main), which is the expected shutdown behavior.
 tmux kill-session -t orchestrator 2>/dev/null || true

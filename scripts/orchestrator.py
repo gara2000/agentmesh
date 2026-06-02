@@ -455,7 +455,14 @@ class Orchestrator:
         _print(f"spawned {agent_type} for {slug}")
 
     def _spawn_pr_monitor(self, slug: str, pr_url: str) -> None:
-        """Spawn a pr-monitor window for slug/pr_url (idempotent — no-op if already running)."""
+        """Spawn a pr-monitor window for slug/pr_url (idempotent — no-op if already running).
+
+        TRANSITION NOTE: pr-monitor.sh and gate-check.sh run in parallel during the transition
+        to beads gh:pr gates. Both detect PR merges and write the same event:pr-merged queue
+        entry; the orchestrator handles duplicates idempotently (second write is a no-op because
+        the task is already Done). Remove this method and its call sites once 3 end-to-end flows
+        via gate-check.sh have been confirmed (tracked in WORK-txn context note).
+        """
         running = run_bash(
             f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qF 'pr-mon-{slug}'"
         )

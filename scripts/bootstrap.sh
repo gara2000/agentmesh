@@ -87,6 +87,12 @@ tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }
 
+# 0f2. Launch gate-check daemon (shared gh:pr gate poller; parallel with pr-monitor.sh during transition)
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "gate-check" || {
+  tmux new-window -t orchestrator -n gate-check
+  tmux send-keys -t orchestrator:gate-check "bash $SCRIPTS/gate-check.sh" Enter
+}
+
 # 0g. Launch orchestrator.py daemon (handles all event routing and worker spawning)
 # Always kill and restart — ensures stale/old-version orchestrators are replaced on every bootstrap.
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" && \
@@ -96,4 +102,4 @@ tmux send-keys -t orchestrator:orchestrator \
   "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
   Enter
 
-echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"
+echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, gate-check, and orchestrator.py running"

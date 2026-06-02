@@ -247,8 +247,9 @@ Session: orchestrator       ← user attaches here only
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
-  window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
-  window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
+  window 4: gate-check      ← scripts/gate-check.sh (bash loop, shared gh:pr gate poller)
+  window 5: orchestrator    ← scripts/orchestrator.py (Python daemon)
+  window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task; runs in parallel with gate-check during transition)
 
 Session: workers
   window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
@@ -326,7 +327,8 @@ agentmesh/
 │   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
-│   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
+│   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs (kept during gate-check transition)
+│   ├── gate-check.sh       # shared gh:pr gate poller; detects PR merges via beads gates (replaces pr-monitor.sh long-term)
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
