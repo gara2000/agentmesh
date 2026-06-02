@@ -14,11 +14,26 @@ log_event() {
     printf '%s\torchestrator \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event_type" "$slug" >> "$LOG"
 }
 
+forward_to_interfaces() {
+    local slug="${1:?slug required}" event_type="${2:?event_type required}"
+    local ifaces_file="${SIGNALS}/active-interfaces"
+    local interfaces=()
+    if [[ -f "$ifaces_file" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && interfaces+=("$line")
+        done < "$ifaces_file"
+    fi
+    [[ ${#interfaces[@]} -eq 0 ]] && interfaces=("spokesman")
+    log_event "forwarding-to-interfaces:$(IFS=,; echo "${interfaces[*]}"):${event_type}" "$slug"
+    for iface in "${interfaces[@]}"; do
+        printf '%s:%s\n' "$slug" "$event_type" >> "${SIGNALS}/${iface}-queue"
+        tmux wait-for -S "${iface}-event"
+    done
+}
+
 forward_to_spokesman() {
     local slug="${1:?slug required}" event_type="${2:?event_type required}"
-    log_event "forwarding-to-spokesman:${event_type}" "$slug"
-    printf '%s:%s\n' "$slug" "$event_type" >> "${SIGNALS}/spokesman-queue"
-    tmux wait-for -S spokesman-event
+    forward_to_interfaces "$slug" "$event_type"
 }
 
 get_review_count() {

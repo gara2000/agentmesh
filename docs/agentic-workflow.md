@@ -123,8 +123,9 @@ sequenceDiagram
         OP->>NC: Update task state
         OP->>W: tmux wait-for -S <slug>-resume-<seq>
     else User-attention event (questions, plan-ready, pr-ready, post-review)
-        OP->>OP: Append <slug>:<event-type> to signals/spokesman-queue
-        OP->>SP: tmux wait-for -S spokesman-event
+        OP->>OP: Read signals/active-interfaces (fallback: spokesman)
+        OP->>OP: Append <slug>:<event-type> to each <iface>-queue
+        OP->>SP: tmux wait-for -S <iface>-event (for each registered interface)
         SP->>SP: Drain spokesman-queue, present to user
         SP->>NC: Update task state
         SP->>SP: Append <slug>|<cmd> to signals/orchestrator-cmds
@@ -249,7 +250,7 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, and writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file).
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, slackbridge-queue, active-interfaces, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, and writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file).
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.

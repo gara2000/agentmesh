@@ -3,7 +3,9 @@
 orchestrator.py — Always-running Python daemon for AgentMesh event routing.
 
 Handles all event routing, worker/reviewer spawning, and lifecycle management.
-Forwards user-attention events to the Spokesman via spokesman-queue.
+Forwards user-attention events to registered interfaces (Spokesman, SlackBridge, …)
+via the active-interfaces registry.  Falls back to spokesman-only if the registry
+is missing or empty.
 Receives and executes commands from Spokesman via orchestrator-cmds.
 
 Usage: python3 orchestrator.py --project <key> [--mode standard|auto-review]
@@ -156,10 +158,29 @@ def task_done(slug: str, project: str, resume_sig: str = "") -> None:
     subprocess.run(args)
 
 
-def append_spokesman_queue(slug: str, event_type: str) -> None:
-    entry = f"{slug}:{event_type}\n"
-    with open(SIGNALS / "spokesman-queue", "a") as f:
-        f.write(entry)
+def _read_active_interfaces() -> list[str]:
+    """Return the list of active interface names from signals/active-interfaces.
+
+    Each line in the file is an interface name (e.g. 'spokesman', 'slack-bridge').
+    Falls back to ['spokesman'] when the file is missing or empty so that the
+    existing Spokesman-only workflow is fully backward-compatible.
+    """
+    path = SIGNALS / "active-interfaces"
+    try:
+        lines = [l.strip() for l in path.read_text().splitlines() if l.strip()]
+        return lines if lines else ["spokesman"]
+    except FileNotFoundError:
+        return ["spokesman"]
+
+
+def forward_to_interfaces(slug: str, event_type: str) -> None:
+    """Fan out slug:event_type to every registered interface queue and fire its signal."""
+    interfaces = _read_active_interfaces()
+    for iface in interfaces:
+        entry = f"{slug}:{event_type}\n"
+        with open(SIGNALS / f"{iface}-queue", "a") as f:
+            f.write(entry)
+        tmux_signal(f"{iface}-event")
 
 
 def _print(msg: str) -> None:
@@ -184,7 +205,7 @@ class Orchestrator:
         self._stop = threading.Event()
         # Slugs forwarded to Spokesman for triage but not yet spawned
         self._in_flight: set[str] = set()
-        self._anomaly_checker = AnomalyChecker(SIGNALS, NOTECOVE_BIN)
+        self._anomaly_checker = AnomalyChecker(SIGNALS, NOTECOVE_BIN, forward_to_interfaces)
 
     # -----------------------------------------------------------------------
     # Main entry point
@@ -353,10 +374,11 @@ class Orchestrator:
             self._forward_to_spokesman(slug, event_type)
 
     def _forward_to_spokesman(self, slug: str, event_type: str) -> None:
-        log("orchestrator ", f"forwarding-to-spokesman:{event_type}", slug)
-        _print(f"forwarding to spokesman: {event_type} ({slug})")
-        append_spokesman_queue(slug, event_type)
-        tmux_signal("spokesman-event")
+        """Forward an event to all registered interfaces (backward-compat name kept)."""
+        interfaces = _read_active_interfaces()
+        log("orchestrator ", f"forwarding-to-interfaces:{','.join(interfaces)}:{event_type}", slug)
+        _print(f"forwarding to interfaces {interfaces}: {event_type} ({slug})")
+        forward_to_interfaces(slug, event_type)
 
     # -----------------------------------------------------------------------
     # Command drain (from Spokesman)
@@ -534,9 +556,8 @@ class Orchestrator:
             pass
 
         log("orchestrator ", "shutdown")
-        _print("all tasks complete — notifying Spokesman")
-        append_spokesman_queue("-", "event:shutdown")
-        tmux_signal("spokesman-event")
+        _print("all tasks complete — notifying interfaces")
+        self._forward_to_spokesman("-", "event:shutdown")
 
     # -----------------------------------------------------------------------
     # Task pickup
@@ -570,7 +591,6 @@ class Orchestrator:
         tasks.sort(key=lambda t: t.get("priority") if t.get("priority") is not None else float("inf"))
         tasks = tasks[:slots]
 
-        needs_spokesman = False
         for task in tasks:
             slug_obj = task.get("slug", {})
             slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
@@ -610,12 +630,8 @@ class Orchestrator:
             else:
                 # No type mapping — fall back to Spokesman LLM judgment.
                 self._in_flight.add(slug)
-                append_spokesman_queue(slug, "event:task-ready")
                 log("orchestrator ", "task-triage-forwarded", slug)
-                needs_spokesman = True
-
-        if needs_spokesman:
-            tmux_signal("spokesman-event")
+                self._forward_to_spokesman(slug, "event:task-ready")
 
 
 # ---------------------------------------------------------------------------
