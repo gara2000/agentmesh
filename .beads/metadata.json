@@ -1,7 +1,7 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
+  "dolt_mode": "server",
   "dolt_database": "agentmesh",
   "project_id": "c11c9047-a098-4da5-8cce-122a3f2b81fa"
 }
