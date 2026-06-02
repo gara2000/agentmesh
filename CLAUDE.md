@@ -499,6 +499,16 @@ This is idempotent — safe to run again if anything changes.
 
 ## Starting the System
 
+### Recommended: `agentmesh start` (when available)
+
+```bash
+agentmesh start --project WORK
+```
+
+This bootstraps all daemons, then launches the Spokesman with `--no-bootstrap`. The Spokesman skips its own bootstrap phase, registers in `signals/active-interfaces`, and starts the event loop.
+
+### Manual / Legacy
+
 ```bash
 cd ~/agentmesh
 tmux new-session -s orchestrator
@@ -507,6 +517,8 @@ claude
 ```
 
 The Spokesman bootstraps the entire system (orchestrator.py daemon + dispatcher + watchdog + folder-cleanup) and handles all user interaction from there.
+
+> **Note:** `--no-bootstrap` is for use by `agentmesh start` only. Manual invocations use the standard flow above.
 
 ### Running Modes
 

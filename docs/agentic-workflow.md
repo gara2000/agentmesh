@@ -45,7 +45,7 @@ flowchart LR
 
 Workflow from the user's perspective:
 
-1. Run `/spokesman --project WORK` to start (add `--mode auto-review` to enable automatic reviewing).
+1. Run `agentmesh start --project WORK` (recommended) or manually run `/spokesman --project WORK` (add `--mode auto-review` to enable automatic reviewing). The `--no-bootstrap` flag is used internally by `agentmesh start` — do not pass it directly.
 2. The Spokesman bootstraps the system; orchestrator.py picks up `Ready` tasks and dispatches agents automatically.
 3. When a worker needs input or has a completed PR, orchestrator.py forwards the event to the Spokesman.
 4. The Spokesman presents the event; the user responds — answering questions, approving or giving feedback.
@@ -490,8 +490,8 @@ sequenceDiagram
     participant NC as NoteCove
     participant W as Worker (WORK-42)
 
-    U->>SP: /spokesman --project WORK
-    SP->>SP: bootstrap.sh (starts orchestrator.py + daemons)
+    U->>SP: agentmesh start --project WORK (or /spokesman --project WORK)
+    SP->>SP: bootstrap.sh (starts orchestrator.py + daemons); register in active-interfaces
     OP->>NC: Fetch Ready tasks
     NC-->>OP: WORK-42 "Add rate limiting"
     OP->>NC: Set WORK-42 → Doing

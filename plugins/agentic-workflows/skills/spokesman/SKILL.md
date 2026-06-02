@@ -3,7 +3,7 @@ name: spokesman
 description: Thin user-interaction layer for the AgentMesh agentic workflow. Bootstraps the system (starts orchestrator.py daemon), then surfaces worker events to the user and relays decisions back to the orchestrator.
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *)
-hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard), --review-limit <n> (default 3)"
+hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard), --review-limit <n> (default 3), --no-bootstrap (skip bootstrap; for use by agentmesh start)"
 ---
 
 # Spokesman — AgentMesh User-Interaction Layer
@@ -18,8 +18,21 @@ Parse arguments:
   - `standard` — user reviews plans and PRs manually; reviewers spawn only on explicit request
   - `auto-review` — plan-reviewers and PR-reviewers spawn automatically; user only approves final PR
 - `--review-limit <n>` — optional, max auto-review cycles per task before escalating to user, defaults to `3`
+- `--no-bootstrap` — optional flag; if set, skip the bootstrap phase entirely (for use by `agentmesh start`); default: not set
 
 If `--project` is not provided, stop and ask the user.
+
+Set `NO_BOOTSTRAP=true` if `--no-bootstrap` was passed, otherwise `NO_BOOTSTRAP=false`.
+
+### `active-interfaces` registration
+
+Immediately after parsing arguments (before Phase 0 or Phase 0.5), register the Spokesman in `signals/active-interfaces`:
+
+```bash
+echo "spokesman" >> ~/agentmesh/signals/active-interfaces
+```
+
+This must run regardless of `--no-bootstrap`. The `signals/` directory is created by `bootstrap.sh` in normal mode; when `--no-bootstrap` is set, `agentmesh start` has already created it.
 
 ---
 
@@ -66,12 +79,16 @@ Every handler response that sends a command follows this pattern:
 
 ## Phase 0: Bootstrap
 
+**Skip this phase entirely if `NO_BOOTSTRAP=true`.** When `--no-bootstrap` is set, `agentmesh start` has already run `bootstrap.sh` — jump directly to Phase 0.5 (Startup Recovery).
+
 ```bash
-bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers> --review-limit <review-limit>
-LOG=~/agentmesh/signals/events.log
-# Persist mode to file so it survives Spokesman restarts
-echo "<mode>" > ~/agentmesh/signals/mode
-TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
+if [ "$NO_BOOTSTRAP" != "true" ]; then
+  bash ~/agentmesh/scripts/bootstrap.sh --project <PROJECT> --profile <profile> --mode <mode> --max-workers <max-workers> --review-limit <review-limit>
+  LOG=~/agentmesh/signals/events.log
+  # Persist mode to file so it survives Spokesman restarts
+  echo "<mode>" > ~/agentmesh/signals/mode
+  TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
+fi
 ```
 
 Announce to the user: "Spokesman ready. Orchestrator running. Picking up Ready tasks..."
@@ -716,9 +733,21 @@ If a background `tmux wait-for spokesman-event` is already running (re-launched 
 
 When no workers remain and no Ready tasks exist (orchestrator.py shuts down):
 
+**Step 1 — Deregister from `active-interfaces` (always):**
+
 ```bash
-bash ~/agentmesh/scripts/spokesman-exit.sh
+grep -v "^spokesman$" ~/agentmesh/signals/active-interfaces > /tmp/ai_tmp && mv /tmp/ai_tmp ~/agentmesh/signals/active-interfaces
 ```
+
+**Step 2 — Run cleanup (only if `NO_BOOTSTRAP=false`):**
+
+```bash
+if [ "$NO_BOOTSTRAP" != "true" ]; then
+  bash ~/agentmesh/scripts/spokesman-exit.sh
+fi
+```
+
+When `--no-bootstrap` was set (invoked via `agentmesh start`): skip `spokesman-exit.sh` — `agentmesh stop` owns the full lifecycle cleanup.
 
 Tell the user: "All tasks complete. Spokesman shutting down."
 
