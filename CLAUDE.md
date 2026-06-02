@@ -502,6 +502,8 @@ claude
 
 The Spokesman bootstraps the entire system (orchestrator.py daemon + dispatcher + watchdog + folder-cleanup) and handles all user interaction from there.
 
+> Project memories (session discoveries, environment gotchas, non-obvious pitfalls): run `bd memories <keyword>` to search or `bd prime` for full context.
+
 ### Running Modes
 
 Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
