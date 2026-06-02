@@ -14,6 +14,8 @@ All coordination is synchronous — no polling, no idle token consumption.
 - **`tmux wait-for <signal>`** — blocks until the signal is fired
 - **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
 - **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
+- **`signals/slackbridge-queue`** — append-only file; orchestrator.py writes forwarded user-attention events for SlackBridge; SlackBridge drains it after unblocking
+- **`signals/active-interfaces`** — one line per active interface name (`spokesman`, `slack-bridge`); read by orchestrator.py to fan out events; empty or missing = falls back to `spokesman` only
 - **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
 - **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
 
@@ -24,6 +26,7 @@ All coordination is synchronous — no polling, no idle token consumption.
 | `worker-any-event` | Worker → Dispatcher | Worker needs to notify orchestrator.py |
 | `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
 | `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
+| `slackbridge-event` | orchestrator.py → SlackBridge | User-attention event forwarded to SlackBridge (when registered in `active-interfaces`) |
 | `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
 | `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
 
@@ -115,7 +118,7 @@ Responsibilities:
   - Planner/brainstormer completion: auto-ack, set Done, clean up
   - PR merged: auto-approve, clean up
   - Worker crash: re-queue task, spawn new worker
-- Forward user-attention events to `spokesman-queue` + fire `spokesman-event`
+- Forward user-attention events to all registered interfaces (reads `signals/active-interfaces`; falls back to `spokesman` only when empty)
 - Execute commands from Spokesman: fire resume signals, spawn agents, clean up
 
 ### Legacy Orchestrator
@@ -332,6 +335,8 @@ agentmesh/
 └── signals/                # runtime directory, created on orchestrator bootstrap
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
     ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
+    ├── slackbridge-queue   # append-only; orchestrator.py writes <slug>:<event-type> for SlackBridge to drain
+    ├── active-interfaces   # one line per active interface name (e.g. spokesman, slack-bridge); empty = spokesman-only fallback
     ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
@@ -342,6 +347,7 @@ agentmesh/
     ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
     ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state
     ├── <slug>.crash-count          # consecutive crash counter; written by watchdog on each crash, reset on clean exit or at bootstrap
+    ├── <slug>.slack-thread         # Slack thread timestamp written by SlackBridge when it starts a thread for the task
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug

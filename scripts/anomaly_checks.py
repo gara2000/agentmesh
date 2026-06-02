@@ -9,15 +9,24 @@ locking is required.
 import json
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 
 class AnomalyChecker:
     """Runs structural invariant checks on the AgentMesh signal directory."""
 
-    def __init__(self, signals: Path, notecove_bin: str) -> None:
+    def __init__(
+        self,
+        signals: Path,
+        notecove_bin: str,
+        forward_fn: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._signals = signals
         self._notecove_bin = notecove_bin
+        # forward_fn(slug, event_type) fans out to all registered interfaces.
+        # Falls back to spokesman-queue directly when not injected (standalone use).
+        self._forward_fn = forward_fn
         self._active_anomalies: set = set()
 
     # ------------------------------------------------------------------
@@ -89,13 +98,17 @@ class AnomalyChecker:
                     current.add(f"stale-registry:{parts[0].strip()}")
 
     def _report_changes(self, current: set) -> None:
-        """Report new anomalies to Spokesman; log resolved ones."""
+        """Report new anomalies to all registered interfaces; log resolved ones."""
         new_anomalies = current - self._active_anomalies
         for anomaly in sorted(new_anomalies):
             slug = anomaly.split(":")[1] if ":" in anomaly else "-"
             self._log(f"anomaly-detected:{anomaly}", slug)
-            self._append_spokesman_queue(slug, f"event:anomaly-detected:{anomaly}")
-            self._tmux_signal("spokesman-event")
+            if self._forward_fn is not None:
+                self._forward_fn(slug, f"event:anomaly-detected:{anomaly}")
+            else:
+                # Fallback: write directly to spokesman-queue (standalone / legacy path).
+                self._append_spokesman_queue(slug, f"event:anomaly-detected:{anomaly}")
+                self._tmux_signal("spokesman-event")
 
         for anomaly in sorted(self._active_anomalies - current):
             slug = anomaly.split(":")[1] if ":" in anomaly else "-"

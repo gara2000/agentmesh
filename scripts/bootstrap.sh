@@ -43,6 +43,8 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/workers"
 : > "$SIGNALS/events.log"
 : > "$SIGNALS/spokesman-queue"
+: > "$SIGNALS/slackbridge-queue"
+: > "$SIGNALS/active-interfaces"
 : > "$SIGNALS/orchestrator-cmds"
 rm -f "$SIGNALS/"*.merged
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
