@@ -27,6 +27,7 @@ All coordination is synchronous — no polling, no idle token consumption.
 | `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
 | `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
 | `slackbridge-event` | orchestrator.py → SlackBridge | User-attention event forwarded to SlackBridge (when registered in `active-interfaces`) |
+| `slackbridge-event` | slack-poller.sh → SlackBridge | Tick signal fired every N seconds; wakes SlackBridge to check for new inbound messages via MCP |
 | `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
 | `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
 
@@ -252,6 +253,7 @@ Session: orchestrator       ← user attaches here only
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
+  window N: slack-poller    ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
 
 Session: workers
   window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
@@ -330,6 +332,7 @@ agentmesh/
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
+│   ├── slack-poller.sh     # timer/ticker daemon: fires slackbridge-event every N seconds to wake SlackBridge for inbound message checks (no Slack API calls)
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
@@ -340,6 +343,7 @@ agentmesh/
     ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
+    ├── slack-channel       # Slack channel ID written by bootstrap.sh (empty string when interface is spokesman-only); read by SlackBridge
     ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
     ├── <slug>.seq                  # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
     ├── <slug>.merged               # flag file written by pr-monitor when PR is merged
@@ -407,6 +411,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  slack-poller    started                     -
+2026-04-26T...  slack-poller    tick                        -
 2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
 2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
 2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
@@ -554,6 +560,25 @@ Example:
 ```bash
 /spokesman --project WORK --mode auto-review --review-limit 5
 ```
+
+### Interface (`--interface`)
+
+Pass `--interface <mode>` to choose which user-facing interfaces are active:
+
+| Interface | Behavior |
+|---|---|
+| `spokesman` (default) | Only the Spokesman Claude Code process handles user interaction |
+| `slack` | Slack integration only: starts `slack-poller.sh` to wake SlackBridge on a timer |
+| `both` | Both Spokesman and Slack interfaces active simultaneously |
+
+When `--interface` includes `slack`, `--slack-channel <channel-id>` is required. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read. An optional `--slack-poller-interval <seconds>` arg controls the tick frequency (default: 5).
+
+Example — start with both interfaces, polling every 10 seconds:
+```bash
+/spokesman --project WORK --interface both --slack-channel C01234567 --slack-poller-interval 10
+```
+
+The SlackBridge skill registers itself in `signals/active-interfaces` when it starts, enabling the orchestrator to forward worker events to both Spokesman and SlackBridge simultaneously.
 
 ### Legacy Entry Point
 
