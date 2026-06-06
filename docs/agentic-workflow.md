@@ -14,6 +14,7 @@ Session: orchestrator          ← user attaches here only
   window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
+  window N: slack-poller       ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
 
 Session: workers
   window 0: WORK-42            ← /implementer skill (Claude Code, yolo mode)
@@ -250,17 +251,25 @@ flowchart TD
 `scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
-2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, slackbridge-queue, active-interfaces, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, and writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file).
+2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, slackbridge-queue, active-interfaces, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file), and writes `signals/slack-channel` with the provided channel ID (empty when `--interface spokesman`).
 3. **Triage folder** — resolves the Triage folder ID from NoteCove and writes it to `signals/triage_folder` so orchestrator.py can reference it without a repeated lookup.
 4. **Workers session** — creates the `workers` tmux session if it doesn't already exist.
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
+9. **Slack poller** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-poller.sh` in `orchestrator:slack-poller`. This is a pure timer/ticker — it fires `slackbridge-event` every N seconds (default: 5) to wake the SlackBridge skill for inbound message checks via MCP. No Slack API calls are made by the poller itself.
 
 Usage:
 ```bash
+# Spokesman only (default)
 bash ~/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>] [--mode <mode>] [--max-workers <n>]
+
+# With Slack interface (adds slack-poller window)
+bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface slack --slack-channel C01234567 [--slack-poller-interval 5]
+
+# Both Spokesman and Slack
+bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface both --slack-channel C01234567
 ```
 
 ---

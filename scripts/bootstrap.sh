@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog, orchestrator.py
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>] [--review-limit <n>]
+#                     [--interface spokesman|slack|both] [--slack-channel <channel-id>] [--slack-poller-interval <seconds>]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -16,6 +17,9 @@ PROFILE="kmq9h71tepf95rac2b59xdbsq2"
 MODE="standard"
 MAX_WORKERS="10"
 REVIEW_LIMIT="3"
+INTERFACE="spokesman"
+SLACK_CHANNEL=""
+SLACK_POLLER_INTERVAL="5"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,12 +28,20 @@ while [[ $# -gt 0 ]]; do
     --mode) MODE="$2"; shift 2 ;;
     --max-workers) MAX_WORKERS="$2"; shift 2 ;;
     --review-limit) REVIEW_LIMIT="$2"; shift 2 ;;
+    --interface) INTERFACE="$2"; shift 2 ;;
+    --slack-channel) SLACK_CHANNEL="$2"; shift 2 ;;
+    --slack-poller-interval) SLACK_POLLER_INTERVAL="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$PROJECT" ]]; then
   echo "Error: --project is required" >&2
+  exit 1
+fi
+
+if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "$SLACK_CHANNEL" ]]; then
+  echo "Error: --slack-channel is required when --interface includes slack" >&2
   exit 1
 fi
 
@@ -46,6 +58,8 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/slackbridge-queue"
 : > "$SIGNALS/active-interfaces"
 : > "$SIGNALS/orchestrator-cmds"
+# Write slack-channel file (empty when slack interface is not in use)
+echo "${SLACK_CHANNEL}" > "$SIGNALS/slack-channel"
 rm -f "$SIGNALS/"*.merged
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
 rm -f "$SIGNALS/"*.review-start
@@ -98,4 +112,18 @@ tmux send-keys -t orchestrator:orchestrator \
   "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
   Enter
 
-echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"
+# 0h. Launch slack-poller when interface includes slack
+if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
+  tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "slack-poller" && \
+    tmux kill-window -t orchestrator:slack-poller 2>/dev/null || true
+  tmux new-window -t orchestrator -n slack-poller
+  tmux send-keys -t orchestrator:slack-poller \
+    "bash $SCRIPTS/slack-poller.sh --interval $SLACK_POLLER_INTERVAL" \
+    Enter
+fi
+
+if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
+  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, orchestrator.py, and slack-poller running"
+else
+  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"
+fi
