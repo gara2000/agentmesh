@@ -65,25 +65,69 @@ echo "<channel-id>" > ~/agentmesh/signals/slack-channel
 
 ### 0c. Startup recovery
 
-Query NoteCove for tasks in `Attention` state. For each, if `signals/<slug>.slack-thread` does NOT exist, post a new thread header and store the `thread_ts` in `signals/<slug>.slack-thread`:
+Query NoteCove for tasks in `Attention` state. For each, check whether the worker window is still alive:
+
+- **Worker window exists** → if no `signals/<slug>.slack-thread` exists, post a recovery header thread to Slack so the user can see the pending event; store the `thread_ts`.
+- **Worker window is gone** → the worker crashed and must be respawned. Infer the agent type from the task's typeIds/typeNames using the same TYPE_MAP as the Spokesman, set task to `Doing`, and send a `spawn` command to orchestrator.py.
 
 ```bash
 _attention_slugs=$(notecove task list --project <PROJECT> --state Attention --json | \
   python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]" 2>/dev/null || echo "")
 
+_respawned_count=0
 for _slug in $_attention_slugs; do
-  if [ ! -f ~/agentmesh/signals/${_slug}.slack-thread ]; then
-    # Post a recovery header thread
-    _task_json=$(notecove task show "$_slug" --json)
-    _title=$(echo "$_task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
-    # Use Slack MCP to post to channel; store returned thread_ts
-    # (post_message tool returns the ts of the posted message, used as thread_ts)
-    _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
-      grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "unknown")
-    # post header message via Slack MCP (post_message to channel)
-    # store thread_ts into signals/<slug>.slack-thread
+  # Check if the worker window still exists
+  _worker_alive=false
+  if tmux list-windows -t workers -F '#{window_name}' 2>/dev/null | grep -qxF "$_slug"; then
+    _worker_alive=true
+  fi
+
+  if [ "$_worker_alive" = "true" ]; then
+    # Worker is alive: ensure a Slack thread exists so the user can see the event
+    if [ ! -f ~/agentmesh/signals/${_slug}.slack-thread ]; then
+      _task_json=$(notecove task show "$_slug" --json)
+      _title=$(echo "$_task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
+      _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
+        grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "unknown")
+      # Post recovery header via Slack MCP, store thread_ts in signals/<slug>.slack-thread
+    fi
+  else
+    # Worker is gone: respawn it
+    _agent_type=$(notecove task show "$_slug" --json | python3 -c "
+import sys, json
+TYPE_MAP = {
+    'feature': 'implementer', 'bug': 'implementer',
+    'plan': 'planner', 'brainstorming': 'brainstormer',
+    'documentation': 'documenter', 'design': 'designer',
+    'investigation': 'investigator',
+}
+task = json.load(sys.stdin)
+type_ids = task.get('typeIds') or []
+type_names = task.get('typeNames') or []
+result = next((TYPE_MAP[t.lower()] for t in type_ids if t.lower() in TYPE_MAP), None)
+if result is None:
+    result = next((TYPE_MAP[n.lower()] for n in type_names if n.lower() in TYPE_MAP), None)
+print(result or 'implementer')
+" 2>/dev/null || echo "implementer")
+    notecove task change "$_slug" --state Doing
+    send_cmd "$_slug" "spawn" "$_agent_type"
+    _respawned_count=$((_respawned_count + 1))
   fi
 done
+
+if [ "$_respawned_count" -gt 0 ]; then
+  # Post to Slack channel: "Recovery: respawned workers for N task(s) whose worker windows were gone."
+  :
+fi
+```
+
+After the recovery loop, check whether the queue is already non-empty (orchestrator.py may have written events before SlackBridge started listening):
+
+```bash
+if [ -s "$SLACKBRIDGE_QUEUE" ]; then
+  # Jump directly to step 1b to drain it
+  :
+fi
 ```
 
 ### 0d. Post startup message
@@ -101,15 +145,33 @@ Each iteration:
 
 ### 1a. Block on slackbridge-event
 
+Re-read runtime state at the top of each wakeup cycle — zero in-memory state across iterations:
+
 ```bash
 SLACKBRIDGE_QUEUE=~/agentmesh/signals/slackbridge-queue
 VERBOSITY=$(cat ~/agentmesh/signals/slack-verbosity 2>/dev/null || echo "medium")
 LOG=~/agentmesh/signals/events.log
+```
 
+Check whether the queue already has pending events before blocking (the orchestrator writes to `slackbridge-queue` **before** firing `slackbridge-event`; if the signal fired while SlackBridge was processing, tmux drops it silently):
+
+```bash
 if [ ! -s "$SLACKBRIDGE_QUEUE" ]; then
   tmux wait-for slackbridge-event
 fi
 ```
+
+### 1a.5. Check orchestrator heartbeat
+
+After each wakeup, verify that orchestrator.py is still alive. If the heartbeat file is stale (not updated in >90 seconds), auto-restart orchestrator.py:
+
+```bash
+bash ~/agentmesh/scripts/spokesman-heartbeat-check.sh
+```
+
+If the restart happens, post to the Slack channel: "⚠️ orchestrator.py was stale — restarted automatically."
+
+If `signals/orchestrator.heartbeat` does not exist (e.g., shortly after bootstrap before orchestrator.py writes its first heartbeat), the check is silently skipped.
 
 ### 1b. Drain slackbridge-queue
 
@@ -270,7 +332,17 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 /agentmesh shutdown
   → send_cmd - shutdown
   → Proceed to Exit phase
+
+/agentmesh release patch|minor|major
+  → bash ~/agentmesh/scripts/release.sh <bump-type>
+  → Post output to channel: "✅ Release cut: v<new-version>" (or error message if it fails)
 ```
+
+**Freeform release commands** — also recognize these as top-level channel messages (not just slash commands), matching the Spokesman's behavior:
+
+- `release patch` / `release minor` / `release major` (as a plain channel message)
+  → `bash ~/agentmesh/scripts/release.sh <bump-type>`
+  → Post result to channel
 
 ### 1f. Loop back
 
@@ -462,6 +534,8 @@ agentmesh SlackBridge stopped.
 - **Always drain the full slackbridge-queue** before checking for replies or looping.
 - **Always write NoteCove state changes BEFORE sending commands to orchestrator.py** — orchestrator.py fires the tmux signal immediately.
 - **Check queue before blocking** — check `slackbridge-queue` before calling `tmux wait-for slackbridge-event` to avoid missing events that fired while processing the previous cycle.
+- **Check orchestrator heartbeat after every wakeup** — call `spokesman-heartbeat-check.sh` immediately after waking; if orchestrator.py is stale, restart it and notify via Slack before processing any events.
+- **Respawn dead workers on startup** — tasks in `Attention` state with no live worker window must be respawned (not just threaded) to prevent them from being permanently stuck.
 - **thread_ts is the anchor** — the `signals/<slug>.slack-thread` file stores the top-level message ts. All replies use it as `thread_ts`. Never lose or overwrite it.
 - **last-ts tracking prevents duplicate reply processing** — `signals/<slug>.slack-last-ts` stores the timestamp of the last processed reply; skip replies with `ts <= last_ts`.
 - **Slash commands use channel-last-ts** — `signals/slack-channel-last-ts` stores the timestamp of the last processed channel message; skip messages with `ts <= channel_last_ts`.
