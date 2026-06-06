@@ -255,14 +255,14 @@ done
 ```
 reply_handler <slug> <message>:
   case (lowercased message) in
-    approve|lgtm|looks good|yes|ok)
+    approve|lgtm|looks good|yes|ok|✅)
       send_cmd <slug> approve
       Update thread header: State: Done
       Post final thread reply: "✅ *<slug>* complete."
       Log slack-bridge  thread-closed  <slug>
     reviewer|spawn reviewer|spawn plan reviewer)
       send_cmd <slug> spawn-plan-reviewer
-    spawn pr reviewer)
+    spawn pr reviewer|pr reviewer)
       send_cmd <slug> spawn-pr-reviewer
     feedback:*|fb:*)
       feedback_text=$(extract text after "feedback:" or "fb:")
@@ -270,17 +270,17 @@ reply_handler <slug> <message>:
       notecove task change <slug> --state Doing
       send_cmd <slug> resume
       Update thread header: State: Doing
-    abort|cancel)
+    abort|cancel|stop)
       notecove task change <slug> --state "Won't Do"
       send_cmd <slug> abort
       Update thread header: State: Won't Do
       Post final thread reply: "🚫 *<slug>* cancelled."
       Log slack-bridge  thread-closed  <slug>
-    respawn)
+    respawn|retry)
       notecove task change <slug> --state Doing
       send_cmd <slug> respawn
       Update thread header: State: Doing
-    select|continue)
+    select|selection done|continue|proceed|done)
       send_cmd <slug> approve
     *)
       Post to thread: "❓ Didn't understand that. Valid replies: approve, reviewer, feedback: <text>, abort"
@@ -434,7 +434,7 @@ Before posting, check `VERBOSITY`:
 ```
 ❓ *Worker has questions (Round N):*
 
-<question content — if verbosity high, fetch and include full QUESTIONS note content; otherwise just the heading>
+<question content — if verbosity high, fetch and include full QUESTIONS note content; otherwise first 500 chars of the QUESTIONS note content>
 
 Reply here to answer, or `approve` to skip.
 ```
@@ -445,7 +445,7 @@ Update thread header: `State: Attention (questions)`.
 ```
 📝 *Plan ready for review:*
 
-<if verbosity high: full PLAN note content; else: first 3 lines of plan>
+<if verbosity high: full PLAN note content; else: first 500 chars of PLAN note>
 
 Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
 ```
@@ -471,7 +471,7 @@ Update thread header: `State: Attention (PR validated) | PR: <url>`.
 ```
 🔍 *Research complete.*
 
-<if verbosity high: post Context notes content; else: brief summary>
+<if verbosity high: post Context notes content; else: first 300 chars of research summary>
 
 Reply: `approve` or `feedback: <text>`
 ```
