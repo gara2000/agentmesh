@@ -9,12 +9,18 @@
 #   3. Computes the next semver version
 #   4. Aborts if the tag already exists (idempotency guard)
 #   5. Writes the new version to plugin.json
-#   6. Rebuilds all skills via build.sh
+#   6. Rebuilds all skills via build.sh AND produces a versioned bundle in releases/vX.Y.Z/
 #   7. Generates changelog entry and prepends to CHANGELOG.md
 #   8. Commits the changed files
 #   9. Creates an annotated git tag
 #  10. Reloads the plugin via `claude plugin update`
 #  11. Prints a summary
+#
+# The bundle at releases/vX.Y.Z/ is gitignored (see .gitignore). To install a
+# specific version from a bundle:
+#   git checkout vX.Y.Z
+#   ./plugins/agentic-workflows/build.sh --bundle
+#   claude plugin install ~/agentmesh/releases/vX.Y.Z/
 
 set -euo pipefail
 
@@ -89,9 +95,9 @@ with open('$PLUGIN_JSON', 'w') as f:
     f.write('\n')
 "
 
-# ── Rebuild all skills ────────────────────────────────────────────────────────
-echo "Step 2/6: Rebuilding skills..."
-"$BUILD_SH"
+# ── Rebuild all skills and produce versioned bundle ───────────────────────────
+echo "Step 2/6: Rebuilding skills and bundling..."
+"$BUILD_SH" --bundle
 
 # ── Generate changelog entry and prepend to CHANGELOG.md ─────────────────────
 echo "Step 3/6: Updating CHANGELOG.md..."
@@ -165,12 +171,14 @@ claude plugin update agentic-workflows@agentmesh || RELOAD_STATUS=$?
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
+BUNDLE_DIR="$AGENTMESH/releases/$TAG"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " Release complete"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " Old version : $CURRENT_VERSION"
 echo " New version : $NEXT_VERSION"
 echo " Tag created : $TAG"
+echo " Bundle      : $BUNDLE_DIR"
 if [[ $RELOAD_STATUS -eq 0 ]]; then
     echo " Plugin reload: OK"
 else
