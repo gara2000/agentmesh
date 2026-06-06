@@ -20,7 +20,7 @@
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-PLUGIN_JSON="$AGENTMESH/plugins/agentic-workflows/.claude-plugin/plugin.json"
+VERSION_FILE="$AGENTMESH/VERSION"
 BUILD_SH="$AGENTMESH/plugins/agentic-workflows/build.sh"
 
 # ── Argument validation ───────────────────────────────────────────────────────
@@ -71,13 +71,8 @@ echo "Step 1/3: Restoring files from $TAG..."
 git checkout "$TAG" -- plugins/agentic-workflows/
 git checkout "$TAG" -- scripts/
 
-# Read version from the restored plugin.json to confirm what we got
-RESTORED_VERSION=$(python3 -c "
-import json
-with open('$PLUGIN_JSON') as f:
-    data = json.load(f)
-print(data.get('version', 'unknown'))
-")
+# Read version from the restored VERSION file to confirm what we got
+RESTORED_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo "unknown")
 
 # ── Rebuild skills ─────────────────────────────────────────────────────────────
 echo "Step 2/3: Rebuilding skills..."
@@ -93,7 +88,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " Rollback complete"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Rolled back to : $TAG (plugin version $RESTORED_VERSION)"
+echo " Rolled back to : $TAG (workflow version $RESTORED_VERSION)"
 echo " Files restored : plugins/agentic-workflows/, scripts/"
 if [[ $RELOAD_STATUS -eq 0 ]]; then
     echo " Plugin reload  : OK"

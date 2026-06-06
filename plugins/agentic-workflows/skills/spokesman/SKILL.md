@@ -248,7 +248,7 @@ Dispatch on event type:
 case "$event_rest" in
   event:task-ready)       → task triage (auto, decide agent type, spawn)
   event:completion)       → completion announcement (auto, no user input)
-  event:pr-merged-auto-approved) → PR auto-merge announcement (auto, no user input)
+  event:pr-merged-auto-approved) → PR merged: offer release prompt (user-input)
   event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
@@ -308,11 +308,37 @@ Tell the user: "Agent task `<slug> — <title>` completed successfully."
 
 ---
 
-### Event: `event:pr-merged-auto-approved` — PR auto-merged
+### Event: `event:pr-merged-auto-approved` — PR merged, offer release
 
-Auto-acknowledge — no user input needed.
+The PR was merged and the task auto-approved. Inform the user and offer to cut a workflow release.
 
-Tell the user: "PR for `<slug> — <title>` was merged automatically — approved."
+Re-launch `tmux wait-for spokesman-event` in background immediately after presenting the block (user-input event).
+
+```
+── PR Merged ────────────────────────────────────
+Task: <slug> — <title>
+PR merged and task approved.
+
+Would you like to cut a new release?
+  • 'release patch'  — bug fixes, minor changes
+  • 'release minor'  — new features
+  • 'release major'  — breaking changes
+  • 'skip'           — no release now
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'release patch', 'release minor', or 'release major':** run the release script and show its output:
+
+```bash
+printf '%s\tspokesman    \trelease-cut\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+bash ~/agentmesh/scripts/release.sh <bump-type>
+```
+
+Tell the user the result (version number, tag created, whether plugin reload succeeded).
+
+**If 'skip':** tell the user "No release cut. You can run 'release patch/minor/major' at any time."
 
 ---
 
@@ -721,7 +747,24 @@ Wait for user response and act accordingly.
 
 ---
 
-### 1d. Loop back
+### 1d. User commands (any time)
+
+The user can issue commands at any point — while waiting for events or after responding to an attention block. Recognize these as commands rather than answers to the current attention event:
+
+**`release patch` / `release minor` / `release major`**
+
+Cut a workflow release at any time, independent of any PR merge event.
+
+```bash
+printf '%s\tspokesman    \trelease-cut\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+bash ~/agentmesh/scripts/release.sh <bump-type>
+```
+
+Show the full output. If it fails (e.g., nothing to release, tag already exists), show the error and continue.
+
+---
+
+### 1e. Loop back
 
 After draining the queue, go back to Step 1a. All in-memory state (`MODE`, `TRIAGE_FOLDER`, `LOG`) is re-read from files at the top of 1a on each iteration — the Spokesman relies on no bash variables that persist across wakeup cycles.
 
