@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
-# release.sh — Git-tag-based release workflow for the agentic-workflows plugin
+# release.sh — Workflow-level release for AgentMesh
 #
 # Usage: ./scripts/release.sh [patch|minor|major]
 #
 # What it does:
 #   1. Validates the bump type argument
-#   2. Reads current version from plugin.json
-#   3. Computes the next semver version
-#   4. Aborts if the tag already exists (idempotency guard)
-#   5. Writes the new version to plugin.json
-#   6. Rebuilds all skills via build.sh
+#   2. Pulls latest from remote (git pull --rebase)
+#   3. Reads current version from VERSION
+#   4. Computes the next semver version
+#   5. Aborts if the tag already exists (idempotency guard)
+#   6. Writes the new version to VERSION
 #   7. Generates changelog entry and prepends to CHANGELOG.md
-#   8. Commits the changed files
-#   9. Creates an annotated git tag
-#  10. Reloads the plugin via `claude plugin update`
-#  11. Prints a summary
+#   8. Commits VERSION and CHANGELOG.md
+#   9. Creates an annotated git tag vX.Y.Z
+#  10. Pushes commit and tag to remote
+#  11. Reloads the plugin via `claude plugin update`
+#  12. Prints a summary
+#
+# Note: plugin.json version is independent of the workflow version.
+# Plugin version is bumped by developers when changing skills or scripts
+# (enforced by the pre-commit hook). The workflow version here tracks
+# releases of the overall tool — multiple plugin bumps may land in one
+# workflow release, or a script-only change with no plugin bump may
+# still warrant a workflow release.
 
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-PLUGIN_JSON="$AGENTMESH/plugins/agentic-workflows/.claude-plugin/plugin.json"
-BUILD_SH="$AGENTMESH/plugins/agentic-workflows/build.sh"
+VERSION_FILE="$AGENTMESH/VERSION"
 CHANGELOG_SH="$AGENTMESH/scripts/changelog.sh"
 CHANGELOG_MD="$AGENTMESH/CHANGELOG.md"
 
@@ -35,18 +42,18 @@ if [[ "$BUMP_TYPE" != patch && "$BUMP_TYPE" != minor && "$BUMP_TYPE" != major ]]
     exit 1
 fi
 
+# ── Pull latest from remote ───────────────────────────────────────────────────
+echo "Step 1/7: Pulling latest from remote..."
+cd "$AGENTMESH"
+git pull --rebase
+
 # ── Read current version ──────────────────────────────────────────────────────
-if [[ ! -f "$PLUGIN_JSON" ]]; then
-    echo "Error: plugin.json not found at $PLUGIN_JSON" >&2
+if [[ ! -f "$VERSION_FILE" ]]; then
+    echo "Error: VERSION file not found at $VERSION_FILE" >&2
     exit 1
 fi
 
-CURRENT_VERSION=$(python3 -c "
-import json, sys
-with open('$PLUGIN_JSON') as f:
-    data = json.load(f)
-print(data['version'])
-")
+CURRENT_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
 
 # ── Compute next version ──────────────────────────────────────────────────────
 NEXT_VERSION=$(python3 -c "
@@ -69,7 +76,7 @@ print(f'{major}.{minor}.{patch}')
 TAG="v${NEXT_VERSION}"
 
 # ── Idempotency guard: abort if tag already exists ────────────────────────────
-if git -C "$AGENTMESH" tag --list "$TAG" | grep -q "^${TAG}$"; then
+if git tag --list "$TAG" | grep -q "^${TAG}$"; then
     echo "Error: git tag '$TAG' already exists. Aborting without making any changes." >&2
     exit 1
 fi
@@ -77,24 +84,12 @@ fi
 echo "Releasing: $CURRENT_VERSION → $NEXT_VERSION  ($BUMP_TYPE bump)"
 echo ""
 
-# ── Write new version to plugin.json ─────────────────────────────────────────
-echo "Step 1/6: Updating plugin.json to $NEXT_VERSION..."
-python3 -c "
-import json
-with open('$PLUGIN_JSON') as f:
-    data = json.load(f)
-data['version'] = '$NEXT_VERSION'
-with open('$PLUGIN_JSON', 'w') as f:
-    json.dump(data, f, indent=2)
-    f.write('\n')
-"
-
-# ── Rebuild all skills ────────────────────────────────────────────────────────
-echo "Step 2/6: Rebuilding skills..."
-"$BUILD_SH"
+# ── Write new version to VERSION ─────────────────────────────────────────────
+echo "Step 2/7: Updating VERSION to $NEXT_VERSION..."
+echo "$NEXT_VERSION" > "$VERSION_FILE"
 
 # ── Generate changelog entry and prepend to CHANGELOG.md ─────────────────────
-echo "Step 3/6: Updating CHANGELOG.md..."
+echo "Step 3/7: Updating CHANGELOG.md..."
 CHANGELOG_ENTRY=$("$CHANGELOG_SH" 2>/dev/null || true)
 CHANGELOG_HEADER="## v${NEXT_VERSION} — $(date -u +%Y-%m-%d)"
 
@@ -105,9 +100,6 @@ else
 fi
 
 # Prepend section below the CHANGELOG.md header (before the first ## section or at EOF)
-EXISTING_CONTENT=$(cat "$CHANGELOG_MD")
-# Split at first blank line after the preamble (the header block ends with a blank line)
-# Strategy: insert after the first non-empty header block, before any existing ## entries
 if grep -q '^## ' "$CHANGELOG_MD"; then
     # Insert before the first ## entry
     python3 - "$CHANGELOG_MD" "$SECTION" << 'PYEOF'
@@ -141,25 +133,23 @@ fi
 echo "  Added: $CHANGELOG_HEADER"
 
 # ── Stage and commit ──────────────────────────────────────────────────────────
-echo "Step 4/6: Committing..."
-cd "$AGENTMESH"
-
-# Stage plugin.json, all rebuilt skill files, and the updated changelog
-git add "$PLUGIN_JSON"
-# Stage all SKILL.md files under the plugin directory (build output)
-git add plugins/agentic-workflows/skills/
-git add plugins/agentic-workflows/shared/
+echo "Step 4/7: Committing..."
+git add "$VERSION_FILE"
 git add "$CHANGELOG_MD"
 
-COMMIT_MSG="release: bump plugin to v${NEXT_VERSION}"
-git commit -m "$COMMIT_MSG"
+git commit -m "release: v${NEXT_VERSION}"
 
 # ── Create annotated tag ──────────────────────────────────────────────────────
-echo "Step 5/6: Creating annotated tag $TAG..."
-git tag -a "$TAG" -m "agentic-workflows plugin $NEXT_VERSION"
+echo "Step 5/7: Creating annotated tag $TAG..."
+git tag -a "$TAG" -m "AgentMesh $NEXT_VERSION"
+
+# ── Push commit and tag to remote ─────────────────────────────────────────────
+echo "Step 6/7: Pushing to remote..."
+git push
+git push origin "$TAG"
 
 # ── Reload plugin ─────────────────────────────────────────────────────────────
-echo "Step 6/6: Reloading plugin..."
+echo "Step 7/7: Reloading plugin..."
 RELOAD_STATUS=0
 claude plugin update agentic-workflows@agentmesh || RELOAD_STATUS=$?
 
