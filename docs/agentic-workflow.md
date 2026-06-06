@@ -472,7 +472,9 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 - **Woken by `slackbridge-event`** — fired by both `orchestrator.py` (on user-attention events) and `slack-poller.sh` (on a configurable timer, default every 5 seconds)
 - **Drains `slackbridge-queue`** — same format as `spokesman-queue`; events are `<slug>:<event-type>` entries
 - **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
-- **Thread-per-task model** — first event for a slug creates a top-level channel message; all subsequent events and replies use `thread_ts` to stay within the thread
+- **Thread-per-task model** — first event for a slug creates a top-level channel message (header); all subsequent events post as replies in the thread; `signals/<slug>.slack-thread` stores the header `ts` for the lifetime of the task
+- **Thread header updates** — after each state transition, SlackBridge edits the header message via `mcp__slack__update_message` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
+- **Thread cleanup** — when a task reaches Done or Won't Do, SlackBridge posts a final reply (`✅ complete.` or `🚫 cancelled.`) and updates the header to the terminal state; the thread is never deleted
 
 ### Starting SlackBridge
 
