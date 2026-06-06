@@ -15,6 +15,7 @@ Session: orchestrator          ← user attaches here only
   window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
   window N: slack-poller       ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
+  window N: slack-bridge       ← /slack-bridge skill (Claude Code, when using Slack interface)
 
 Session: workers
   window 0: WORK-42            ← /implementer skill (Claude Code, yolo mode)
@@ -432,6 +433,54 @@ sequenceDiagram
 **Auto-approval latency**: up to 60 seconds after the PR is merged (one poll cycle).
 
 **Known limitation**: if the PR merges while the user is actively reviewing the PR-ready prompt, the auto-approval is deferred to the next event loop iteration. In practice this is harmless — whichever action completes first wins.
+
+---
+
+## SlackBridge
+
+The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that communicates via Slack instead of a tmux terminal. It registers in `signals/active-interfaces` as `slack-bridge`, and the orchestrator fans worker events to both Spokesman and SlackBridge simultaneously.
+
+### Architecture
+
+- **Woken by `slackbridge-event`** — fired by both `orchestrator.py` (on user-attention events) and `slack-poller.sh` (on a configurable timer, default every 5 seconds)
+- **Drains `slackbridge-queue`** — same format as `spokesman-queue`; events are `<slug>:<event-type>` entries
+- **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
+- **Thread-per-task model** — first event for a slug creates a top-level channel message; all subsequent events and replies use `thread_ts` to stay within the thread
+
+### Starting SlackBridge
+
+After bootstrapping with `--interface slack` or `--interface both`:
+
+```bash
+# In a new workers window or orchestrator window:
+claude --dangerously-skip-permissions
+/slack-bridge --project WORK --channel C01234567 [--verbosity medium]
+```
+
+Or use the full `--interface both` approach to run Spokesman and SlackBridge together:
+```bash
+/spokesman --project WORK --interface both --slack-channel C01234567
+# Then in a separate window:
+/slack-bridge --project WORK --channel C01234567
+```
+
+### Verbosity Levels
+
+| Level | What gets posted to Slack |
+|---|---|
+| `low` | Only events requiring user input (questions, plan-ready, pr-submitted/ready, research-ready, crash alerts, review-limit escalations) |
+| `medium` (default) | All of low + state transition notifications, reviewer results, merge confirmations, anomalies, completion |
+| `high` | All of medium + full plan/research/design content inline in Slack messages |
+
+### State Files
+
+| File | Purpose |
+|---|---|
+| `signals/slack-channel` | Slack channel ID; written by SlackBridge at startup |
+| `signals/slack-verbosity` | Verbosity level (`low`, `medium`, `high`); re-read each cycle |
+| `signals/slack-channel-last-ts` | Timestamp of last processed top-level channel message (slash commands) |
+| `signals/<slug>.slack-thread` | Slack `ts` of the header message for the task's thread |
+| `signals/<slug>.slack-last-ts` | Timestamp of last processed reply in the task's Slack thread |
 
 ---
 
