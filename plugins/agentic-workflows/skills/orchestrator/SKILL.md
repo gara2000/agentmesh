@@ -3,7 +3,7 @@ name: orchestrator
 description: Orchestrates worker agents picking up Ready tasks from NoteCove, routing worker attention requests to the user, and managing worker lifecycles via tmux
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *)
-hint: "Run the NoteCove task orchestrator. Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard)"
+hint: "Run the NoteCove task orchestrator. Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 10), --mode <mode> (standard|auto-review, default standard)"
 ---
 
 # Orchestrator — NoteCove Task Agent Orchestrator
@@ -13,7 +13,7 @@ hint: "Run the NoteCove task orchestrator. Required: --project <key>. Optional: 
 Parse arguments:
 - `--project <key>` — required, NoteCove project key (e.g. `WORK`)
 - `--profile <id>` — optional, defaults to `kmq9h71tepf95rac2b59xdbsq2`
-- `--max-workers <n>` — optional, max concurrent workers, defaults to `5`
+- `--max-workers <n>` — optional, max concurrent workers, defaults to `10`
 - `--mode <mode>` — optional, running mode, defaults to `standard`
   - `standard` — user reviews plans and PRs manually; reviewers are spawned on explicit user request
   - `auto-review` — plan-reviewers and pr-reviewers are spawned automatically; reviews are passed back to workers; user is only interrupted for questions and final PR approval

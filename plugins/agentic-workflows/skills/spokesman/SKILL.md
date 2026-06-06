@@ -3,7 +3,7 @@ name: spokesman
 description: Thin user-interaction layer for the AgentMesh agentic workflow. Bootstraps the system (starts orchestrator.py daemon), then surfaces worker events to the user and relays decisions back to the orchestrator.
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *)
-hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 5), --mode <mode> (standard|auto-review, default standard), --review-limit <n> (default 3), --no-bootstrap (skip bootstrap; for use by agentmesh start)"
+hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project <key>. Optional: --profile <id>, --max-workers <n> (default 10), --mode <mode> (standard|auto-review, default standard), --review-limit <n> (default 3), --no-bootstrap (skip bootstrap; for use by agentmesh start)"
 ---
 
 # Spokesman — AgentMesh User-Interaction Layer
@@ -13,7 +13,7 @@ hint: "Run the AgentMesh Spokesman (user-interaction layer). Required: --project
 Parse arguments:
 - `--project <key>` — required, NoteCove project key (e.g. `WORK`)
 - `--profile <id>` — optional, defaults to `kmq9h71tepf95rac2b59xdbsq2`
-- `--max-workers <n>` — optional, max concurrent workers, defaults to `5`
+- `--max-workers <n>` — optional, max concurrent workers, defaults to `10`
 - `--mode <mode>` — optional, running mode, defaults to `standard`
   - `standard` — user reviews plans and PRs manually; reviewers spawn only on explicit request
   - `auto-review` — plan-reviewers and PR-reviewers spawn automatically; user only approves final PR

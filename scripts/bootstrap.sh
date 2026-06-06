@@ -14,7 +14,7 @@ NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
 MODE="standard"
-MAX_WORKERS="5"
+MAX_WORKERS="10"
 REVIEW_LIMIT="3"
 
 while [[ $# -gt 0 ]]; do
