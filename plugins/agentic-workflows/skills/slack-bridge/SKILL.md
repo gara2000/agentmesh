@@ -301,8 +301,8 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 #### Slash command handler
 
 ```
-/agentmesh create "<title>" [--priority P1] [--type implementer]
-  → notecove task create with specified title and options
+/agentmesh create "<title>" [--priority P1|P2|P3] [--type implementer|planner|brainstormer|investigator|documenter|designer] [--description "<text>"]
+  → notecove task create "<title>" --project <PROJECT> --state ready [--priority <P>] [--type <type>] [--content "<text>" --content-format markdown]
   → Post to channel: "✅ Task created: <slug> — <title>"
 
 /agentmesh approve <slug>
@@ -320,6 +320,16 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → send_cmd <slug> abort
   → Post to thread: "🛑 Task aborted."
 
+/agentmesh spawn-reviewer <slug> plan|pr
+  → if plan: send_cmd <slug> spawn-plan-reviewer
+  → if pr:   send_cmd <slug> spawn-pr-reviewer
+  → Post to thread: "🔎 Reviewer spawned."
+
+/agentmesh respawn <slug>
+  → notecove task change <slug> --state Doing
+  → send_cmd <slug> respawn
+  → Post to thread: "♻️ Worker respawned."
+
 /agentmesh status [<slug>]
   → If slug given: notecove task show <slug> --json → post single task status
   → Otherwise: notecove task list --project <PROJECT> --json → post summary list
@@ -330,7 +340,7 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 /agentmesh show-plan <slug>
   → Find PLAN note in task folder → post content to thread
 
-/agentmesh list-tasks [--state <state>]
+/agentmesh list-tasks [--state ready|doing|attention|blocked]
   → notecove task list --project <PROJECT> [--state <state>] --json → post to channel
 
 /agentmesh verbosity low|medium|high
@@ -349,6 +359,24 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 /agentmesh release patch|minor|major
   → bash ~/agentmesh/scripts/release.sh <bump-type>
   → Post output to channel: "✅ Release cut: v<new-version>" (or error message if it fails)
+
+/agentmesh help
+  → Post the full command table to the channel:
+     /agentmesh create "<title>" [--priority P1|P2|P3] [--type implementer|...] [--description "<text>"] — Create a task
+     /agentmesh approve <slug>                — Approve a worker's PR/plan/research
+     /agentmesh feedback <slug> "<text>"      — Send feedback to a worker
+     /agentmesh abort <slug>                  — Abort a task (sets to Won't Do)
+     /agentmesh spawn-reviewer <slug> plan|pr — Spawn a plan or PR reviewer
+     /agentmesh respawn <slug>                — Respawn a crashed worker
+     /agentmesh status [<slug>]               — Show all tasks or a single task
+     /agentmesh show-questions <slug>         — Show latest questions from a worker
+     /agentmesh show-plan <slug>              — Show the implementation plan for a task
+     /agentmesh list-tasks [--state <state>]  — List tasks filtered by state
+     /agentmesh verbosity low|medium|high     — Set Slack message verbosity
+     /agentmesh mode standard|auto-review     — Set orchestrator review mode
+     /agentmesh release patch|minor|major     — Cut a plugin release
+     /agentmesh shutdown                      — Shut down the SlackBridge
+     /agentmesh help                          — Show this help message
 ```
 
 **Freeform release commands** — also recognize these as top-level channel messages (not just slash commands), matching the Spokesman's behavior:
