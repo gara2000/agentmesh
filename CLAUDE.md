@@ -435,6 +435,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  slack-bridge    started                     -
 2026-04-26T...  slack-bridge    task-triaged                WORK-xyz
 2026-04-26T...  slack-bridge    thread-created              WORK-xyz
+2026-04-26T...  slack-bridge    thread-header-updated       WORK-xyz
+2026-04-26T...  slack-bridge    thread-closed               WORK-xyz
 2026-04-26T...  slack-bridge    reply-received              WORK-xyz
 2026-04-26T...  slack-bridge    slash-command               -
 2026-04-26T...  slack-bridge    shutdown                    -

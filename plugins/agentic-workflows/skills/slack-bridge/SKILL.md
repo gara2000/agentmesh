@@ -87,9 +87,14 @@ for _slug in $_attention_slugs; do
     if [ ! -f ~/agentmesh/signals/${_slug}.slack-thread ]; then
       _task_json=$(notecove task show "$_slug" --json)
       _title=$(echo "$_task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
+      _priority=$(echo "$_task_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print('P' + str(d.get('priority','?')))")
       _last_event=$(notecove task show "$_slug" --format markdown-with-comments | \
         grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "unknown")
-      # Post recovery header via Slack MCP, store thread_ts in signals/<slug>.slack-thread
+      # Post recovery header using standard format, store thread_ts in signals/<slug>.slack-thread:
+      #   📋 *<slug>* — <title>
+      #   State: Attention (<last-event>) | Priority: <P>
+      # Then update the header to the current event state.
+      # Log: slack-bridge  thread-created  <slug>
     fi
   else
     # Worker is gone: respawn it
@@ -252,6 +257,9 @@ reply_handler <slug> <message>:
   case (lowercased message) in
     approve|lgtm|looks good|yes|ok)
       send_cmd <slug> approve
+      Update thread header: State: Done
+      Post final thread reply: "✅ *<slug>* complete."
+      Log slack-bridge  thread-closed  <slug>
     reviewer|spawn reviewer|spawn plan reviewer)
       send_cmd <slug> spawn-plan-reviewer
     spawn pr reviewer)
@@ -261,12 +269,17 @@ reply_handler <slug> <message>:
       notecove task comments add <slug> --user "SlackBridge" "<feedback_text>"
       notecove task change <slug> --state Doing
       send_cmd <slug> resume
+      Update thread header: State: Doing
     abort|cancel)
       notecove task change <slug> --state "Won't Do"
       send_cmd <slug> abort
+      Update thread header: State: Won't Do
+      Post final thread reply: "🚫 *<slug>* cancelled."
+      Log slack-bridge  thread-closed  <slug>
     respawn)
       notecove task change <slug> --state Doing
       send_cmd <slug> respawn
+      Update thread header: State: Doing
     select|continue)
       send_cmd <slug> approve
     *)
@@ -354,14 +367,59 @@ Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each itera
 
 ### Thread management
 
-- **No thread exists** for a slug: call `mcp__slack__post_message` to channel, store the returned `ts` (message timestamp) in `signals/<slug>.slack-thread`. All subsequent posts for this slug use `thread_ts=<stored-ts>` to reply in the thread.
+- **No thread exists** for a slug: call `mcp__slack__post_message` to channel, store the returned `ts` (message timestamp) in `signals/<slug>.slack-thread`. All subsequent posts for this slug use `thread_ts=<stored-ts>` to reply in the thread. Log `slack-bridge  thread-created  <slug>` to `events.log`.
 - **Thread exists**: call `mcp__slack__post_message` with `thread_ts=<stored-ts>` to reply.
 
-Header format (channel-level post):
+Header format (channel-level post, initial creation and updates):
 ```
 📋 *<slug>* — <task title>
-State: Attention | Priority: <P> | Type: <agent-type>
+State: <state> | Priority: <P>
 ```
+- `PR: <url>` is appended (` | PR: <url>`) when a PR URL is known for the task.
+
+### Thread header updates
+
+After each event that changes the task's visible state, update the thread header using `mcp__slack__update_message`. Read the current thread ts, build the new header text, and call the tool:
+
+```bash
+_thread_ts=$(cat ~/agentmesh/signals/<slug>.slack-thread 2>/dev/null || echo "")
+if [ -n "$_thread_ts" ]; then
+  _pr_suffix=""
+  [ -n "${_pr_url:-}" ] && _pr_suffix=" | PR: ${_pr_url}"
+  mcp__slack__update_message channel="<CHANNEL_ID>" ts="$_thread_ts" \
+    text="📋 *${slug}* — ${title}
+State: <new-state> | Priority: <P>${_pr_suffix}"
+  printf '%s\tslack-bridge  \tthread-header-updated\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$slug" >> "$LOG"
+fi
+```
+
+**When to update the header:**
+
+| Event / action | New header state |
+|---|---|
+| `event:questions` | `Attention (questions)` |
+| `event:plan-ready` / `event:plan-revised` | `Attention (plan review)` |
+| `event:pr-submitted:<url>` | `Attention (PR ready)` — include PR URL |
+| `event:pr-ready:<url>` | `Attention (PR validated)` — include PR URL |
+| `event:plan-review-complete` | `In Review` |
+| `event:pr-review-complete` | `In Review` |
+| `event:review-limit-reached:plan` | `Attention (review limit)` |
+| `event:review-limit-reached:pr:<url>` | `Attention (review limit)` — include PR URL |
+| `event:crash-limit-reached` | `Blocked` |
+| `event:completion` | `Done` |
+| `event:pr-merged-auto-approved` | `Done` |
+| `approve` (reply handler) | `Done` |
+| `feedback:*` / `respawn` (reply handler) | `Doing` |
+| `abort` (reply handler) | `Won't Do` |
+
+### Thread cleanup
+
+When a task reaches a terminal state, post a final reply to the thread **after** updating the header:
+
+- **Done** (via `event:completion`, `event:pr-merged-auto-approved`, or `approve`): post `✅ *<slug>* complete.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
+- **Won't Do** (via `abort`): post `🚫 *<slug>* cancelled.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
+
+Do NOT delete or remove `signals/<slug>.slack-thread` — the file persists until `agentmesh stop` on shutdown.
 
 ### Verbosity filtering
 
@@ -381,6 +439,7 @@ Before posting, check `VERBOSITY`:
 Reply here to answer, or `approve` to skip.
 ```
 Read round number from existing QUESTIONS notes in the task folder.
+Update thread header: `State: Attention (questions)`.
 
 **`event:plan-ready` / `event:plan-revised`** (all verbosity levels):
 ```
@@ -390,6 +449,7 @@ Read round number from existing QUESTIONS notes in the task folder.
 
 Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
 ```
+Update thread header: `State: Attention (plan review)`.
 
 **`event:pr-submitted:<url>`** (all verbosity levels):
 ```
@@ -397,6 +457,7 @@ Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
 
 Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
 ```
+Update thread header: `State: Attention (PR ready) | PR: <url>`.
 
 **`event:pr-ready:<url>`** (all verbosity levels):
 ```
@@ -404,6 +465,7 @@ Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
 
 Reply: `approve` or `feedback: <text>`
 ```
+Update thread header: `State: Attention (PR validated) | PR: <url>`.
 
 **`event:research-ready`** (all verbosity levels):
 ```
@@ -413,6 +475,7 @@ Reply: `approve` or `feedback: <text>`
 
 Reply: `approve` or `feedback: <text>`
 ```
+Update thread header: `State: Attention (research ready)`.
 
 **`event:ideas-ready`** (all verbosity levels):
 ```
@@ -422,6 +485,7 @@ Reply: `approve` or `feedback: <text>`
 
 Reply with feedback, or `select` when satisfied.
 ```
+Update thread header: `State: Attention (ideas ready)`.
 
 **`event:selection-ready`** (all verbosity levels):
 ```
@@ -431,6 +495,7 @@ Reply with feedback, or `select` when satisfied.
 
 When done: `continue`
 ```
+Update thread header: `State: Attention (select ideas)`.
 
 **`event:design-ready` / `event:design-revised`** (all verbosity levels):
 ```
@@ -440,6 +505,7 @@ When done: `continue`
 
 Reply: `approve`, `feedback: <text>`, or `abort`
 ```
+Update thread header: `State: Attention (design review)`.
 
 **`event:plan-review-complete`** (medium+):
 ```
@@ -447,48 +513,57 @@ Reply: `approve`, `feedback: <text>`, or `abort`
 <reviewer summary from last task comment>
 ```
 Auto-ack — no reply needed (Spokesman handles next action).
+Update thread header: `State: In Review`.
 
 **`event:pr-review-complete`** (medium+):
 ```
 🔎 *PR review complete:*
 <reviewer summary from last task comment>
 ```
+Update thread header: `State: In Review`.
 
 **`event:review-limit-reached:plan`** (all verbosity levels):
 ```
 ⚠️ *Auto-review limit reached (plan).*
 Reply: `approve`, `reviewer` (manual), or `abort`
 ```
+Update thread header: `State: Attention (review limit)`.
 
 **`event:review-limit-reached:pr:<url>`** (all verbosity levels):
 ```
 ⚠️ *Auto-review limit reached (PR).* <url>
 Reply: `approve`, `reviewer` (manual), or `abort`
 ```
+Update thread header: `State: Attention (review limit) | PR: <url>`.
 
 **`event:crash-limit-reached`** (all verbosity levels):
 ```
 🚨 *Worker crashed 3 times.* Task blocked.
 Reply: `respawn` or `abort`
 ```
+Update thread header: `State: Blocked`.
 
 **`event:anomaly-detected:<key>`** (medium+):
 ```
 ⚠️ *Anomaly detected:* <key description>
 ```
-No reply needed.
+No reply needed. No header update (not a state transition).
 
 **`event:completion`** (medium+):
 ```
 ✅ *Task complete.* <slug> — <title>
 ```
 Auto-ack: `send_cmd <slug> acknowledge-completion` (no user input needed).
+Update thread header: `State: Done`. Then post final thread reply: `✅ *<slug>* complete.`
+Log `slack-bridge  thread-closed  <slug>`.
 
 **`event:pr-merged-auto-approved`** (medium+):
 ```
 🎉 *PR merged!* <slug> is done.
 ```
-No reply needed.
+No await needed.
+Update thread header: `State: Done`. Then post final thread reply: `✅ *<slug>* complete.`
+Log `slack-bridge  thread-closed  <slug>`.
 
 **`event:task-ready`** — LLM triage (same TYPE_MAP as Spokesman, no Slack post):
 
@@ -539,3 +614,5 @@ agentmesh SlackBridge stopped.
 - **thread_ts is the anchor** — the `signals/<slug>.slack-thread` file stores the top-level message ts. All replies use it as `thread_ts`. Never lose or overwrite it.
 - **last-ts tracking prevents duplicate reply processing** — `signals/<slug>.slack-last-ts` stores the timestamp of the last processed reply; skip replies with `ts <= last_ts`.
 - **Slash commands use channel-last-ts** — `signals/slack-channel-last-ts` stores the timestamp of the last processed channel message; skip messages with `ts <= channel_last_ts`.
+- **Always update the thread header on state transitions** — after each event that changes task state, call `mcp__slack__update_message` on the stored `thread_ts`. See "Thread header updates" table. Skip the update silently if `signals/<slug>.slack-thread` does not exist.
+- **Always post a final thread reply on terminal states** — when a task reaches Done or Won't Do, post `✅ *<slug>* complete.` or `🚫 *<slug>* cancelled.` as a thread reply after updating the header. This closes the thread visually without deleting it.
