@@ -642,7 +642,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AgentMesh Orchestrator Daemon")
     parser.add_argument("--project", required=True, help="NoteCove project key")
     parser.add_argument("--mode", default="standard", choices=["standard", "auto-review"])
-    parser.add_argument("--max-workers", type=int, default=5)
+    parser.add_argument("--max-workers", type=int, default=10)
     parser.add_argument("--profile", default="kmq9h71tepf95rac2b59xdbsq2")
     parser.add_argument("--review-limit", type=int, default=3,
                         help="Max auto-review cycles per task before escalating to Spokesman (default: 3)")
