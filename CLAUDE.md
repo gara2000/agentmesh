@@ -122,6 +122,20 @@ Responsibilities:
 - Forward user-attention events to all registered interfaces (reads `signals/active-interfaces`; falls back to `spokesman` only when empty)
 - Execute commands from Spokesman: fire resume signals, spawn agents, clean up
 
+### SlackBridge
+
+**One instance (optional).** Runs in the `orchestrator` tmux session, window `slack-bridge` (or any user-chosen window). A full Spokesman peer that communicates via Slack instead of a tmux terminal. Registered in `signals/active-interfaces` as `slack-bridge`; the orchestrator fans events to both Spokesman and SlackBridge simultaneously.
+
+Responsibilities:
+- Register in `signals/active-interfaces` and write `signals/slack-channel` and `signals/slack-verbosity` at startup
+- Block on `slackbridge-event` (fired by both orchestrator.py and slack-poller.sh on a timer)
+- Drain `signals/slackbridge-queue` and dispatch each event to a Slack thread for the relevant task
+- Poll Slack thread replies (via Slack MCP) for user commands (`approve`, `feedback: <text>`, `abort`, etc.)
+- Parse top-level channel messages starting with `/agentmesh` as slash commands
+- Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
+- Deregister from `signals/active-interfaces` and post a shutdown message on exit
+- Never bootstrap or shut down the orchestrator — those responsibilities remain with the Spokesman
+
 ### Legacy Orchestrator
 
 **Kept for compatibility.** The original `/orchestrator` Claude Code skill (`plugins/agentic-workflows/skills/orchestrator/SKILL.md`) remains unchanged. Use `/spokesman` as the new entry point for the Spokesman + orchestrator.py architecture.
@@ -254,6 +268,7 @@ Session: orchestrator       ← user attaches here only
   window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
   window N: slack-poller    ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
+  window N: slack-bridge    ← /slack-bridge skill (Claude Code, when using Slack interface)
 
 Session: workers
   window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
@@ -275,6 +290,7 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 | Skill | Invoked by | Source |
 |---|---|---|
 | `/spokesman` | User (manually) | `plugins/agentic-workflows/skills/spokesman/SKILL.md` |
+| `/slack-bridge` | User (manually) | `plugins/agentic-workflows/skills/slack-bridge/SKILL.md` |
 | `/orchestrator` | User (manually, legacy) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
 | `/implementer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/implementer/SKILL.md` |
 | `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
@@ -351,7 +367,10 @@ agentmesh/
     ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
     ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state
     ├── <slug>.crash-count          # consecutive crash counter; written by watchdog on each crash, reset on clean exit or at bootstrap
+    ├── slack-verbosity             # verbosity level written by SlackBridge at startup (low|medium|high); re-read each wakeup cycle
+    ├── slack-channel-last-ts       # timestamp of last processed top-level channel message; used by SlackBridge to avoid reprocessing
     ├── <slug>.slack-thread         # Slack thread timestamp written by SlackBridge when it starts a thread for the task
+    ├── <slug>.slack-last-ts        # timestamp of last processed reply in the task's Slack thread; used by SlackBridge to avoid reprocessing
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug
@@ -413,6 +432,12 @@ timestamp       component       event_type                  slug
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
 2026-04-26T...  slack-poller    started                     -
 2026-04-26T...  slack-poller    tick                        -
+2026-04-26T...  slack-bridge    started                     -
+2026-04-26T...  slack-bridge    task-triaged                WORK-xyz
+2026-04-26T...  slack-bridge    thread-created              WORK-xyz
+2026-04-26T...  slack-bridge    reply-received              WORK-xyz
+2026-04-26T...  slack-bridge    slash-command               -
+2026-04-26T...  slack-bridge    shutdown                    -
 2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
 2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
 2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
