@@ -10,16 +10,19 @@
 #   4. Aborts if the tag already exists (idempotency guard)
 #   5. Writes the new version to plugin.json
 #   6. Rebuilds all skills via build.sh
-#   7. Commits the changed files
-#   8. Creates an annotated git tag
-#   9. Reloads the plugin via `claude plugin update`
-#  10. Prints a summary
+#   7. Generates changelog entry and prepends to CHANGELOG.md
+#   8. Commits the changed files
+#   9. Creates an annotated git tag
+#  10. Reloads the plugin via `claude plugin update`
+#  11. Prints a summary
 
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PLUGIN_JSON="$AGENTMESH/plugins/agentic-workflows/.claude-plugin/plugin.json"
 BUILD_SH="$AGENTMESH/plugins/agentic-workflows/build.sh"
+CHANGELOG_SH="$AGENTMESH/scripts/changelog.sh"
+CHANGELOG_MD="$AGENTMESH/CHANGELOG.md"
 
 # ── Argument validation ───────────────────────────────────────────────────────
 BUMP_TYPE="${1:-}"
@@ -75,7 +78,7 @@ echo "Releasing: $CURRENT_VERSION → $NEXT_VERSION  ($BUMP_TYPE bump)"
 echo ""
 
 # ── Write new version to plugin.json ─────────────────────────────────────────
-echo "Step 1/5: Updating plugin.json to $NEXT_VERSION..."
+echo "Step 1/6: Updating plugin.json to $NEXT_VERSION..."
 python3 -c "
 import json
 with open('$PLUGIN_JSON') as f:
@@ -87,28 +90,76 @@ with open('$PLUGIN_JSON', 'w') as f:
 "
 
 # ── Rebuild all skills ────────────────────────────────────────────────────────
-echo "Step 2/5: Rebuilding skills..."
+echo "Step 2/6: Rebuilding skills..."
 "$BUILD_SH"
 
+# ── Generate changelog entry and prepend to CHANGELOG.md ─────────────────────
+echo "Step 3/6: Updating CHANGELOG.md..."
+CHANGELOG_ENTRY=$("$CHANGELOG_SH" 2>/dev/null || true)
+CHANGELOG_HEADER="## v${NEXT_VERSION} — $(date -u +%Y-%m-%d)"
+
+if [[ -n "$CHANGELOG_ENTRY" ]]; then
+    SECTION="${CHANGELOG_HEADER}"$'\n'"${CHANGELOG_ENTRY}"
+else
+    SECTION="${CHANGELOG_HEADER}"$'\n'"No file changes detected between releases."
+fi
+
+# Prepend section below the CHANGELOG.md header (before the first ## section or at EOF)
+EXISTING_CONTENT=$(cat "$CHANGELOG_MD")
+# Split at first blank line after the preamble (the header block ends with a blank line)
+# Strategy: insert after the first non-empty header block, before any existing ## entries
+if grep -q '^## ' "$CHANGELOG_MD"; then
+    # Insert before the first ## entry
+    python3 - "$CHANGELOG_MD" "$SECTION" << 'PYEOF'
+import sys
+
+path = sys.argv[1]
+section = sys.argv[2]
+
+with open(path) as f:
+    content = f.read()
+
+lines = content.split('\n')
+insert_at = None
+for i, line in enumerate(lines):
+    if line.startswith('## '):
+        insert_at = i
+        break
+
+if insert_at is not None:
+    new_lines = lines[:insert_at] + [section, ''] + lines[insert_at:]
+else:
+    new_lines = lines + ['', section]
+
+with open(path, 'w') as f:
+    f.write('\n'.join(new_lines))
+PYEOF
+else
+    # No existing ## sections — append after existing content
+    printf '\n%s\n' "$SECTION" >> "$CHANGELOG_MD"
+fi
+echo "  Added: $CHANGELOG_HEADER"
+
 # ── Stage and commit ──────────────────────────────────────────────────────────
-echo "Step 3/5: Committing..."
+echo "Step 4/6: Committing..."
 cd "$AGENTMESH"
 
-# Stage plugin.json and all rebuilt skill files
+# Stage plugin.json, all rebuilt skill files, and the updated changelog
 git add "$PLUGIN_JSON"
 # Stage all SKILL.md files under the plugin directory (build output)
 git add plugins/agentic-workflows/skills/
 git add plugins/agentic-workflows/shared/
+git add "$CHANGELOG_MD"
 
 COMMIT_MSG="release: bump plugin to v${NEXT_VERSION}"
 git commit -m "$COMMIT_MSG"
 
 # ── Create annotated tag ──────────────────────────────────────────────────────
-echo "Step 4/5: Creating annotated tag $TAG..."
+echo "Step 5/6: Creating annotated tag $TAG..."
 git tag -a "$TAG" -m "agentic-workflows plugin $NEXT_VERSION"
 
 # ── Reload plugin ─────────────────────────────────────────────────────────────
-echo "Step 5/5: Reloading plugin..."
+echo "Step 6/6: Reloading plugin..."
 RELOAD_STATUS=0
 claude plugin update agentic-workflows@agentmesh || RELOAD_STATUS=$?
 
