@@ -349,6 +349,7 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 │   ├── slack-poller.sh     # timer/ticker daemon: fires slackbridge-event every N seconds to wake SlackBridge for inbound message checks (no Slack API calls)
+│   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
 └── signals/                # runtime directory, created on orchestrator bootstrap
@@ -530,13 +531,33 @@ This is idempotent — safe to run again if anything changes.
 
 ## Starting the System
 
-### Recommended: `agentmesh start` (when available)
+### Recommended: `agentmesh start`
 
 ```bash
 agentmesh start --project WORK
 ```
 
 This bootstraps all daemons, then launches the Spokesman with `--no-bootstrap`. The Spokesman skips its own bootstrap phase, registers in `signals/active-interfaces`, and starts the event loop.
+
+**Full options:**
+
+```
+agentmesh start --project <key>
+                [--mode standard|auto-review]          # default: standard
+                [--review-limit <n>]                   # default: 3
+                [--interface spokesman|slack|both]      # default: spokesman
+                [--channel <slack-channel-id>]          # required if --interface includes slack
+                [--verbosity low|medium|high]           # default: medium (SlackBridge only)
+                [--slack-poller-interval <seconds>]    # default: 5
+```
+
+**Other commands:**
+
+```bash
+agentmesh stop      # graceful shutdown: kills all windows and the workers session
+agentmesh status    # health report: components, heartbeat, active workers, mode
+agentmesh attach    # attach to the orchestrator tmux session (terminal fallback)
+```
 
 ### Manual / Legacy
 
