@@ -247,9 +247,36 @@ flowchart TD
 
 ---
 
+## agentmesh CLI
+
+`scripts/agentmesh.sh` (symlinked to `~/bin/agentmesh` by `setup.sh`) is the top-level lifecycle CLI. It owns system startup and shutdown so the user never needs to open tmux manually.
+
+| Command | Description |
+|---|---|
+| `agentmesh start --project <key> [options]` | Bootstrap all daemons; start Spokesman and/or SlackBridge |
+| `agentmesh stop` | Graceful shutdown: send shutdown command to orchestrator.py, kill all windows, kill workers session |
+| `agentmesh status` | Health report: component status, heartbeat age, active workers, mode, active interfaces |
+| `agentmesh attach` | Attach to the `orchestrator` tmux session (terminal fallback) |
+
+**`agentmesh start` options:**
+
+```
+--project <key>                      NoteCove project key (required)
+--mode standard|auto-review          Orchestrator mode (default: standard)
+--review-limit <n>                   Auto-review cycle limit (default: 3)
+--interface spokesman|slack|both     Which interfaces to start (default: spokesman)
+--channel <slack-channel-id>         Required when --interface includes slack
+--verbosity low|medium|high          SlackBridge verbosity (default: medium)
+--slack-poller-interval <seconds>    Slack poll frequency (default: 5)
+```
+
+`agentmesh start` is idempotent: each step checks whether the component is already running before starting it.
+
+---
+
 ## Bootstrap
 
-`scripts/bootstrap.sh` is called once by the Spokesman at startup. It encapsulates all Phase 0 setup:
+`scripts/bootstrap.sh` is called by `agentmesh start` (and by the Spokesman in legacy mode). It encapsulates all Phase 0 setup:
 
 1. **NoteCove init** — connects to the project and notes database.
 2. **Signals directory** — creates `signals/`, clears the queue, spokesman-queue, slackbridge-queue, active-interfaces, orchestrator-cmds, worker registry, and event log, removes stale `.merged` and `.review-start` flags, writes a fresh `orchestrator.heartbeat` timestamp (so the staleness check never silently skips due to a missing file), and writes `signals/slack-channel` with the provided channel ID (empty when `--interface spokesman`).

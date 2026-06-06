@@ -34,6 +34,16 @@ fi
 echo "Installing git hooks ..."
 bash "${REPO_ROOT}/scripts/install-hooks.sh"
 
+# ── agentmesh CLI symlink ─────────────────────────────────────────────────────
+
+mkdir -p ~/bin
+if [ -L ~/bin/agentmesh ] && [ "$(readlink ~/bin/agentmesh)" = "${REPO_ROOT}/scripts/agentmesh.sh" ]; then
+  echo "agentmesh CLI symlink already up to date — skipping"
+else
+  ln -sf "${REPO_ROOT}/scripts/agentmesh.sh" ~/bin/agentmesh
+  echo "agentmesh CLI symlinked to ~/bin/agentmesh"
+fi
+
 echo ""
-echo "Setup complete. You can now run the orchestrator:"
-echo "  cd ${REPO_ROOT} && tmux new-session -s orchestrator && claude"
+echo "Setup complete. Start the system with:"
+echo "  agentmesh start --project WORK"
