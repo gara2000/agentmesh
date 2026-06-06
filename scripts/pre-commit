@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# pre-commit hook — enforces plugin.json version bump on skill/script changes
+#
+# Fails the commit if any staged file is under:
+#   - plugins/agentic-workflows/skills/
+#   - plugins/agentic-workflows/shared/
+#   - scripts/
+# but plugins/agentic-workflows/.claude-plugin/plugin.json was not staged
+# with a version change.
+#
+# Install via scripts/install-hooks.sh (called automatically by scripts/setup.sh).
+
+set -euo pipefail
+
+PLUGIN_JSON="plugins/agentic-workflows/.claude-plugin/plugin.json"
+WATCH_DIRS=(
+    "plugins/agentic-workflows/skills/"
+    "plugins/agentic-workflows/shared/"
+    "scripts/"
+)
+
+# Get list of staged files
+STAGED=$(git diff --cached --name-only)
+
+# Check if any staged file is under a watched directory
+needs_version_bump=false
+for dir in "${WATCH_DIRS[@]}"; do
+    if echo "$STAGED" | grep -q "^${dir}"; then
+        needs_version_bump=true
+        break
+    fi
+done
+
+# No watched files staged — allow commit
+if [ "$needs_version_bump" = false ]; then
+    exit 0
+fi
+
+# Check if plugin.json is staged
+if ! echo "$STAGED" | grep -qF "$PLUGIN_JSON"; then
+    echo ""
+    echo "❌ Pre-commit check failed: plugin.json version not bumped"
+    echo ""
+    echo "You modified files under one of:"
+    for dir in "${WATCH_DIRS[@]}"; do
+        echo "  - $dir"
+    done
+    echo ""
+    echo "These changes require a version bump in:"
+    echo "  $PLUGIN_JSON"
+    echo ""
+    echo "Steps to fix:"
+    echo "  1. Increment the version field in $PLUGIN_JSON"
+    echo "     (e.g. \"2.14.0\" → \"2.14.1\")"
+    echo "  2. If you edited a skill or shared base file, rebuild:"
+    echo "     ./plugins/agentic-workflows/build.sh"
+    echo "  3. Stage $PLUGIN_JSON:"
+    echo "     git add $PLUGIN_JSON"
+    echo "  4. Re-run your commit"
+    echo ""
+    exit 1
+fi
+
+# plugin.json is staged — verify the version field actually changed
+OLD_VERSION=$(git show HEAD:"$PLUGIN_JSON" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+NEW_VERSION=$(git show :"$PLUGIN_JSON" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+
+if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+    echo ""
+    echo "❌ Pre-commit check failed: plugin.json is staged but version was not changed"
+    echo ""
+    echo "Current version: $OLD_VERSION"
+    echo ""
+    echo "You modified files under one of:"
+    for dir in "${WATCH_DIRS[@]}"; do
+        echo "  - $dir"
+    done
+    echo ""
+    echo "Steps to fix:"
+    echo "  1. Increment the version field in $PLUGIN_JSON"
+    echo "     (e.g. \"$OLD_VERSION\" → bump patch/minor/major)"
+    echo "  2. If you edited a skill or shared base file, rebuild:"
+    echo "     ./plugins/agentic-workflows/build.sh"
+    echo "  3. Re-stage $PLUGIN_JSON:"
+    echo "     git add $PLUGIN_JSON"
+    echo "  4. Re-run your commit"
+    echo ""
+    exit 1
+fi
+
+# Version changed (or this is the first commit) — allow commit
+exit 0

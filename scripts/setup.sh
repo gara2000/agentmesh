@@ -29,6 +29,11 @@ else
   echo "agentic-workflows@agentmesh installed"
 fi
 
+# ── Git hooks ─────────────────────────────────────────────────────────────────
+
+echo "Installing git hooks ..."
+bash "${REPO_ROOT}/scripts/install-hooks.sh"
+
 echo ""
 echo "Setup complete. You can now run the orchestrator:"
 echo "  cd ${REPO_ROOT} && tmux new-session -s orchestrator && claude"
