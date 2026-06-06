@@ -314,6 +314,42 @@ If you edit `shared/base-agent.md`, first propagate the changes into the family 
 
 > Every plugin change — skill edits, new skills, script updates — must include a version bump so the installed plugin stays in sync with the repo.
 
+### Releasing a version
+
+Use `scripts/release.sh` to cut a release. It bumps the version, rebuilds all skills, produces a versioned bundle, updates the changelog, commits, tags, and reloads the plugin:
+
+```bash
+cd ~/agentmesh
+./scripts/release.sh patch    # or minor / major
+```
+
+The release script calls `build.sh --bundle` internally, so you do not need to run it separately.
+
+### Versioned bundles
+
+`build.sh --bundle` produces a self-contained snapshot at `releases/vX.Y.Z/`:
+
+```
+releases/vX.Y.Z/
+  .claude-plugin/plugin.json    ← version manifest
+  skills/*/SKILL.md             ← all built skills
+  shared/                       ← shared base files
+```
+
+**Install a bundle directly:**
+```bash
+claude plugin install ~/agentmesh/releases/vX.Y.Z/
+```
+
+**Rollback to a prior version:**
+```bash
+git checkout vX.Y.Z
+./plugins/agentic-workflows/build.sh --bundle
+claude plugin install ~/agentmesh/releases/vX.Y.Z/
+```
+
+**Why bundles are gitignored:** `releases/` is listed in `.gitignore` to keep the repo lean. Bundles are reproducible — any tag can regenerate its bundle by checking out and running `build.sh --bundle`. Git tags serve as the durable rollback point; bundles are ephemeral build artifacts.
+
 ---
 
 ## Project Structure

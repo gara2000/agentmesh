@@ -1,3 +1,12 @@
 .notecove
 signals/
 agentmesh-WORK-*/
+
+# Versioned plugin bundles — gitignored to keep the repo lean.
+# Bundles are reproducible: check out a tag and run ./plugins/agentic-workflows/build.sh --bundle.
+releases/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

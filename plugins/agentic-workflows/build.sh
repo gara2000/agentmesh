@@ -9,6 +9,8 @@
 #   ./build.sh                        # refresh all skills with 'extends' frontmatter
 #   ./build.sh worker                 # refresh a specific skill by name
 #   ./build.sh --update-family-bases  # propagate base-agent.md changes into family base files
+#   ./build.sh --bundle               # build all skills AND produce a versioned bundle in releases/vX.Y.Z/
+#   ./build.sh worker --bundle        # build a specific skill AND produce a versioned bundle
 #
 # Inheritance model:
 #   base-agent.md (pure signal protocol)
@@ -60,7 +62,17 @@ PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$PLUGIN_DIR/skills"
 SHARED_DIR="$PLUGIN_DIR/shared"
 BASE_AGENT="$SHARED_DIR/base-agent.md"
-FILTER="${1:-}"
+
+# Parse arguments: skill filter (positional) and flags (--bundle, --update-family-bases)
+FILTER=""
+BUNDLE=false
+for _arg in "$@"; do
+    case "$_arg" in
+        --update-family-bases) FILTER="--update-family-bases" ;;
+        --bundle)              BUNDLE=true ;;
+        *)                     FILTER="$_arg" ;;
+    esac
+done
 
 # Use ~/agentmesh as the canonical path — portable across machines without hardcoding
 # the absolute home directory path. The shell expands ~ at runtime when the skill runs.
@@ -525,3 +537,64 @@ done
 
 echo ""
 echo "Done. $updated skill(s) updated, $skipped skill(s) skipped (no 'extends'), $expanded skill(s) path-expanded."
+
+# ---------------------------------------------------------------------------
+# --bundle: produce a versioned, self-contained plugin bundle in releases/vX.Y.Z/
+#
+# Bundle layout (mirrors what 'claude plugin install <path>' expects):
+#   releases/vX.Y.Z/
+#     .claude-plugin/plugin.json    ← version manifest
+#     skills/*/SKILL.md             ← all built skills (or the filtered skill)
+#     shared/                       ← base files (required by skill context)
+#
+# The bundle is self-contained: install it directly with:
+#   claude plugin install ./releases/vX.Y.Z/
+#
+# Rationale for gitignoring releases/: keeps the repo lean; git tags mark the
+# exact commit that produced each version, so bundles can be regenerated at any
+# time by checking out the tag and running ./build.sh --bundle.
+# ---------------------------------------------------------------------------
+if [ "$BUNDLE" = true ]; then
+    PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
+    if [ ! -f "$PLUGIN_JSON" ]; then
+        echo "ERROR: plugin.json not found at $PLUGIN_JSON" >&2
+        exit 1
+    fi
+
+    VERSION=$(python3 -c "import json; print(json.load(open('$PLUGIN_JSON'))['version'])")
+    AGENTMESH_ROOT="$(cd "$PLUGIN_DIR/../.." && pwd)"
+    BUNDLE_DIR="$AGENTMESH_ROOT/releases/v${VERSION}"
+
+    echo ""
+    echo "Bundling → $BUNDLE_DIR"
+
+    # Wipe and recreate for a reproducible output
+    rm -rf "$BUNDLE_DIR"
+    mkdir -p "$BUNDLE_DIR/.claude-plugin"
+    mkdir -p "$BUNDLE_DIR/shared"
+
+    # .claude-plugin/plugin.json
+    cp "$PLUGIN_JSON" "$BUNDLE_DIR/.claude-plugin/plugin.json"
+
+    # shared/ — all files
+    cp -r "$SHARED_DIR/." "$BUNDLE_DIR/shared/"
+
+    # skills/ — all skills (or the filtered skill if a filter was provided)
+    mkdir -p "$BUNDLE_DIR/skills"
+    for skill_md in "$SKILLS_DIR"/*/SKILL.md; do
+        skill_name="$(basename "$(dirname "$skill_md")")"
+        if [ -n "$FILTER" ] && [ "$skill_name" != "$FILTER" ]; then
+            continue
+        fi
+        mkdir -p "$BUNDLE_DIR/skills/$skill_name"
+        cp "$skill_md" "$BUNDLE_DIR/skills/$skill_name/SKILL.md"
+    done
+
+    echo "  ✓ .claude-plugin/plugin.json"
+    echo "  ✓ shared/"
+    skill_count=$(find "$BUNDLE_DIR/skills" -name "SKILL.md" | wc -l | tr -d ' ')
+    echo "  ✓ skills/ ($skill_count skill(s))"
+    echo ""
+    echo "Bundle ready: $BUNDLE_DIR"
+    echo "Install with: claude plugin install $BUNDLE_DIR"
+fi
