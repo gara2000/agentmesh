@@ -14,7 +14,7 @@ Session: orchestrator          ← user attaches here only
   window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
-  window N: slack-poller       ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
+  window N: slack-socket        ← scripts/slack-socket-relay.py (Python daemon, when --interface includes slack)
   window N: slack-bridge       ← /slack-bridge skill (Claude Code, when using Slack interface)
 
 Session: workers
@@ -267,7 +267,6 @@ flowchart TD
 --interface spokesman|slack|both     Which interfaces to start (default: spokesman)
 --channel <slack-channel-id>         Required when --interface includes slack
 --verbosity low|medium|high          SlackBridge verbosity (default: medium)
---slack-poller-interval <seconds>    Slack poll frequency (default: 5)
 ```
 
 `agentmesh start` is idempotent: each step checks whether the component is already running before starting it.
@@ -286,18 +285,18 @@ flowchart TD
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
-9. **Slack poller** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-poller.sh` in `orchestrator:slack-poller`. This is a pure timer/ticker — it fires `slackbridge-event` every N seconds (default: 5) to wake the SlackBridge skill for inbound message checks via MCP. No Slack API calls are made by the poller itself.
+9. **Slack socket relay** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-socket-relay.py` in `orchestrator:slack-socket`. This is a push-based WebSocket daemon using Slack Socket Mode — it fires `slackbridge-event` immediately when Slack delivers a message. Requires `SLACK_APP_TOKEN` to be set in the environment.
 
 Usage:
 ```bash
 # Spokesman only (default)
 bash ~/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>] [--mode <mode>] [--max-workers <n>]
 
-# With Slack interface (adds slack-poller window)
-bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface slack --slack-channel C01234567 [--slack-poller-interval 5]
+# With Slack interface (adds slack-socket window; SLACK_APP_TOKEN must be set)
+SLACK_APP_TOKEN=xapp-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface slack --slack-channel C01234567
 
 # Both Spokesman and Slack
-bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface both --slack-channel C01234567
+SLACK_APP_TOKEN=xapp-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface both --slack-channel C01234567
 ```
 
 ---
@@ -469,7 +468,7 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 
 ### Architecture
 
-- **Woken by `slackbridge-event`** — fired by both `orchestrator.py` (on user-attention events) and `slack-poller.sh` (on a configurable timer, default every 5 seconds)
+- **Woken by `slackbridge-event`** — fired by `orchestrator.py` (on user-attention events) or by `slack-socket-relay.py` (immediately on incoming Slack messages via WebSocket)
 - **Drains `slackbridge-queue`** — same format as `spokesman-queue`; events are `<slug>:<event-type>` entries
 - **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
 - **Thread-per-task model** — first event for a slug creates a top-level channel message (header); all subsequent events post as replies in the thread; `signals/<slug>.slack-thread` stores the header `ts` for the lifetime of the task

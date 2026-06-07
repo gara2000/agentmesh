@@ -17,6 +17,10 @@ rm -f "$AGENTMESH/signals/"*.review-start
 rm -f "$AGENTMESH/signals/triage_folder"
 rm -f "$AGENTMESH/signals/mode"
 
+# Kill any remaining daemon windows before ending sessions
+tmux kill-window -t "orchestrator:slack-socket" 2>/dev/null || true
+tmux kill-window -t "orchestrator:slack-poller" 2>/dev/null || true
+
 # Kill the workers session entirely (all worker and reviewer windows)
 tmux kill-session -t workers 2>/dev/null || true
 
