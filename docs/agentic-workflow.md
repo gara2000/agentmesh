@@ -88,9 +88,9 @@ flowchart TD
     B --> C[Mark task Doing]
     C --> D{typeId in TYPE_MAP?}
     D -->|Yes| E[Orchestrator spawns\nworker directly\nlogs task-triaged]
-    D -->|No| F[Forward to Spokesman\nvia spokesman-queue\nevent:task-ready]
-    F --> G[Spokesman: LLM judgment\ndecides agent type]
-    G --> H[Spokesman sends\nspawn cmd to orchestrator]
+    D -->|No| F[Forward to triage interface\nSpokesman preferred; else first\nregistered event:task-ready]
+    F --> G[Triage interface: LLM judgment\ndecides agent type]
+    G --> H[Triage interface sends\nspawn cmd to orchestrator]
     H --> E
     E --> I{Agent type}
     I -->|implementer| W[Spawn /implementer]

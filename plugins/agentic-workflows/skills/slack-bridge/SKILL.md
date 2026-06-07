@@ -207,7 +207,7 @@ Dispatch on event type:
 
 ```
 case "$event_rest" in
-  event:task-ready)          → LLM triage, write spawn command to orchestrator-cmds (no Slack post)
+  event:task-ready)          → LLM triage, write spawn command to orchestrator-cmds, post notification (medium+)
   event:completion)          → post completion message (medium+), auto-ack
   event:questions)           → post questions thread (all verbosity levels)
   event:plan-ready)          → post plan-ready thread (all verbosity levels)
@@ -593,23 +593,35 @@ No await needed.
 Update thread header: `State: Done`. Then post final thread reply: `✅ *<slug>* complete.`
 Log `slack-bridge  thread-closed  <slug>`.
 
-**`event:task-ready`** — LLM triage (same TYPE_MAP as Spokesman, no Slack post):
+**`event:task-ready`** — LLM triage (same heuristics as Spokesman; Slack notification at medium+):
 
 ```bash
 task_json=$(notecove task show <slug> --json)
 task_md=$(notecove task show <slug> --format markdown-with-comments)
 title=$(echo "$task_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('title',''))")
+priority=$(echo "$task_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print('P' + str(d.get('priority','?')))")
 ```
 
-Decide agent type using same heuristics as Spokesman TYPE_MAP:
-- **brainstormer**: generate ideas, explore options, brainstorm approaches
-- **planner**: multiple distinct deliverables, coordination of several concerns
-- **designer**: UI, frontend, visual component, aesthetic design
-- **investigator**: research, investigate, gather context, survey codebase
-- **documenter**: write/update documentation, no logic changes
-- **implementer**: any other concrete implementation task (default)
+Decide the agent type using your judgment — you have access to the full task title, description, and any linked context. Apply the same quality of reasoning as the Spokesman:
 
-`send_cmd <slug> spawn <agent-type>`
+- **brainstormer**: the task explicitly asks to generate ideas, explore options, brainstorm approaches, or produce a menu of possibilities for the user to choose from
+- **planner**: the task has multiple distinct deliverables or clearly involves coordinating several separate concerns that need decomposition into subtasks before implementation can begin
+- **designer**: the task involves building a UI, frontend interface, design system, or visual component — requires aesthetic design thinking and decomposition into frontend implementation subtasks
+- **investigator**: the task asks to research, investigate, gather context, survey the codebase, or produce a structured findings report without writing code or creating PRs
+- **documenter**: the task asks to write, update, or improve documentation (README, API docs, inline comments, architecture notes) without changing logic or adding features
+- **implementer**: any other concrete, well-defined implementation task (the default)
+
+Log and dispatch:
+```bash
+printf '%s\tslack-bridge  \ttask-triaged\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<slug>" >> "$LOG"
+send_cmd <slug> spawn <agent-type>
+```
+
+At medium+ verbosity, post a triage notification to the Slack channel (not the thread — no thread exists yet for this task):
+```
+🔀 *<slug>* — <title>
+Triaged → *<agent-type>*. Priority: <P>.
+```
 
 ---
 
