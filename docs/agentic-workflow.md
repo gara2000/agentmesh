@@ -469,7 +469,7 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 ### Architecture
 
 - **Woken by `slackbridge-event`** — fired by `orchestrator.py` (on user-attention events) or by `slack-socket-relay.py` (immediately on incoming Slack messages via WebSocket)
-- **Drains `slackbridge-queue`** — same format as `spokesman-queue`; events are `<slug>:<event-type>` entries
+- **Drains `slackbridge-queue`** — two entry types: orchestrator-forwarded `<slug>:<event-type>` entries (worker events) and relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>` entries (inbound Slack messages from the relay); no MCP thread polling needed
 - **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
 - **Thread-per-task model** — first event for a slug creates a top-level channel message (header); all subsequent events post as replies in the thread; `signals/<slug>.slack-thread` stores the header `ts` for the lifetime of the task
 - **Thread header updates** — after each state transition, SlackBridge edits the header message via `mcp__slack__update_message` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
@@ -508,7 +508,7 @@ Or use the full `--interface both` approach to run Spokesman and SlackBridge tog
 | `signals/slack-verbosity` | Verbosity level (`low`, `medium`, `high`); re-read each cycle |
 | `signals/slack-channel-last-ts` | Timestamp of last processed top-level channel message (slash commands) |
 | `signals/<slug>.slack-thread` | Slack `ts` of the header message for the task's thread |
-| `signals/<slug>.slack-last-ts` | Timestamp of last processed reply in the task's Slack thread |
+| `signals/<slug>.slack-last-ts` | Timestamp updated each time a relay-pushed reply is processed (for monitoring; no longer used for deduplication filtering) |
 
 ---
 

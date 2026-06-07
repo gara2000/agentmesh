@@ -209,6 +209,41 @@ while [ -s "$SLACKBRIDGE_QUEUE" ]; do
   rm -f "$TMP_QUEUE"
 
   for entry in $entries; do
+    # Handle relay-pushed inbound Slack messages:
+    # format: slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>
+    case "$entry" in
+      slack-message:*)
+        _sm_channel=$(echo "$entry" | cut -d: -f2)
+        _sm_thread_ts=$(echo "$entry" | cut -d: -f3)
+        _sm_user_id=$(echo "$entry" | cut -d: -f4)
+        _sm_text_escaped=$(echo "$entry" | cut -d: -f5-)
+        # Unescape \n back to newlines
+        _sm_text=$(printf '%s' "$_sm_text_escaped" | sed 's/\\n/\n/g')
+
+        # Match thread_ts against all known task thread files
+        _sm_matched_slug=""
+        for _tf in ~/agentmesh/signals/*.slack-thread; do
+          [ -f "$_tf" ] || continue
+          if [ "$(cat "$_tf")" = "$_sm_thread_ts" ]; then
+            _sm_matched_slug=$(basename "$_tf" .slack-thread)
+            break
+          fi
+        done
+
+        if [ -z "$_sm_matched_slug" ]; then
+          # Not a known task thread (top-level channel message or unknown thread) — skip
+          continue
+        fi
+
+        # Known task thread reply — log, update last-ts, dispatch to reply handler
+        printf '%s\tslack-bridge  \treply-received\t%s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_sm_matched_slug" >> "$LOG"
+        printf '%s' "$(date -u +%s)" > ~/agentmesh/signals/${_sm_matched_slug}.slack-last-ts
+        reply_handler "$_sm_matched_slug" "$_sm_text"
+        continue
+        ;;
+    esac
+
     slug=$(echo "$entry" | cut -d: -f1)
     event_rest=$(echo "$entry" | cut -d: -f2-)
     # dispatch to handler
@@ -250,26 +285,11 @@ case "$event_rest" in
 esac
 ```
 
-### 1d. Check for new Slack replies
+### 1d. Process inbound Slack replies (relay-based, no polling)
 
-After draining the queue, check each active task's thread for new replies:
+Thread replies are delivered as `slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>` queue entries by `slack-socket-relay.py` running in the `slack-socket-relay` tmux window. These entries are processed in step 1b above — no MCP thread reads are needed on each wakeup cycle.
 
-```bash
-for _thread_file in ~/agentmesh/signals/*.slack-thread; do
-  [ -f "$_thread_file" ] || continue
-  _slug=$(basename "$_thread_file" .slack-thread)
-  _thread_ts=$(cat "$_thread_file")
-  _last_ts_file=~/agentmesh/signals/${_slug}.slack-last-ts
-  _last_ts=$(cat "$_last_ts_file" 2>/dev/null || echo "0")
-
-  # Use Slack MCP to fetch thread replies newer than _last_ts
-  # For each new reply:
-  #   - Parse the message text
-  #   - Dispatch to reply_handler $_slug "$message_text"
-  #   - Update _last_ts to newest seen reply ts
-  echo "$_last_ts" > "$_last_ts_file"
-done
-```
+`signals/<slug>.slack-last-ts` is updated to the current timestamp each time a relay-pushed reply is processed. It is no longer used for filtering (since relay delivers each message exactly once), but remains in place for monitoring/debugging.
 
 #### Reply handler
 
@@ -349,6 +369,8 @@ print(result or 'implementer')
 ```
 
 ### 1e. Check for slash commands
+
+`slackbridge-event` is now fired by both orchestrator.py (worker events) and `slack-socket-relay.py` (inbound Slack messages). Each wakeup may be triggered by a user sending a message in Slack — so checking for new top-level channel messages here ensures `/agentmesh` slash commands are caught promptly without a separate timer.
 
 Fetch recent messages in the configured channel (not replies — top-level messages only) and check for messages newer than a stored channel-last-ts that start with `/agentmesh`:
 
@@ -753,7 +775,7 @@ agentmesh SlackBridge stopped.
 - **Check orchestrator heartbeat after every wakeup** — call `spokesman-heartbeat-check.sh` immediately after waking; if orchestrator.py is stale, restart it and notify via Slack before processing any events.
 - **Respawn dead workers on startup** — tasks in `Attention` state with no live worker window must be respawned (not just threaded) to prevent them from being permanently stuck.
 - **thread_ts is the anchor** — the `signals/<slug>.slack-thread` file stores the top-level message ts. All replies use it as `thread_ts`. Never lose or overwrite it.
-- **last-ts tracking prevents duplicate reply processing** — `signals/<slug>.slack-last-ts` stores the timestamp of the last processed reply; skip replies with `ts <= last_ts`.
+- **last-ts tracking records the last processed reply** — `signals/<slug>.slack-last-ts` is updated to the current timestamp each time a relay-pushed reply is processed. Relay delivers each message exactly once, so it is no longer used for deduplication filtering — but it persists for monitoring and debugging.
 - **Slash commands use channel-last-ts** — `signals/slack-channel-last-ts` stores the timestamp of the last processed channel message; skip messages with `ts <= channel_last_ts`.
 - **Always update the thread header on state transitions** — after each event that changes task state, call `mcp__slack__update_message` on the stored `thread_ts`. See "Thread header updates" table. Skip the update silently if `signals/<slug>.slack-thread` does not exist.
 - **Always post a final thread reply on terminal states** — when a task reaches Done or Won't Do, post `✅ *<slug>* complete.` or `🚫 *<slug>* cancelled.` as a thread reply after updating the header. This closes the thread visually without deleting it.
