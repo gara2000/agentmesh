@@ -277,10 +277,34 @@ done
 reply_handler <slug> <message>:
   case (lowercased message) in
     approve|lgtm|looks good|yes|ok|✅)
-      send_cmd <slug> approve
-      Update thread header: State: Done
-      Post final thread reply: "> 🤖 *AgentMesh*\n✅ *<slug>* complete."
-      Log slack-bridge  thread-closed  <slug>
+      # Determine the right command from the task's last event comment
+      _last_event=$(notecove task show <slug> --format markdown-with-comments | \
+        grep "^- " | grep -oP 'event:\S+' | tail -1 2>/dev/null || echo "")
+      if echo "$_last_event" | grep -qE '^event:pr-(submitted|ready|revised|ready-final|review-complete)'; then
+        # PR context: approve the PR
+        send_cmd <slug> pr-approved
+        Update thread header: State: Done
+        Post final thread reply: "> 🤖 *AgentMesh*\n✅ *<slug>* complete."
+        Log slack-bridge  thread-closed  <slug>
+      elif echo "$_last_event" | grep -q '^event:review-limit-reached:pr:'; then
+        # PR review-limit escalation: approve the PR
+        send_cmd <slug> pr-approved
+        Update thread header: State: Done
+        Post final thread reply: "> 🤖 *AgentMesh*\n✅ *<slug>* complete."
+        Log slack-bridge  thread-closed  <slug>
+      elif [ "$_last_event" = "event:research-ready" ]; then
+        # Research context: set Done then send done command (matches Spokesman behaviour)
+        notecove task change <slug> --state Done
+        send_cmd <slug> done
+        Update thread header: State: Done
+        Post final thread reply: "> 🤖 *AgentMesh*\n✅ *<slug>* complete."
+        Log slack-bridge  thread-closed  <slug>
+      else
+        # Plan / questions / design / brainstormer context: resume the worker
+        notecove task change <slug> --state Doing
+        send_cmd <slug> resume
+        Update thread header: State: Doing
+      fi
     reviewer|spawn reviewer|spawn plan reviewer)
       send_cmd <slug> spawn-plan-reviewer
     spawn pr reviewer|pr reviewer)
@@ -298,11 +322,27 @@ reply_handler <slug> <message>:
       Post final thread reply: "> 🤖 *AgentMesh*\n🚫 *<slug>* cancelled."
       Log slack-bridge  thread-closed  <slug>
     respawn|retry)
+      # Look up agent type from task typeIds/typeNames (same TYPE_MAP as Spokesman)
+      _agent_type=$(notecove task show <slug> --json | python3 -c "
+import sys, json
+TYPE_MAP = {'feature': 'implementer', 'bug': 'implementer', 'plan': 'planner',
+            'brainstorming': 'brainstormer', 'documentation': 'documenter',
+            'design': 'designer', 'investigation': 'investigator'}
+task = json.load(sys.stdin)
+type_ids = task.get('typeIds') or []
+type_names = task.get('typeNames') or []
+result = next((TYPE_MAP[t.lower()] for t in type_ids if t.lower() in TYPE_MAP), None)
+if result is None:
+    result = next((TYPE_MAP[n.lower()] for n in type_names if n.lower() in TYPE_MAP), None)
+print(result or 'implementer')
+" 2>/dev/null || echo "implementer")
       notecove task change <slug> --state Doing
-      send_cmd <slug> respawn
+      send_cmd <slug> spawn $_agent_type
       Update thread header: State: Doing
     select|selection done|continue|proceed|done)
-      send_cmd <slug> approve
+      # "Accept and continue" reply for plans, questions, brainstormer selection, etc.
+      notecove task change <slug> --state Doing
+      send_cmd <slug> resume
     *)
       Post to thread: "> 🤖 *AgentMesh*\n❓ Didn't understand that. Valid replies: approve, reviewer, feedback: <text>, abort"
   esac
@@ -331,7 +371,15 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → Post to channel: "✅ Task created: <slug> — <title>"
 
 /agentmesh approve <slug>
-  → send_cmd <slug> approve
+  → Determine command from last event comment (same context-aware logic as reply_handler):
+    PR context (event:pr-submitted/pr-ready/pr-revised/pr-ready-final/pr-review-complete or review-limit-reached:pr:*):
+      send_cmd <slug> pr-approved
+    Research context (event:research-ready):
+      notecove task change <slug> --state Done
+      send_cmd <slug> done
+    Plan / questions / design / brainstormer context:
+      notecove task change <slug> --state Doing
+      send_cmd <slug> resume
   → Post to thread: "✅ Approved."
 
 /agentmesh feedback <slug> "<text>"
@@ -351,8 +399,12 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → Post to thread: "🔎 Reviewer spawned."
 
 /agentmesh respawn <slug>
+  → Look up agent type from task typeIds/typeNames (same TYPE_MAP as Spokesman):
+    implementer → feature/bug, planner → plan, brainstormer → brainstorming,
+    designer → design, investigator → investigation, documenter → documentation
+    (default: implementer)
   → notecove task change <slug> --state Doing
-  → send_cmd <slug> respawn
+  → send_cmd <slug> spawn <agent_type>
   → Post to thread: "♻️ Worker respawned."
 
 /agentmesh status [<slug>]
@@ -641,7 +693,7 @@ No reply needed. No header update (not a state transition).
 > 🤖 *AgentMesh*
 ✅ *Task complete.* <slug> — <title>
 ```
-Auto-ack: `send_cmd <slug> acknowledge-completion` (no user input needed).
+Auto-ack — the orchestrator handles completion automatically via `completion.sh`; no command needed from SlackBridge.
 Update thread header: `State: Done`. Then post final thread reply: `> 🤖 *AgentMesh*` followed by `✅ *<slug>* complete.`
 Log `slack-bridge  thread-closed  <slug>`.
 
