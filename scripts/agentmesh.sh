@@ -47,7 +47,7 @@ _wait_for_repl() {
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
   local MAX_WORKERS="10" REVIEW_LIMIT="3" INTERFACE="spokesman"
-  local VERBOSITY="medium" SLACK_CHANNEL="" SLACK_POLLER_INTERVAL="5"
+  local VERBOSITY="medium" SLACK_CHANNEL=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,7 +59,6 @@ cmd_start() {
       --interface)            INTERFACE="$2";            shift 2 ;;
       --verbosity)            VERBOSITY="$2";            shift 2 ;;
       --channel|--slack-channel) SLACK_CHANNEL="$2";    shift 2 ;;
-      --slack-poller-interval) SLACK_POLLER_INTERVAL="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -71,6 +70,11 @@ cmd_start() {
 
   if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "$SLACK_CHANNEL" ]]; then
     echo "Error: --slack-channel is required when --interface includes slack" >&2
+    exit 1
+  fi
+
+  if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "${SLACK_APP_TOKEN:-}" ]]; then
+    echo "Error: SLACK_APP_TOKEN environment variable is required when --interface includes slack" >&2
     exit 1
   fi
 
@@ -102,8 +106,7 @@ cmd_start() {
       --max-workers "$MAX_WORKERS" \
       --review-limit "$REVIEW_LIMIT" \
       --interface "$INTERFACE" \
-      ${SLACK_CHANNEL:+--slack-channel "$SLACK_CHANNEL"} \
-      --slack-poller-interval "$SLACK_POLLER_INTERVAL"
+      ${SLACK_CHANNEL:+--slack-channel "$SLACK_CHANNEL"}
     # Persist mode for Spokesman to read on recovery
     echo "$MODE" > "$SIGNALS/mode"
   fi
@@ -128,7 +131,7 @@ cmd_start() {
     fi
   fi
 
-  # 10. Start SlackBridge (orchestrator:slack-bridge) + slack-poller
+  # 10. Start SlackBridge (orchestrator:slack-bridge) + slack-socket-relay
   if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
     if _window_exists "slack-bridge"; then
       echo "  · SlackBridge already running (orchestrator:slack-bridge)"
@@ -142,14 +145,14 @@ cmd_start() {
       echo "  ✓ SlackBridge started (orchestrator:slack-bridge)"
     fi
 
-    if _window_exists "slack-poller"; then
-      echo "  · slack-poller already running (orchestrator:slack-poller)"
+    if _window_exists "slack-socket"; then
+      echo "  · slack-socket-relay already running (orchestrator:slack-socket)"
     else
-      tmux new-window -t "orchestrator:" -n slack-poller
-      tmux send-keys -t "orchestrator:slack-poller" \
-        "bash $SCRIPTS/slack-poller.sh --interval $SLACK_POLLER_INTERVAL" \
+      tmux new-window -t "orchestrator:" -n slack-socket
+      tmux send-keys -t "orchestrator:slack-socket" \
+        "SLACK_APP_TOKEN=$SLACK_APP_TOKEN python3 $SCRIPTS/slack-socket-relay.py" \
         Enter
-      echo "  ✓ slack-poller started (orchestrator:slack-poller)"
+      echo "  ✓ slack-socket-relay started (orchestrator:slack-socket)"
     fi
   fi
 
@@ -168,7 +171,7 @@ cmd_stop() {
   fi
 
   # 2. Kill known windows in the orchestrator session
-  for win in slack-bridge slack-poller main folder-cleanup watchdog dispatcher orchestrator; do
+  for win in slack-bridge slack-socket slack-poller main folder-cleanup watchdog dispatcher orchestrator; do
     tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
   done
 
@@ -224,11 +227,11 @@ cmd_status() {
     printf "%-22s ✗ not running\n" "slack-bridge"
   fi
 
-  # slack-poller
-  if _window_exists "slack-poller"; then
-    printf "%-22s ✓ running\n" "slack-poller"
+  # slack-socket-relay
+  if _window_exists "slack-socket"; then
+    printf "%-22s ✓ running\n" "slack-socket-relay"
   else
-    printf "%-22s ✗ not running\n" "slack-poller"
+    printf "%-22s ✗ not running\n" "slack-socket-relay"
   fi
 
   # active workers

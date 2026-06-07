@@ -27,7 +27,7 @@ All coordination is synchronous — no polling, no idle token consumption.
 | `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
 | `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
 | `slackbridge-event` | orchestrator.py → SlackBridge | User-attention event forwarded to SlackBridge (when registered in `active-interfaces`) |
-| `slackbridge-event` | slack-poller.sh → SlackBridge | Tick signal fired every N seconds; wakes SlackBridge to check for new inbound messages via MCP |
+| `slackbridge-event` | slack-socket-relay.py → SlackBridge | Push signal fired when Slack delivers a message over the WebSocket connection |
 | `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
 | `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
 
@@ -128,7 +128,7 @@ Responsibilities:
 
 Responsibilities:
 - Register in `signals/active-interfaces` and write `signals/slack-channel` and `signals/slack-verbosity` at startup
-- Block on `slackbridge-event` (fired by both orchestrator.py and slack-poller.sh on a timer)
+- Block on `slackbridge-event` (fired by orchestrator.py on task events, or by slack-socket-relay.py on incoming Slack messages)
 - Drain `signals/slackbridge-queue` and dispatch each event to a Slack thread for the relevant task
 - Poll Slack thread replies (via Slack MCP) for user commands (`approve`, `feedback: <text>`, `abort`, etc.)
 - Parse top-level channel messages starting with `/agentmesh` as slash commands
@@ -267,7 +267,7 @@ Session: orchestrator       ← user attaches here only
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
   window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
-  window N: slack-poller    ← scripts/slack-poller.sh (bash loop, when --interface includes slack)
+  window N: slack-socket    ← scripts/slack-socket-relay.py (Python daemon, when --interface includes slack)
   window N: slack-bridge    ← /slack-bridge skill (Claude Code, when using Slack interface)
 
 Session: workers
@@ -348,7 +348,7 @@ agentmesh/
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
-│   ├── slack-poller.sh     # timer/ticker daemon: fires slackbridge-event every N seconds to wake SlackBridge for inbound message checks (no Slack API calls)
+│   ├── slack-socket-relay.py # Socket Mode WebSocket relay: forwards inbound Slack messages to slackbridge-queue and fires slackbridge-event
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
@@ -430,8 +430,10 @@ timestamp       component       event_type                  slug
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
-2026-04-26T...  slack-poller    started                     -
-2026-04-26T...  slack-poller    tick                        -
+2026-04-26T...  slack-socket    started                     -
+2026-04-26T...  slack-socket    message-received            -
+2026-04-26T...  slack-socket    reconnecting                -
+2026-04-26T...  slack-socket    stopped                     -
 2026-04-26T...  slack-bridge    started                     -
 2026-04-26T...  slack-bridge    task-triaged                WORK-xyz
 2026-04-26T...  slack-bridge    thread-created              WORK-xyz
@@ -549,7 +551,6 @@ agentmesh start --project <key>
                 [--interface spokesman|slack|both]      # default: spokesman
                 [--channel <slack-channel-id>]          # required if --interface includes slack
                 [--verbosity low|medium|high]           # default: medium (SlackBridge only)
-                [--slack-poller-interval <seconds>]    # default: 5
 ```
 
 **Other commands:**
@@ -623,14 +624,14 @@ Pass `--interface <mode>` to choose which user-facing interfaces are active:
 | Interface | Behavior |
 |---|---|
 | `spokesman` (default) | Only the Spokesman Claude Code process handles user interaction |
-| `slack` | Slack integration only: starts `slack-poller.sh` to wake SlackBridge on a timer |
+| `slack` | Slack integration only: starts `slack-socket-relay.py` to deliver messages from Slack to SlackBridge |
 | `both` | Both Spokesman and Slack interfaces active simultaneously |
 
-When `--interface` includes `slack`, `--slack-channel <channel-id>` is required. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read. An optional `--slack-poller-interval <seconds>` arg controls the tick frequency (default: 5).
+When `--interface` includes `slack`, `--slack-channel <channel-id>` is required, and `SLACK_APP_TOKEN` must be set in the environment. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read.
 
-Example — start with both interfaces, polling every 10 seconds:
+Example — start with both interfaces:
 ```bash
-/spokesman --project WORK --interface both --slack-channel C01234567 --slack-poller-interval 10
+SLACK_APP_TOKEN=xapp-... /spokesman --project WORK --interface both --slack-channel C01234567
 ```
 
 The SlackBridge skill registers itself in `signals/active-interfaces` when it starts, enabling the orchestrator to forward worker events to both Spokesman and SlackBridge simultaneously.
