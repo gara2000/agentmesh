@@ -17,8 +17,8 @@ Environment:
 Queue entry format written to signals/slackbridge-queue:
     slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>
 
-Only thread replies are forwarded. Top-level messages, bot messages, and
-non-message events are silently ignored.
+Both thread replies and top-level channel messages are forwarded. Bot
+messages and non-message events are silently ignored.
 
 Log events emitted to signals/events.log (TSV):
     started, message-received, reconnecting, stopped
@@ -105,8 +105,16 @@ def handle_socket_mode_request(client: SocketModeClient, req: SocketModeRequest)
     """Process an incoming Socket Mode request.
 
     Acknowledges every request immediately (required by Slack to suppress
-    retries), then filters down to qualifying thread-reply message events and
-    writes them to slackbridge-queue.
+    retries), then filters down to qualifying message events (both thread
+    replies and top-level channel messages) and writes them to
+    slackbridge-queue.
+
+    Queue entry format:
+        slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>
+
+    For thread replies, thread_ts is the parent message ts.
+    For top-level messages, thread_ts equals the message's own ts (consistent
+    with how Slack identifies thread roots).
     """
     # Always acknowledge to suppress Slack delivery retries.
     client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -126,21 +134,19 @@ def handle_socket_mode_request(client: SocketModeClient, req: SocketModeRequest)
     if event.get("bot_id") or event.get("subtype") == "bot_message":
         return
 
-    thread_ts = event.get("thread_ts")
     ts = event.get("ts", "")
-
-    # Skip top-level (non-threaded) messages and the parent message itself.
-    # A thread reply has thread_ts set to the parent's ts, and its own ts differs.
-    if not thread_ts or ts == thread_ts:
-        return
-
     channel_id = event.get("channel", "")
     user_id = event.get("user", "")
     text = event.get("text", "")
 
     # Skip events missing required fields.
-    if not channel_id or not user_id:
+    if not channel_id or not user_id or not ts:
         return
+
+    # For thread replies, thread_ts is the parent's ts.
+    # For top-level messages, use the message's own ts as the thread anchor
+    # (consistent with how Slack identifies thread roots).
+    thread_ts = event.get("thread_ts") or ts
 
     text_escaped = escape_text(text)
     entry = f"slack-message:{channel_id}:{thread_ts}:{user_id}:{text_escaped}"
