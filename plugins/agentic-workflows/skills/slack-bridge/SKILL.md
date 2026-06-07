@@ -10,6 +10,27 @@ hint: "Run the AgentMesh SlackBridge (Slack user-interaction layer). Required: -
 
 **Arguments:** $ARGUMENTS
 
+## Phase 0: Verify Slack MCP is configured
+
+Before doing anything else, verify that the Slack MCP is available by attempting a lightweight call:
+
+- Call `mcp__slack__slack_search_channels` with query `test` and limit `1`.
+- If the call succeeds (even with zero results) → Slack MCP is configured; proceed normally.
+- If the call fails for any reason (tool unavailable, MCP server not running, connection error, auth error) → print the following message to the terminal and stop immediately:
+
+```
+ERROR: Slack MCP is not configured or not reachable.
+
+Please add the Slack MCP server to your Claude Code MCP settings and restart.
+See: https://github.com/modelcontextprotocol/servers for setup instructions.
+
+Once the Slack MCP is configured, re-run /slack-bridge to start the SlackBridge.
+```
+
+Do not proceed to argument parsing or any further steps if this check fails.
+
+---
+
 Parse arguments:
 - `--project <key>` — required, NoteCove project key (e.g. `WORK`)
 - `--channel <channel-id>` — required, Slack channel ID where agentmesh posts messages
