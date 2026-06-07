@@ -302,7 +302,11 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 
 ```
 /agentmesh create "<title>" [--priority P1|P2|P3] [--type implementer|planner|brainstormer|investigator|documenter|designer] [--description "<text>"]
-  → notecove task create "<title>" --project <PROJECT> --state ready [--priority <P>] [--type <type>] [--content "<text>" --content-format markdown]
+  → Convert agent type to notecove task type ID using this mapping:
+    implementer → feature, planner → plan, brainstormer → brainstorming,
+    investigator → investigation, documenter → documentation, designer → design
+    (if --type is omitted, omit --type from the notecove command)
+  → notecove task create "<title>" --project <PROJECT> --state ready [--priority <P>] [--type <task-type-id>] [--content "<text>" --content-format markdown]
   → Post to channel: "✅ Task created: <slug> — <title>"
 
 /agentmesh approve <slug>
