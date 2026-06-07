@@ -520,46 +520,6 @@ class Orchestrator:
         return "event:unknown"
 
     # -----------------------------------------------------------------------
-    # Shutdown detection
-    # -----------------------------------------------------------------------
-
-    def _maybe_shutdown(self) -> None:
-        """Notify Spokesman when no active workers, no in-flight tasks, and no Ready tasks remain.
-
-        The orchestrator never self-terminates. spokesman-exit.sh kills the entire
-        orchestrator tmux session when the user confirms shutdown.
-        """
-        if self._in_flight:
-            return
-        workers_file = SIGNALS / "workers"
-        active = 0
-        if workers_file.exists():
-            active = sum(
-                1 for l in workers_file.read_text().splitlines()
-                if l.strip() and not l.startswith("#")
-            )
-        if active > 0:
-            return
-
-        # Don't notify if there are pending commands from Spokesman (e.g. spawn after restart)
-        cmds_file = SIGNALS / "orchestrator-cmds"
-        if cmds_file.exists() and cmds_file.stat().st_size > 0:
-            return
-
-        result = run_bash(
-            f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit 1 --json"
-        )
-        try:
-            if json.loads(result.stdout):
-                return
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        log("orchestrator ", "shutdown")
-        _print("all tasks complete — notifying interfaces")
-        self._forward_to_spokesman("-", "event:shutdown")
-
-    # -----------------------------------------------------------------------
     # Task pickup
     # -----------------------------------------------------------------------
 
@@ -583,7 +543,6 @@ class Orchestrator:
             return
 
         if not tasks:
-            self._maybe_shutdown()
             return
 
         # Sort by priority ascending so higher-priority tasks are picked first.
