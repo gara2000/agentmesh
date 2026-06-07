@@ -258,7 +258,7 @@ reply_handler <slug> <message>:
     approve|lgtm|looks good|yes|ok|✅)
       send_cmd <slug> approve
       Update thread header: State: Done
-      Post final thread reply: "✅ *<slug>* complete."
+      Post final thread reply: "> 🤖 *AgentMesh*\n✅ *<slug>* complete."
       Log slack-bridge  thread-closed  <slug>
     reviewer|spawn reviewer|spawn plan reviewer)
       send_cmd <slug> spawn-plan-reviewer
@@ -274,7 +274,7 @@ reply_handler <slug> <message>:
       notecove task change <slug> --state "Won't Do"
       send_cmd <slug> abort
       Update thread header: State: Won't Do
-      Post final thread reply: "🚫 *<slug>* cancelled."
+      Post final thread reply: "> 🤖 *AgentMesh*\n🚫 *<slug>* cancelled."
       Log slack-bridge  thread-closed  <slug>
     respawn|retry)
       notecove task change <slug> --state Doing
@@ -283,7 +283,7 @@ reply_handler <slug> <message>:
     select|selection done|continue|proceed|done)
       send_cmd <slug> approve
     *)
-      Post to thread: "❓ Didn't understand that. Valid replies: approve, reviewer, feedback: <text>, abort"
+      Post to thread: "> 🤖 *AgentMesh*\n❓ Didn't understand that. Valid replies: approve, reviewer, feedback: <text>, abort"
   esac
 ```
 
@@ -398,6 +398,20 @@ Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each itera
 - **No thread exists** for a slug: call `mcp__slack__post_message` to channel, store the returned `ts` (message timestamp) in `signals/<slug>.slack-thread`. All subsequent posts for this slug use `thread_ts=<stored-ts>` to reply in the thread. Log `slack-bridge  thread-created  <slug>` to `events.log`.
 - **Thread exists**: call `mcp__slack__post_message` with `thread_ts=<stored-ts>` to reply.
 
+### Message prefix convention
+
+Every SlackBridge thread reply (not the top-level header) MUST begin with the following prefix on its own line, before the message body:
+
+```
+> 🤖 *AgentMesh*
+```
+
+This uses Slack's blockquote formatting (renders a vertical bar on the left side), making AgentMesh replies immediately distinguishable from user messages in the thread. Apply this prefix to **all** thread replies: event notifications, reply handler confirmations, error messages, and any other non-header posts.
+
+Do **not** apply the prefix to:
+- Channel-level header posts (📋 *slug* — title format)
+- `mcp__slack__update_message` calls (header updates)
+
 Header format (channel-level post, initial creation and updates):
 ```
 📋 *<slug>* — <task title>
@@ -444,8 +458,8 @@ fi
 
 When a task reaches a terminal state, post a final reply to the thread **after** updating the header:
 
-- **Done** (via `event:completion`, `event:pr-merged-auto-approved`, or `approve`): post `✅ *<slug>* complete.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
-- **Won't Do** (via `abort`): post `🚫 *<slug>* cancelled.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
+- **Done** (via `event:completion`, `event:pr-merged-auto-approved`, or `approve`): post `> 🤖 *AgentMesh*` followed by `✅ *<slug>* complete.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
+- **Won't Do** (via `abort`): post `> 🤖 *AgentMesh*` followed by `🚫 *<slug>* cancelled.` as a thread reply. Log `slack-bridge  thread-closed  <slug>`.
 
 Do NOT delete or remove `signals/<slug>.slack-thread` — the file persists until `agentmesh stop` on shutdown.
 
@@ -460,6 +474,7 @@ Before posting, check `VERBOSITY`:
 
 **`event:questions`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 ❓ *Worker has questions (Round N):*
 
 <question content — if verbosity high, fetch and include full QUESTIONS note content; otherwise first 500 chars of the QUESTIONS note content>
@@ -471,6 +486,7 @@ Update thread header: `State: Attention (questions)`.
 
 **`event:plan-ready` / `event:plan-revised`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 📝 *Plan ready for review:*
 
 <if verbosity high: full PLAN note content; else: first 500 chars of PLAN note>
@@ -481,6 +497,7 @@ Update thread header: `State: Attention (plan review)`.
 
 **`event:pr-submitted:<url>`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 🔀 *PR submitted:* <url>
 
 Reply: `approve`, `reviewer`, `feedback: <text>`, or `abort`
@@ -489,6 +506,7 @@ Update thread header: `State: Attention (PR ready) | PR: <url>`.
 
 **`event:pr-ready:<url>`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 ✅ *PR validated and ready:* <url>
 
 Reply: `approve` or `feedback: <text>`
@@ -497,6 +515,7 @@ Update thread header: `State: Attention (PR validated) | PR: <url>`.
 
 **`event:research-ready`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 🔍 *Research complete.*
 
 <if verbosity high: post Context notes content; else: first 300 chars of research summary>
@@ -507,6 +526,7 @@ Update thread header: `State: Attention (research ready)`.
 
 **`event:ideas-ready`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 💡 *Ideas ready (Round N):*
 
 <if verbosity high: full IDEAS note content; else: idea list headings>
@@ -517,6 +537,7 @@ Update thread header: `State: Attention (ideas ready)`.
 
 **`event:selection-ready`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 ☑️ *Select ideas to create as tasks:*
 
 <checklist from SELECTION note>
@@ -527,6 +548,7 @@ Update thread header: `State: Attention (select ideas)`.
 
 **`event:design-ready` / `event:design-revised`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 🎨 *Design ready for review:*
 
 <if verbosity high: full DESIGN note; else: design summary>
@@ -537,6 +559,7 @@ Update thread header: `State: Attention (design review)`.
 
 **`event:plan-review-complete`** (medium+):
 ```
+> 🤖 *AgentMesh*
 🔎 *Plan review complete:*
 <reviewer summary from last task comment>
 ```
@@ -545,6 +568,7 @@ Update thread header: `State: In Review`.
 
 **`event:pr-review-complete`** (medium+):
 ```
+> 🤖 *AgentMesh*
 🔎 *PR review complete:*
 <reviewer summary from last task comment>
 ```
@@ -552,6 +576,7 @@ Update thread header: `State: In Review`.
 
 **`event:review-limit-reached:plan`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 ⚠️ *Auto-review limit reached (plan).*
 Reply: `approve`, `reviewer` (manual), or `abort`
 ```
@@ -559,6 +584,7 @@ Update thread header: `State: Attention (review limit)`.
 
 **`event:review-limit-reached:pr:<url>`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 ⚠️ *Auto-review limit reached (PR).* <url>
 Reply: `approve`, `reviewer` (manual), or `abort`
 ```
@@ -566,6 +592,7 @@ Update thread header: `State: Attention (review limit) | PR: <url>`.
 
 **`event:crash-limit-reached`** (all verbosity levels):
 ```
+> 🤖 *AgentMesh*
 🚨 *Worker crashed 3 times.* Task blocked.
 Reply: `respawn` or `abort`
 ```
@@ -573,24 +600,27 @@ Update thread header: `State: Blocked`.
 
 **`event:anomaly-detected:<key>`** (medium+):
 ```
+> 🤖 *AgentMesh*
 ⚠️ *Anomaly detected:* <key description>
 ```
 No reply needed. No header update (not a state transition).
 
 **`event:completion`** (medium+):
 ```
+> 🤖 *AgentMesh*
 ✅ *Task complete.* <slug> — <title>
 ```
 Auto-ack: `send_cmd <slug> acknowledge-completion` (no user input needed).
-Update thread header: `State: Done`. Then post final thread reply: `✅ *<slug>* complete.`
+Update thread header: `State: Done`. Then post final thread reply: `> 🤖 *AgentMesh*` followed by `✅ *<slug>* complete.`
 Log `slack-bridge  thread-closed  <slug>`.
 
 **`event:pr-merged-auto-approved`** (medium+):
 ```
+> 🤖 *AgentMesh*
 🎉 *PR merged!* <slug> is done.
 ```
 No await needed.
-Update thread header: `State: Done`. Then post final thread reply: `✅ *<slug>* complete.`
+Update thread header: `State: Done`. Then post final thread reply: `> 🤖 *AgentMesh*` followed by `✅ *<slug>* complete.`
 Log `slack-bridge  thread-closed  <slug>`.
 
 **`event:task-ready`** — LLM triage (same TYPE_MAP as Spokesman, no Slack post):
