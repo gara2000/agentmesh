@@ -53,7 +53,7 @@ send_cmd() {
 ### 0a. Register in active-interfaces
 
 ```bash
-echo "slack-bridge" >> ~/agentmesh/signals/active-interfaces
+echo "slackbridge" >> ~/agentmesh/signals/active-interfaces
 ```
 
 ### 0b. Write runtime state files
@@ -618,7 +618,7 @@ Decide agent type using same heuristics as Spokesman TYPE_MAP:
 **Step 1 — Deregister from `active-interfaces`:**
 
 ```bash
-grep -v "^slack-bridge$" ~/agentmesh/signals/active-interfaces > /tmp/sb_tmp && mv /tmp/sb_tmp ~/agentmesh/signals/active-interfaces
+grep -v "^slackbridge$" ~/agentmesh/signals/active-interfaces > /tmp/sb_tmp && mv /tmp/sb_tmp ~/agentmesh/signals/active-interfaces
 ```
 
 **Step 2 — Post to Slack channel:**
