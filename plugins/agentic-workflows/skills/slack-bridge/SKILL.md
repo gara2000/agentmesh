@@ -42,7 +42,31 @@ if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
 fi
 ```
 
-If either check fails, stop immediately.
+If either check fails, stop immediately and print the following setup guide for `SLACK_BOT_TOKEN`:
+
+```
+ERROR: SLACK_BOT_TOKEN is not set.
+
+To configure your Slack app for sending messages (slack-send.py):
+
+1. Go to https://api.slack.com/apps → open your existing Slack app
+2. In "OAuth & Permissions" → "Bot Token Scopes", add these scopes:
+     chat:write          — post messages to channels
+     chat:write.public   — post in channels the bot hasn't joined (optional)
+3. Reinstall the app to your workspace (banner appears at top of the page)
+4. Copy the "Bot User OAuth Token" (starts with xoxb-)
+5. Set it in your environment before starting AgentMesh:
+     export SLACK_BOT_TOKEN=xoxb-...
+   Or add it to ~/.zshrc / ~/.bashrc for persistence.
+
+Note: SLACK_BOT_TOKEN (xoxb-...) is the Bot Token for Web API calls.
+      SLACK_APP_TOKEN (xapp-...) is the App-Level Token for Socket Mode.
+      Both come from the same Slack app — check "OAuth & Permissions" for
+      the Bot Token and "Basic Information" → "App-Level Tokens" for the
+      App-Level Token.
+
+Once SLACK_BOT_TOKEN is set, re-run /slack-bridge to start the SlackBridge.
+```
 
 Do not proceed to argument parsing or any further steps if either check fails.
 

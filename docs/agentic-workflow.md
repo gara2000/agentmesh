@@ -475,6 +475,29 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 - **Thread header updates** — after each state transition, SlackBridge edits the header message via `slack-send.py update` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
 - **Thread cleanup** — when a task reaches Done or Won't Do, SlackBridge posts a final reply (`✅ complete.` or `🚫 cancelled.`) and updates the header to the terminal state; the thread is never deleted
 
+### Prerequisites
+
+SlackBridge requires two Slack tokens from the same Slack app:
+
+| Token | Variable | Starts with | Used by | Where to find |
+|---|---|---|---|---|
+| App-Level Token | `SLACK_APP_TOKEN` | `xapp-` | `slack-socket-relay.py` (Socket Mode) | App settings → Basic Information → App-Level Tokens |
+| Bot Token | `SLACK_BOT_TOKEN` | `xoxb-` | `slack-send.py` (Web API sending) | App settings → OAuth & Permissions → Bot User OAuth Token |
+
+**To configure `SLACK_BOT_TOKEN` for sending messages:**
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → open your Slack app
+2. In **OAuth & Permissions** → **Bot Token Scopes**, add:
+   - `chat:write` — post messages to channels
+   - `chat:write.public` — post in channels the bot hasn't joined (optional)
+3. Reinstall the app to your workspace (banner appears at top of the page)
+4. Copy the **Bot User OAuth Token** (`xoxb-...`)
+5. Set it before starting AgentMesh:
+   ```bash
+   export SLACK_BOT_TOKEN=xoxb-...
+   ```
+   Or add to `~/.zshrc` / `~/.bashrc` for persistence.
+
 ### Starting SlackBridge
 
 After bootstrapping with `--interface slack` or `--interface both`:
