@@ -470,9 +470,9 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 
 - **Woken by `slackbridge-event`** — fired by `orchestrator.py` (on user-attention events) or by `slack-socket-relay.py` (immediately on incoming Slack messages via WebSocket)
 - **Drains `slackbridge-queue`** — two entry types: orchestrator-forwarded `<slug>:<event-type>` entries (worker events) and relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>` entries (inbound Slack messages from the relay); no MCP thread polling needed
-- **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
+- **Sends via `slack-send.py`** — all outbound messages use `scripts/slack-send.py` (wraps `slack_sdk.WebClient` with `SLACK_BOT_TOKEN`); no Slack MCP write tools are used for sending
 - **Thread-per-task model** — first event for a slug creates a top-level channel message (header); all subsequent events post as replies in the thread; `signals/<slug>.slack-thread` stores the header `ts` for the lifetime of the task
-- **Thread header updates** — after each state transition, SlackBridge edits the header message via `mcp__slack__update_message` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
+- **Thread header updates** — after each state transition, SlackBridge edits the header message via `slack-send.py update` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
 - **Thread cleanup** — when a task reaches Done or Won't Do, SlackBridge posts a final reply (`✅ complete.` or `🚫 cancelled.`) and updates the header to the terminal state; the thread is never deleted
 
 ### Starting SlackBridge

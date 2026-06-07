@@ -131,6 +131,7 @@ Responsibilities:
 - Block on `slackbridge-event` (fired by orchestrator.py on worker events and by `slack-socket-relay.py` on inbound Slack messages)
 - Drain `signals/slackbridge-queue` and dispatch each entry: orchestrator-forwarded `<slug>:<event-type>` entries post to Slack threads; relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text>` entries are matched against task threads and processed as user replies — no MCP thread polling needed
 - Process user replies from relay-pushed queue entries for commands (`approve`, `feedback: <text>`, `abort`, etc.)
+- Send all messages to Slack via `slack-send.py` (uses `SLACK_BOT_TOKEN` + `slack_sdk.WebClient`) instead of MCP write tools
 - Parse top-level channel messages starting with `/agentmesh` as slash commands
 - Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
 - Deregister from `signals/active-interfaces` and post a shutdown message on exit
@@ -349,6 +350,7 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 │   ├── slack-socket-relay.py # Socket Mode WebSocket relay: forwards inbound Slack messages to slackbridge-queue and fires slackbridge-event
+│   ├── slack-send.py       # Slack message sender via slack_sdk.WebClient; replaces MCP for sending; used by SlackBridge
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
