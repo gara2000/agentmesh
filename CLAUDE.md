@@ -411,7 +411,6 @@ timestamp       component       event_type                  slug
 2026-04-26T...  orchestrator    anomaly-resolved:<key>      WORK-xyz
 2026-04-26T...  orchestrator    review-limit-reached:plan   WORK-xyz
 2026-04-26T...  orchestrator    review-limit-reached:pr     WORK-xyz
-2026-04-26T...  orchestrator    shutdown                    -
 2026-04-26T...  orchestrator    research-ready-forwarded    WORK-xyz
 2026-04-26T...  spokesman       research-approved           WORK-xyz
 2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz

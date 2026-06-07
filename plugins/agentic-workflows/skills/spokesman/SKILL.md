@@ -249,7 +249,6 @@ case "$event_rest" in
   event:task-ready)       → task triage (auto, decide agent type, spawn)
   event:completion)       → completion announcement (auto, no user input)
   event:pr-merged-auto-approved) → PR merged: offer release prompt (user-input)
-  event:shutdown)         → all tasks complete, run Exit phase and stop
   event:questions)        → questions attention
   event:plan-ready)       → plan-ready attention
   event:plan-revised)     → plan revised (standard mode only, same as plan-ready attention)
@@ -339,22 +338,6 @@ bash ~/agentmesh/scripts/release.sh <bump-type>
 Tell the user the result (version number, tag created, whether plugin reload succeeded).
 
 **If 'skip':** tell the user "No release cut. You can run 'release patch/minor/major' at any time."
-
----
-
-### Event: `event:shutdown` — all tasks complete
-
-Received from orchestrator.py when active worker count is zero and no Ready tasks remain.
-
-Ask the user for confirmation before shutting down:
-
-```
-All tasks complete.
-Shut down AgentMesh and kill all tmux sessions? (yes/no)
-```
-
-- **If 'yes' (or 'y'):** proceed to the Exit phase (see below).
-- **If 'no' (or 'n'):** tell the user "Shutdown cancelled. You can continue using the system." and return to the event loop (step 1a).
 
 ---
 
@@ -774,7 +757,7 @@ If a background `tmux wait-for spokesman-event` is already running (re-launched 
 
 ## Exit
 
-When no workers remain and no Ready tasks exist (orchestrator.py shuts down):
+Triggered when the user explicitly shuts down (via `agentmesh stop` or by typing a shutdown command). The orchestrator no longer sends `event:shutdown` — it stays running indefinitely until externally killed.
 
 **Step 1 — Deregister from `active-interfaces` (always):**
 
