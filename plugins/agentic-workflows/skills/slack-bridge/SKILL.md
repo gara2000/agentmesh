@@ -352,6 +352,11 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → send_cmd - mode <mode>  (write "<mode>" to orchestrator-cmds as "orchestrator|mode|<mode>")
   → Post to channel: "Mode set to <mode>."
 
+/agentmesh scan
+  → send_cmd - scan
+  → Post to channel: "🔍 Scan triggered — orchestrator will pick up any new ready tasks."
+  → Log: slack-bridge  slash-command  -
+
 /agentmesh shutdown
   → send_cmd - shutdown
   → Proceed to Exit phase
@@ -374,6 +379,7 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
      /agentmesh list-tasks [--state <state>]  — List tasks filtered by state
      /agentmesh verbosity low|medium|high     — Set Slack message verbosity
      /agentmesh mode standard|auto-review     — Set orchestrator review mode
+     /agentmesh scan                          — Trigger orchestrator to pick up new ready tasks
      /agentmesh release patch|minor|major     — Cut a plugin release
      /agentmesh shutdown                      — Shut down the SlackBridge
      /agentmesh help                          — Show this help message
