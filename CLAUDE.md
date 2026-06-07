@@ -15,7 +15,7 @@ All coordination is synchronous — no polling, no idle token consumption.
 - **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
 - **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
 - **`signals/slackbridge-queue`** — append-only file; orchestrator.py writes forwarded user-attention events for SlackBridge; SlackBridge drains it after unblocking
-- **`signals/active-interfaces`** — one line per active interface name (`spokesman`, `slack-bridge`); read by orchestrator.py to fan out events; empty or missing = falls back to `spokesman` only
+- **`signals/active-interfaces`** — one line per active interface name (`spokesman`, `slackbridge`); read by orchestrator.py to fan out events; empty or missing = falls back to `spokesman` only
 - **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
 - **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
 
@@ -124,7 +124,7 @@ Responsibilities:
 
 ### SlackBridge
 
-**One instance (optional).** Runs in the `orchestrator` tmux session, window `slack-bridge` (or any user-chosen window). A full Spokesman peer that communicates via Slack instead of a tmux terminal. Registered in `signals/active-interfaces` as `slack-bridge`; the orchestrator fans events to both Spokesman and SlackBridge simultaneously.
+**One instance (optional).** Runs in the `orchestrator` tmux session, window `slack-bridge` (or any user-chosen window). A full Spokesman peer that communicates via Slack instead of a tmux terminal. Registered in `signals/active-interfaces` as `slackbridge`; the orchestrator fans events to both Spokesman and SlackBridge simultaneously.
 
 Responsibilities:
 - Register in `signals/active-interfaces` and write `signals/slack-channel` and `signals/slack-verbosity` at startup
@@ -356,7 +356,7 @@ agentmesh/
     ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
     ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
     ├── slackbridge-queue   # append-only; orchestrator.py writes <slug>:<event-type> for SlackBridge to drain
-    ├── active-interfaces   # one line per active interface name (e.g. spokesman, slack-bridge); empty = spokesman-only fallback
+    ├── active-interfaces   # one line per active interface name (e.g. spokesman, slackbridge); empty = spokesman-only fallback
     ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
     ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
