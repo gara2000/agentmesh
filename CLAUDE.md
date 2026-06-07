@@ -14,7 +14,7 @@ All coordination is synchronous — no polling, no idle token consumption.
 - **`tmux wait-for <signal>`** — blocks until the signal is fired
 - **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
 - **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
-- **`signals/slackbridge-queue`** — append-only file; orchestrator.py writes forwarded user-attention events for SlackBridge; SlackBridge drains it after unblocking
+- **`signals/slackbridge-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`) and `slack-socket-relay.py` writes relay-pushed inbound Slack messages (`slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>`); SlackBridge drains it after unblocking
 - **`signals/active-interfaces`** — one line per active interface name (`spokesman`, `slackbridge`); read by orchestrator.py to fan out events; empty or missing = falls back to `spokesman` only
 - **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
 - **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
@@ -128,9 +128,9 @@ Responsibilities:
 
 Responsibilities:
 - Register in `signals/active-interfaces` and write `signals/slack-channel` and `signals/slack-verbosity` at startup
-- Block on `slackbridge-event` (fired by orchestrator.py on task events, or by slack-socket-relay.py on incoming Slack messages)
-- Drain `signals/slackbridge-queue` and dispatch each event to a Slack thread for the relevant task
-- Poll Slack thread replies (via Slack MCP) for user commands (`approve`, `feedback: <text>`, `abort`, etc.)
+- Block on `slackbridge-event` (fired by orchestrator.py on worker events and by `slack-socket-relay.py` on inbound Slack messages)
+- Drain `signals/slackbridge-queue` and dispatch each entry: orchestrator-forwarded `<slug>:<event-type>` entries post to Slack threads; relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text>` entries are matched against task threads and processed as user replies — no MCP thread polling needed
+- Process user replies from relay-pushed queue entries for commands (`approve`, `feedback: <text>`, `abort`, etc.)
 - Parse top-level channel messages starting with `/agentmesh` as slash commands
 - Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
 - Deregister from `signals/active-interfaces` and post a shutdown message on exit
