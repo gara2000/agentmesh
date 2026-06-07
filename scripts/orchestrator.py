@@ -183,6 +183,33 @@ def forward_to_interfaces(slug: str, event_type: str) -> None:
         tmux_signal(f"{iface}-event")
 
 
+def _triage_interface() -> str:
+    """Return the single authoritative triage interface.
+
+    Spokesman is preferred when registered; otherwise falls back to the first
+    registered interface. This prevents duplicate-spawn when both Spokesman and
+    SlackBridge are active — only one interface does LLM triage per task.
+    """
+    interfaces = _read_active_interfaces()
+    if "spokesman" in interfaces:
+        return "spokesman"
+    return interfaces[0]
+
+
+def forward_to_triage_interface(slug: str, event_type: str) -> None:
+    """Forward slug:event_type to the single authoritative triage interface only.
+
+    Unlike forward_to_interfaces(), this sends to exactly one interface so that
+    only one LLM triage decision is made per task — preventing duplicate worker
+    spawns when multiple interfaces (e.g. Spokesman + SlackBridge) are active.
+    """
+    iface = _triage_interface()
+    entry = f"{slug}:{event_type}\n"
+    with open(SIGNALS / f"{iface}-queue", "a") as f:
+        f.write(entry)
+    tmux_signal(f"{iface}-event")
+
+
 def _print(msg: str) -> None:
     """Print an [orchestrator]-prefixed message to stdout."""
     print(f"[orchestrator] {msg}", flush=True)
@@ -631,7 +658,7 @@ class Orchestrator:
                 # No type mapping — fall back to Spokesman LLM judgment.
                 self._in_flight.add(slug)
                 log("orchestrator ", "task-triage-forwarded", slug)
-                self._forward_to_spokesman(slug, "event:task-ready")
+                forward_to_triage_interface(slug, "event:task-ready")
 
 
 # ---------------------------------------------------------------------------
