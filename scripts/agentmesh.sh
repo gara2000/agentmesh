@@ -262,6 +262,90 @@ cmd_attach() {
   tmux attach-session -t orchestrator
 }
 
+# ── task ───────────────────────────────────────────────────────────────────────
+
+cmd_task_create() {
+  local TITLE="" PROJECT="" FOLDER="" PRIORITY="" TYPE="" CONTENT="" CONTENT_FILE=""
+
+  # First positional arg is the title
+  if [[ $# -gt 0 && "$1" != --* ]]; then
+    TITLE="$1"
+    shift
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project)      PROJECT="$2";      shift 2 ;;
+      --folder)       FOLDER="$2";       shift 2 ;;
+      --priority)     PRIORITY="$2";     shift 2 ;;
+      --type)         TYPE="$2";         shift 2 ;;
+      --content)      CONTENT="$2";      shift 2 ;;
+      --content-file) CONTENT_FILE="$2"; shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  if [[ -z "$TITLE" ]]; then
+    echo "Error: task title is required" >&2
+    echo "Usage: agentmesh task create <title> --project <key> [--folder <name-or-id>] [options]" >&2
+    exit 1
+  fi
+
+  if [[ -z "$PROJECT" ]]; then
+    echo "Error: --project is required" >&2
+    exit 1
+  fi
+
+  # Resolve --folder to a folder ID
+  local FOLDER_ID=""
+  if [[ -n "$FOLDER" ]]; then
+    local FOLDER_LIST
+    FOLDER_LIST=$(notecove folder list --json)
+    FOLDER_ID=$(python3 -c "
+import sys, json
+folders = json.loads(sys.argv[1])
+value = sys.argv[2]
+match = next((f for f in folders if f['id'] == value), None)
+if match is None:
+    match = next((f for f in folders if f['name'].lower() == value.lower()), None)
+if match is None:
+    print('Error: folder not found: ' + value, file=sys.stderr)
+    sys.exit(1)
+print(match['id'])
+" "$FOLDER_LIST" "$FOLDER")
+    if [[ $? -ne 0 ]]; then
+      exit 1
+    fi
+  fi
+
+  # Build notecove args
+  local NOTECOVE_ARGS=("$TITLE" --project "$PROJECT")
+  [[ -n "$FOLDER_ID" ]]    && NOTECOVE_ARGS+=(--folder "$FOLDER_ID")
+  [[ -n "$PRIORITY" ]]     && NOTECOVE_ARGS+=(--priority "$PRIORITY")
+  [[ -n "$TYPE" ]]         && NOTECOVE_ARGS+=(--type "$TYPE")
+  [[ -n "$CONTENT" ]]      && NOTECOVE_ARGS+=(--content "$CONTENT")
+  [[ -n "$CONTENT_FILE" ]] && NOTECOVE_ARGS+=(--content-file "$CONTENT_FILE")
+  NOTECOVE_ARGS+=(--json)
+
+  notecove task create "${NOTECOVE_ARGS[@]}"
+}
+
+cmd_task() {
+  local SUBCMD="${1:-}"
+  shift || true
+
+  case "$SUBCMD" in
+    create) cmd_task_create "$@" ;;
+    *)
+      echo "Usage: agentmesh task <create> [options]" >&2
+      echo "" >&2
+      echo "Subcommands:" >&2
+      echo "  create  Create a new task" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # ── dispatch ───────────────────────────────────────────────────────────────────
 
 COMMAND="${1:-}"
@@ -272,14 +356,16 @@ case "$COMMAND" in
   stop)   cmd_stop   "$@" ;;
   status) cmd_status "$@" ;;
   attach) cmd_attach "$@" ;;
+  task)   cmd_task   "$@" ;;
   *)
-    echo "Usage: agentmesh <start|stop|status|attach> [options]" >&2
+    echo "Usage: agentmesh <start|stop|status|attach|task> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
-    echo "  start   Start the agentmesh system" >&2
-    echo "  stop    Stop the agentmesh system" >&2
-    echo "  status  Show component health" >&2
-    echo "  attach  Attach to the orchestrator tmux session" >&2
+    echo "  start         Start the agentmesh system" >&2
+    echo "  stop          Stop the agentmesh system" >&2
+    echo "  status        Show component health" >&2
+    echo "  attach        Attach to the orchestrator tmux session" >&2
+    echo "  task create   Create a new task in NoteCove" >&2
     exit 1
     ;;
 esac

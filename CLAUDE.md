@@ -555,10 +555,18 @@ agentmesh start --project <key>
 **Other commands:**
 
 ```bash
-agentmesh stop      # graceful shutdown: kills all windows and the workers session
-agentmesh status    # health report: components, heartbeat, active workers, mode
-agentmesh attach    # attach to the orchestrator tmux session (terminal fallback)
+agentmesh stop                    # graceful shutdown: kills all windows and the workers session
+agentmesh status                  # health report: components, heartbeat, active workers, mode
+agentmesh attach                  # attach to the orchestrator tmux session (terminal fallback)
+agentmesh task create <title> \   # create a new task in NoteCove
+  --project <key> \
+  [--folder <name-or-id>] \
+  [--priority <n>] \
+  [--type <type>] \
+  [--content <text>]
 ```
+
+`agentmesh task create` wraps `notecove task create` with folder name resolution: pass a folder name (e.g. `Triage`) or folder ID directly to `--folder`.
 
 ### Manual / Legacy
 
