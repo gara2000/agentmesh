@@ -21,7 +21,7 @@ _heartbeat_age() {
   local hb="$SIGNALS/orchestrator.heartbeat"
   [ -f "$hb" ] || { echo 9999; return; }
   local last_modified now
-  last_modified=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null)
+  last_modified=$(python3 -c "import os; print(int(os.path.getmtime('$hb')))")
   now=$(date +%s)
   echo $((now - last_modified))
 }
