@@ -177,7 +177,7 @@ cmd_stop() {
     | grep "^pr-mon-" \
     | while read -r w; do
         tmux kill-window -t "orchestrator:$w" 2>/dev/null || true
-      done
+      done || true
 
   # 3. Kill workers session
   tmux kill-session -t workers 2>/dev/null || true
