@@ -48,6 +48,11 @@ if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "${SLACK_APP
   exit 1
 fi
 
+if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "${SLACK_BOT_TOKEN:-}" ]]; then
+  echo "Warning: SLACK_BOT_TOKEN is not set. The relay cannot join the Slack channel automatically." >&2
+  echo "  If messages are not received, set SLACK_BOT_TOKEN or invite the bot to the channel manually." >&2
+fi
+
 # 0a. Init NoteCove
 cd "$AGENTMESH"
 $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
@@ -121,7 +126,7 @@ if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
     tmux kill-window -t orchestrator:slack-socket 2>/dev/null || true
   tmux new-window -t orchestrator -n slack-socket
   tmux send-keys -t orchestrator:slack-socket \
-    "SLACK_APP_TOKEN=$SLACK_APP_TOKEN python3 $SCRIPTS/slack-socket-relay.py" \
+    "SLACK_APP_TOKEN=$SLACK_APP_TOKEN SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-} python3 $SCRIPTS/slack-socket-relay.py" \
     Enter
   printf '%s\tslack-socket \tstarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 fi

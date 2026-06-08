@@ -9,10 +9,16 @@ instead of waking SlackBridge on a fixed timer, this daemon delivers events
 immediately when Slack sends them over the WebSocket connection.
 
 Usage:
-    SLACK_APP_TOKEN=xapp-... python3 slack-socket-relay.py
+    SLACK_APP_TOKEN=xapp-... SLACK_BOT_TOKEN=xoxb-... python3 slack-socket-relay.py
 
 Environment:
     SLACK_APP_TOKEN  — Slack App-Level Token (required, must start with xapp-)
+    SLACK_BOT_TOKEN  — Slack Bot Token (optional, but strongly recommended).
+                       When provided, the relay calls conversations.join at
+                       startup so the bot is a member of the configured channel
+                       (signals/slack-channel). Without channel membership,
+                       Slack does not deliver message.channels events to the
+                       Socket Mode connection.
 
 Queue entry format written to signals/slackbridge-queue:
     slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>
@@ -85,6 +91,46 @@ def append_to_queue(entry: str) -> None:
     """Append a single entry line to signals/slackbridge-queue."""
     with open(QUEUE, "a") as f:
         f.write(entry + "\n")
+
+
+def join_channel(bot_token: str, channel_id: str) -> None:
+    """Attempt to join the channel so message.channels events are delivered.
+
+    Slack only pushes message.channels events to a bot that is a member of
+    the channel. If the bot is not in the channel, the Socket Mode connection
+    is established but receives no messages — this is the most common reason
+    for the relay being connected yet silent.
+
+    For public channels, conversations.join adds the bot automatically.
+    For private channels, the bot must be invited manually.
+    """
+    from slack_sdk import WebClient  # type: ignore[import]
+
+    web = WebClient(token=bot_token)
+    try:
+        web.conversations_join(channel=channel_id)
+        print(f"[slack-socket-relay] joined channel {channel_id}", flush=True)
+        log_event("channel-joined")
+    except Exception as exc:
+        err = str(exc)
+        if "already_in_channel" in err:
+            print(
+                f"[slack-socket-relay] already a member of channel {channel_id}",
+                flush=True,
+            )
+        elif "method_not_supported_for_channel_type" in err:
+            print(
+                f"[slack-socket-relay] warning: channel {channel_id} is private — "
+                "invite the bot manually with /invite @<bot> in the channel.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[slack-socket-relay] warning: could not join channel {channel_id}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def escape_text(text: str) -> str:
@@ -174,6 +220,25 @@ def main() -> None:
 
     # Ensure signals directory exists (created by bootstrap, but guard anyway).
     SIGNALS.mkdir(parents=True, exist_ok=True)
+
+    # Attempt to join the configured Slack channel so message.channels events
+    # are delivered. Slack only pushes messages from channels the bot belongs to.
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    channel_file = SIGNALS / "slack-channel"
+    channel_id = channel_file.read_text().strip() if channel_file.exists() else ""
+
+    if channel_id:
+        if bot_token:
+            join_channel(bot_token, channel_id)
+        else:
+            print(
+                f"[slack-socket-relay] warning: SLACK_BOT_TOKEN is not set. "
+                f"Cannot verify or join channel {channel_id} automatically. "
+                "If no messages are received, set SLACK_BOT_TOKEN so the relay "
+                "can join the channel, or invite the bot manually.",
+                file=sys.stderr,
+                flush=True,
+            )
 
     # Graceful shutdown flag — set by SIGTERM or SIGINT.
     shutdown_requested = False
