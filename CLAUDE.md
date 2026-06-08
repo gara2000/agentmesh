@@ -629,9 +629,11 @@ Pass `--interface <mode>` to choose which user-facing interfaces are active:
 
 When `--interface` includes `slack`, `--slack-channel <channel-id>` is required, and `SLACK_APP_TOKEN` must be set in the environment. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read.
 
+`SLACK_BOT_TOKEN` (xoxb-...) is strongly recommended. At startup, `slack-socket-relay.py` reads `signals/slack-channel` and calls `conversations.join` using the bot token to ensure the bot is a member of the configured channel. **Without channel membership, Slack does not deliver `message.channels` events to the Socket Mode connection**, causing the relay to be connected but silent. If `SLACK_BOT_TOKEN` is not set, a warning is logged and the bot must be invited to the channel manually.
+
 Example — start with both interfaces:
 ```bash
-SLACK_APP_TOKEN=xapp-... /spokesman --project WORK --interface both --slack-channel C01234567
+SLACK_APP_TOKEN=xapp-... SLACK_BOT_TOKEN=xoxb-... agentmesh start --project WORK --interface both --slack-channel C01234567
 ```
 
 The SlackBridge skill registers itself in `signals/active-interfaces` when it starts, enabling the orchestrator to forward worker events to both Spokesman and SlackBridge simultaneously.

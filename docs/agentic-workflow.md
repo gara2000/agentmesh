@@ -285,18 +285,18 @@ flowchart TD
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
-9. **Slack socket relay** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-socket-relay.py` in `orchestrator:slack-socket`. This is a push-based WebSocket daemon using Slack Socket Mode — it fires `slackbridge-event` immediately when Slack delivers a message. Requires `SLACK_APP_TOKEN` to be set in the environment.
+9. **Slack socket relay** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-socket-relay.py` in `orchestrator:slack-socket`. This is a push-based WebSocket daemon using Slack Socket Mode — it fires `slackbridge-event` immediately when Slack delivers a message. Requires `SLACK_APP_TOKEN` to be set in the environment. If `SLACK_BOT_TOKEN` is also set, the relay calls `conversations.join` at startup to ensure the bot is a member of the configured channel — **without channel membership, Slack does not deliver `message.channels` events**, so the relay would be connected but receive nothing.
 
 Usage:
 ```bash
 # Spokesman only (default)
 bash ~/agentmesh/scripts/bootstrap.sh --project WORK [--profile <id>] [--mode <mode>] [--max-workers <n>]
 
-# With Slack interface (adds slack-socket window; SLACK_APP_TOKEN must be set)
-SLACK_APP_TOKEN=xapp-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface slack --slack-channel C01234567
+# With Slack interface (SLACK_APP_TOKEN required; SLACK_BOT_TOKEN strongly recommended)
+SLACK_APP_TOKEN=xapp-... SLACK_BOT_TOKEN=xoxb-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface slack --slack-channel C01234567
 
 # Both Spokesman and Slack
-SLACK_APP_TOKEN=xapp-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface both --slack-channel C01234567
+SLACK_APP_TOKEN=xapp-... SLACK_BOT_TOKEN=xoxb-... bash ~/agentmesh/scripts/bootstrap.sh --project WORK --interface both --slack-channel C01234567
 ```
 
 ---
