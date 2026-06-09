@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog, orchestrator.py
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>] [--review-limit <n>]
-#                     [--interface spokesman|slack|both] [--slack-channel <channel-id>] [--slack-poller-interval <seconds>]
+#                     [--interface spokesman|slack|both] [--slack-channel <channel-id>]
+#                     [--fast-interval <seconds>] [--slow-interval <seconds>]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -19,7 +20,8 @@ MAX_WORKERS="10"
 REVIEW_LIMIT="3"
 INTERFACE="spokesman"
 SLACK_CHANNEL=""
-SLACK_POLLER_INTERVAL="5"
+FAST_INTERVAL="30"
+SLOW_INTERVAL="60"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,7 +32,8 @@ while [[ $# -gt 0 ]]; do
     --review-limit) REVIEW_LIMIT="$2"; shift 2 ;;
     --interface) INTERFACE="$2"; shift 2 ;;
     --slack-channel) SLACK_CHANNEL="$2"; shift 2 ;;
-    --slack-poller-interval) SLACK_POLLER_INTERVAL="$2"; shift 2 ;;
+    --fast-interval) FAST_INTERVAL="$2"; shift 2 ;;
+    --slow-interval) SLOW_INTERVAL="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -118,7 +121,7 @@ if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
     tmux kill-window -t orchestrator:slack-poller 2>/dev/null || true
   tmux new-window -t orchestrator -n slack-poller
   tmux send-keys -t orchestrator:slack-poller \
-    "bash $SCRIPTS/slack-poller.sh --interval $SLACK_POLLER_INTERVAL" \
+    "bash $SCRIPTS/slack-poller.sh --fast-interval $FAST_INTERVAL --slow-interval $SLOW_INTERVAL" \
     Enter
 fi
 
