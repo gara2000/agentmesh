@@ -34,6 +34,8 @@ done
 printf '%s\tslack-poller \tstarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 echo "[slack-poller] started — fast=${FAST_INTERVAL}s, slow=${SLOW_INTERVAL}s"
 
+was_paused=0
+
 while true; do
   # Check for tasks in Attention state to choose the appropriate interval
   attention_count=$($NOTECOVE task list --state Attention --json 2>/dev/null \
@@ -48,6 +50,21 @@ while true; do
   fi
 
   sleep "$interval"
+
+  # Check for pause flag — skip waking SlackBridge if paused
+  if [ -f "$AGENTMESH/signals/slack-poller-paused" ]; then
+    if [[ "$was_paused" -eq 0 ]]; then
+      printf '%s\tslack-poller \tpaused\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+      was_paused=1
+    fi
+    continue
+  fi
+
+  if [[ "$was_paused" -eq 1 ]]; then
+    printf '%s\tslack-poller \tresumed\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+    was_paused=0
+  fi
+
   printf '%s\tslack-poller \ttick-%s\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tick_type" >> "$LOG"
   tmux wait-for -S slackbridge-event
 done
