@@ -252,12 +252,15 @@ esac
 
 ### 1d. Check for new Slack replies
 
-After draining the queue, check each active task's thread for new replies:
+After draining the queue, check threads only for tasks currently in `Attention` state — tasks in `Doing` have no pending user replies and reading their threads is pure waste:
 
 ```bash
-for _thread_file in ~/agentmesh/signals/*.slack-thread; do
+_attention_slugs_for_replies=$(notecove task list --project <PROJECT> --state Attention --json | \
+  python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]" 2>/dev/null || echo "")
+
+for _slug in $_attention_slugs_for_replies; do
+  _thread_file=~/agentmesh/signals/${_slug}.slack-thread
   [ -f "$_thread_file" ] || continue
-  _slug=$(basename "$_thread_file" .slack-thread)
   _thread_ts=$(cat "$_thread_file")
   _last_ts_file=~/agentmesh/signals/${_slug}.slack-last-ts
   _last_ts=$(cat "$_last_ts_file" 2>/dev/null || echo "0")
