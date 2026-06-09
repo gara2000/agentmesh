@@ -257,6 +257,8 @@ flowchart TD
 | `agentmesh stop` | Graceful shutdown: send shutdown command to orchestrator.py, kill all windows, kill workers session |
 | `agentmesh status` | Health report: component status, heartbeat age, active workers, mode, active interfaces |
 | `agentmesh attach` | Attach to the `orchestrator` tmux session (terminal fallback) |
+| `agentmesh pause-poller` | Pause the Slack poller (creates `signals/slack-poller-paused`) |
+| `agentmesh resume-poller` | Resume the Slack poller (removes `signals/slack-poller-paused`) |
 
 **`agentmesh start` options:**
 

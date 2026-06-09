@@ -228,7 +228,11 @@ cmd_status() {
 
   # slack-poller
   if _window_exists "slack-poller"; then
-    printf "%-22s ✓ running\n" "slack-poller"
+    if [ -f "$SIGNALS/slack-poller-paused" ]; then
+      printf "%-22s ✓ running  (paused)\n" "slack-poller"
+    else
+      printf "%-22s ✓ running\n" "slack-poller"
+    fi
   else
     printf "%-22s ✗ not running\n" "slack-poller"
   fi
@@ -256,6 +260,18 @@ cmd_status() {
     interfaces=$(tr '\n' ',' < "$SIGNALS/active-interfaces" | sed 's/,$//')
   fi
   printf "%-22s %s\n" "active interfaces" "$interfaces"
+}
+
+# ── pause-poller / resume-poller ───────────────────────────────────────────────
+
+cmd_pause_poller() {
+  touch "$SIGNALS/slack-poller-paused"
+  echo "slack-poller paused."
+}
+
+cmd_resume_poller() {
+  rm -f "$SIGNALS/slack-poller-paused"
+  echo "slack-poller resumed."
 }
 
 # ── attach ─────────────────────────────────────────────────────────────────────
@@ -354,20 +370,24 @@ COMMAND="${1:-}"
 shift || true
 
 case "$COMMAND" in
-  start)  cmd_start  "$@" ;;
-  stop)   cmd_stop   "$@" ;;
-  status) cmd_status "$@" ;;
-  attach) cmd_attach "$@" ;;
-  task)   cmd_task   "$@" ;;
+  start)         cmd_start         "$@" ;;
+  stop)          cmd_stop          "$@" ;;
+  status)        cmd_status        "$@" ;;
+  attach)        cmd_attach        "$@" ;;
+  task)          cmd_task          "$@" ;;
+  pause-poller)  cmd_pause_poller  "$@" ;;
+  resume-poller) cmd_resume_poller "$@" ;;
   *)
-    echo "Usage: agentmesh <start|stop|status|attach|task> [options]" >&2
+    echo "Usage: agentmesh <start|stop|status|attach|task|pause-poller|resume-poller> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
-    echo "  start         Start the agentmesh system" >&2
-    echo "  stop          Stop the agentmesh system" >&2
-    echo "  status        Show component health" >&2
-    echo "  attach        Attach to the orchestrator tmux session" >&2
-    echo "  task create   Create a new task in NoteCove" >&2
+    echo "  start          Start the agentmesh system" >&2
+    echo "  stop           Stop the agentmesh system" >&2
+    echo "  status         Show component health" >&2
+    echo "  attach         Attach to the orchestrator tmux session" >&2
+    echo "  task create    Create a new task in NoteCove" >&2
+    echo "  pause-poller   Pause the Slack poller (creates signals/slack-poller-paused)" >&2
+    echo "  resume-poller  Resume the Slack poller (removes signals/slack-poller-paused)" >&2
     exit 1
     ;;
 esac
