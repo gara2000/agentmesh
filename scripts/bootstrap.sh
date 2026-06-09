@@ -3,6 +3,7 @@
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>] [--review-limit <n>]
 #                     [--interface spokesman|slack|both] [--slack-channel <channel-id>]
 #                     [--fast-interval <seconds>] [--slow-interval <seconds>]
+#                     [--slack-idle-pause <minutes>]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -22,6 +23,7 @@ INTERFACE="spokesman"
 SLACK_CHANNEL=""
 FAST_INTERVAL="30"
 SLOW_INTERVAL="60"
+SLACK_IDLE_PAUSE="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --slack-channel) SLACK_CHANNEL="$2"; shift 2 ;;
     --fast-interval) FAST_INTERVAL="$2"; shift 2 ;;
     --slow-interval) SLOW_INTERVAL="$2"; shift 2 ;;
+    --slack-idle-pause) SLACK_IDLE_PAUSE="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -69,6 +72,15 @@ rm -f "$SIGNALS/"*.review-start
 rm -f "$SIGNALS/"*.plan-review-count
 rm -f "$SIGNALS/"*.pr-review-count
 rm -f "$SIGNALS/"*.crash-count
+rm -f "$SIGNALS/slack-poller-paused"
+rm -f "$SIGNALS/slack-poller-auto-paused"
+rm -f "$SIGNALS/slack-bridge-last-user-msg-ts"
+# Write idle-pause config (0 = disabled)
+if [[ "$SLACK_IDLE_PAUSE" -gt 0 ]] 2>/dev/null; then
+  echo "$SLACK_IDLE_PAUSE" > "$SIGNALS/slack-idle-pause-minutes"
+else
+  rm -f "$SIGNALS/slack-idle-pause-minutes"
+fi
 
 # Persist orchestrator launch command so Spokesman can restart it on stale heartbeat
 echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" > "$SIGNALS/orchestrator-restart-cmd"

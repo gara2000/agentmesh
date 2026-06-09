@@ -48,6 +48,7 @@ cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
   local MAX_WORKERS="10" REVIEW_LIMIT="3" INTERFACE="spokesman"
   local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="30" SLOW_INTERVAL="60"
+  local SLACK_IDLE_PAUSE="0"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -61,6 +62,7 @@ cmd_start() {
       --channel|--slack-channel) SLACK_CHANNEL="$2";    shift 2 ;;
       --fast-interval)        FAST_INTERVAL="$2";        shift 2 ;;
       --slow-interval)        SLOW_INTERVAL="$2";        shift 2 ;;
+      --slack-idle-pause)     SLACK_IDLE_PAUSE="$2";     shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -105,7 +107,8 @@ cmd_start() {
       --interface "$INTERFACE" \
       ${SLACK_CHANNEL:+--slack-channel "$SLACK_CHANNEL"} \
       --fast-interval "$FAST_INTERVAL" \
-      --slow-interval "$SLOW_INTERVAL"
+      --slow-interval "$SLOW_INTERVAL" \
+      --slack-idle-pause "$SLACK_IDLE_PAUSE"
     # Persist mode for Spokesman to read on recovery
     echo "$MODE" > "$SIGNALS/mode"
   fi
@@ -260,6 +263,13 @@ cmd_status() {
     interfaces=$(tr '\n' ',' < "$SIGNALS/active-interfaces" | sed 's/,$//')
   fi
   printf "%-22s %s\n" "active interfaces" "$interfaces"
+
+  # slack idle-pause setting
+  if [ -f "$SIGNALS/slack-idle-pause-minutes" ]; then
+    local idle_mins
+    idle_mins=$(cat "$SIGNALS/slack-idle-pause-minutes")
+    printf "%-22s %s min\n" "slack idle-pause" "$idle_mins"
+  fi
 }
 
 # ── pause-poller / resume-poller ───────────────────────────────────────────────
