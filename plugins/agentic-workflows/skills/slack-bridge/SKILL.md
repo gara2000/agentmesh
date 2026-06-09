@@ -432,6 +432,16 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → send_cmd - mode <mode>  (write "<mode>" to orchestrator-cmds as "orchestrator|mode|<mode>")
   → Post to channel: "Mode set to <mode>."
 
+/agentmesh pause
+  → touch ~/agentmesh/signals/slack-poller-paused
+  → Post to channel: "⏸ Slack polling paused. Send /agentmesh resume to restart."
+  → Log: slack-bridge  poller-paused  -
+
+/agentmesh resume
+  → rm -f ~/agentmesh/signals/slack-poller-paused
+  → Post to channel: "▶️ Slack polling resumed."
+  → Log: slack-bridge  poller-resumed  -
+
 /agentmesh scan
   → send_cmd - scan
   → Post to channel: "🔍 Scan triggered — orchestrator will pick up any new ready tasks."
@@ -459,6 +469,8 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
      /agentmesh list-tasks [--state <state>]  — List tasks filtered by state
      /agentmesh verbosity low|medium|high     — Set Slack message verbosity
      /agentmesh mode standard|auto-review     — Set orchestrator review mode
+     /agentmesh pause                         — Pause Slack polling
+     /agentmesh resume                        — Resume Slack polling
      /agentmesh scan                          — Trigger orchestrator to pick up new ready tasks
      /agentmesh release patch|minor|major     — Cut a plugin release
      /agentmesh shutdown                      — Shut down the SlackBridge
