@@ -47,7 +47,7 @@ _wait_for_repl() {
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
   local MAX_WORKERS="10" REVIEW_LIMIT="3" INTERFACE="spokesman"
-  local VERBOSITY="medium" SLACK_CHANNEL="" SLACK_POLLER_INTERVAL="5"
+  local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="30" SLOW_INTERVAL="60"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,7 +59,8 @@ cmd_start() {
       --interface)            INTERFACE="$2";            shift 2 ;;
       --verbosity)            VERBOSITY="$2";            shift 2 ;;
       --channel|--slack-channel) SLACK_CHANNEL="$2";    shift 2 ;;
-      --slack-poller-interval) SLACK_POLLER_INTERVAL="$2"; shift 2 ;;
+      --fast-interval)        FAST_INTERVAL="$2";        shift 2 ;;
+      --slow-interval)        SLOW_INTERVAL="$2";        shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -103,7 +104,8 @@ cmd_start() {
       --review-limit "$REVIEW_LIMIT" \
       --interface "$INTERFACE" \
       ${SLACK_CHANNEL:+--slack-channel "$SLACK_CHANNEL"} \
-      --slack-poller-interval "$SLACK_POLLER_INTERVAL"
+      --fast-interval "$FAST_INTERVAL" \
+      --slow-interval "$SLOW_INTERVAL"
     # Persist mode for Spokesman to read on recovery
     echo "$MODE" > "$SIGNALS/mode"
   fi
@@ -147,7 +149,7 @@ cmd_start() {
     else
       tmux new-window -t "orchestrator:" -n slack-poller
       tmux send-keys -t "orchestrator:slack-poller" \
-        "bash $SCRIPTS/slack-poller.sh --interval $SLACK_POLLER_INTERVAL" \
+        "bash $SCRIPTS/slack-poller.sh --fast-interval $FAST_INTERVAL --slow-interval $SLOW_INTERVAL" \
         Enter
       echo "  ✓ slack-poller started (orchestrator:slack-poller)"
     fi
