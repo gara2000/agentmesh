@@ -1,8 +1,8 @@
 ---
 name: slack-bridge
-description: Full Spokesman peer for AgentMesh that communicates via Slack instead of a tmux terminal. Receives worker events via slackbridge-queue, posts to Slack threads via the Slack MCP, and translates Slack replies into orchestrator commands.
+description: Full Spokesman peer for AgentMesh that communicates via Slack instead of a tmux terminal. Receives worker events via slackbridge-queue, posts to Slack threads via slack-send.py (slack_sdk.WebClient), and translates Slack replies into orchestrator commands.
 disable-model-invocation: true
-allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *), mcp__slack__*
+allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *), mcp__slack__slack_search_channels, mcp__slack__slack_read_channel, mcp__slack__slack_read_thread, mcp__slack__slack_read_user_profile, mcp__slack__slack_search_public, mcp__slack__slack_search_public_and_private, mcp__slack__slack_search_users, mcp__slack__slack_list_channel_members, mcp__slack__slack_get_reactions, mcp__slack__slack_read_file, mcp__slack__slack_read_canvas, mcp__slack__slack_search_emojis
 hint: "Run the AgentMesh SlackBridge (Slack user-interaction layer). Required: --project <key>, --channel <slack-channel-id>. Optional: --verbosity low|medium|high (default: medium)"
 ---
 
@@ -10,12 +10,14 @@ hint: "Run the AgentMesh SlackBridge (Slack user-interaction layer). Required: -
 
 **Arguments:** $ARGUMENTS
 
-## Phase 0: Verify Slack MCP is configured
+## Phase 0: Verify Slack integration
 
-Before doing anything else, verify that the Slack MCP is available by attempting a lightweight call:
+Before doing anything else, verify both the Slack MCP (used for reading) and `SLACK_BOT_TOKEN` (used for sending) are available:
+
+**1. Verify Slack MCP (reading)** — attempt a lightweight call:
 
 - Call `mcp__slack__slack_search_channels` with query `test` and limit `1`.
-- If the call succeeds (even with zero results) → Slack MCP is configured; proceed normally.
+- If the call succeeds (even with zero results) → Slack MCP is configured; proceed.
 - If the call fails for any reason (tool unavailable, MCP server not running, connection error, auth error) → print the following message to the terminal and stop immediately:
 
 ```
@@ -27,7 +29,46 @@ See: https://github.com/modelcontextprotocol/servers for setup instructions.
 Once the Slack MCP is configured, re-run /slack-bridge to start the SlackBridge.
 ```
 
-Do not proceed to argument parsing or any further steps if this check fails.
+**2. Verify sending capability** — check that `SLACK_BOT_TOKEN` is set and `slack_sdk` is installed:
+
+```bash
+echo "test" | python3 ~/agentmesh/scripts/slack-send.py --help > /dev/null 2>&1 || \
+  { echo "ERROR: slack-send.py unavailable (slack_sdk missing?). Run: pip install slack-sdk"; exit 1; }
+
+if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+  echo "ERROR: SLACK_BOT_TOKEN environment variable is not set."
+  echo "Provide a Slack Bot Token (xoxb-...) via SLACK_BOT_TOKEN."
+  exit 1
+fi
+```
+
+If either check fails, stop immediately and print the following setup guide for `SLACK_BOT_TOKEN`:
+
+```
+ERROR: SLACK_BOT_TOKEN is not set.
+
+To configure your Slack app for sending messages (slack-send.py):
+
+1. Go to https://api.slack.com/apps → open your existing Slack app
+2. In "OAuth & Permissions" → "Bot Token Scopes", add these scopes:
+     chat:write          — post messages to channels
+     chat:write.public   — post in channels the bot hasn't joined (optional)
+3. Reinstall the app to your workspace (banner appears at top of the page)
+4. Copy the "Bot User OAuth Token" (starts with xoxb-)
+5. Set it in your environment before starting AgentMesh:
+     export SLACK_BOT_TOKEN=xoxb-...
+   Or add it to ~/.zshrc / ~/.bashrc for persistence.
+
+Note: SLACK_BOT_TOKEN (xoxb-...) is the Bot Token for Web API calls.
+      SLACK_APP_TOKEN (xapp-...) is the App-Level Token for Socket Mode.
+      Both come from the same Slack app — check "OAuth & Permissions" for
+      the Bot Token and "Basic Information" → "App-Level Tokens" for the
+      App-Level Token.
+
+Once SLACK_BOT_TOKEN is set, re-run /slack-bridge to start the SlackBridge.
+```
+
+Do not proceed to argument parsing or any further steps if either check fails.
 
 ---
 
@@ -158,9 +199,11 @@ fi
 
 ### 0d. Post startup message
 
-Post to the configured channel via Slack MCP:
-```
-agentmesh SlackBridge is running. Project: {PROJECT}. Verbosity: {VERBOSITY}.
+Post to the configured channel via `slack-send.py`:
+```bash
+printf 'agentmesh SlackBridge is running. Project: %s. Verbosity: %s.' \
+    "<PROJECT>" "<VERBOSITY>" | \
+    python3 ~/agentmesh/scripts/slack-send.py post --channel "<CHANNEL_ID>"
 ```
 
 ---
@@ -493,8 +536,23 @@ Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each itera
 
 ### Thread management
 
-- **No thread exists** for a slug: call `mcp__slack__post_message` to channel, store the returned `ts` (message timestamp) in `signals/<slug>.slack-thread`. All subsequent posts for this slug use `thread_ts=<stored-ts>` to reply in the thread. Log `slack-bridge  thread-created  <slug>` to `events.log`.
-- **Thread exists**: call `mcp__slack__post_message` with `thread_ts=<stored-ts>` to reply.
+All Slack messages are sent via `python3 ~/agentmesh/scripts/slack-send.py` (uses `SLACK_BOT_TOKEN`). Text is always passed via stdin.
+
+- **No thread exists** for a slug: call `slack-send.py post --channel "$CHANNEL"` (text from stdin), parse the returned JSON to extract `ts`, store it in `signals/<slug>.slack-thread`. All subsequent posts for this slug pass `--thread-ts <stored-ts>` to reply in the thread. Log `slack-bridge  thread-created  <slug>` to `events.log`.
+
+```bash
+_result=$(printf '%s' "$_header_text" | python3 ~/agentmesh/scripts/slack-send.py post --channel "$CHANNEL")
+_thread_ts=$(echo "$_result" | python3 -c "import sys,json; print(json.load(sys.stdin)['ts'])")
+echo "$_thread_ts" > ~/agentmesh/signals/${slug}.slack-thread
+printf '%s\tslack-bridge  \tthread-created\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$slug" >> "$LOG"
+```
+
+- **Thread exists**: call `slack-send.py post --channel "$CHANNEL" --thread-ts <stored-ts>` (text from stdin) to reply.
+
+```bash
+_thread_ts=$(cat ~/agentmesh/signals/${slug}.slack-thread)
+printf '%s' "$_reply_text" | python3 ~/agentmesh/scripts/slack-send.py post --channel "$CHANNEL" --thread-ts "$_thread_ts"
+```
 
 ### Message prefix convention
 
@@ -508,7 +566,7 @@ This uses Slack's blockquote formatting (renders a vertical bar on the left side
 
 Do **not** apply the prefix to:
 - Channel-level header posts (📋 *slug* — title format)
-- `mcp__slack__update_message` calls (header updates)
+- `slack-send.py update` calls (header updates)
 
 Header format (channel-level post, initial creation and updates):
 ```
@@ -519,16 +577,17 @@ State: <state> | Priority: <P>
 
 ### Thread header updates
 
-After each event that changes the task's visible state, update the thread header using `mcp__slack__update_message`. Read the current thread ts, build the new header text, and call the tool:
+After each event that changes the task's visible state, update the thread header using `slack-send.py update`. Read the current thread ts, build the new header text, and call the script:
 
 ```bash
 _thread_ts=$(cat ~/agentmesh/signals/<slug>.slack-thread 2>/dev/null || echo "")
 if [ -n "$_thread_ts" ]; then
   _pr_suffix=""
   [ -n "${_pr_url:-}" ] && _pr_suffix=" | PR: ${_pr_url}"
-  mcp__slack__update_message channel="<CHANNEL_ID>" ts="$_thread_ts" \
-    text="📋 *${slug}* — ${title}
-State: <new-state> | Priority: <P>${_pr_suffix}"
+  printf '📋 *%s* — %s\nState: %s | Priority: %s%s' \
+    "$slug" "$title" "<new-state>" "<P>" "$_pr_suffix" | \
+    python3 ~/agentmesh/scripts/slack-send.py update \
+    --channel "$CHANNEL" --ts "$_thread_ts"
   printf '%s\tslack-bridge  \tthread-header-updated\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$slug" >> "$LOG"
 fi
 ```
@@ -750,8 +809,9 @@ grep -v "^slackbridge$" ~/agentmesh/signals/active-interfaces > /tmp/sb_tmp && m
 ```
 
 **Step 2 — Post to Slack channel:**
-```
-agentmesh SlackBridge stopped.
+```bash
+printf 'agentmesh SlackBridge stopped.' | \
+    python3 ~/agentmesh/scripts/slack-send.py post --channel "$CHANNEL"
 ```
 
 **Step 3 — Exit.** Do NOT kill other processes.
@@ -770,5 +830,5 @@ agentmesh SlackBridge stopped.
 - **thread_ts is the anchor** — the `signals/<slug>.slack-thread` file stores the top-level message ts. All replies use it as `thread_ts`. Never lose or overwrite it.
 - **last-ts tracking prevents duplicate reply processing** — `signals/<slug>.slack-last-ts` stores the timestamp of the last processed reply; skip replies with `ts <= last_ts`.
 - **Slash commands use channel-last-ts** — `signals/slack-channel-last-ts` stores the timestamp of the last processed channel message; skip messages with `ts <= channel_last_ts`.
-- **Always update the thread header on state transitions** — after each event that changes task state, call `mcp__slack__update_message` on the stored `thread_ts`. See "Thread header updates" table. Skip the update silently if `signals/<slug>.slack-thread` does not exist.
+- **Always update the thread header on state transitions** — after each event that changes task state, call `slack-send.py update` with the stored `thread_ts`. See "Thread header updates" table. Skip the update silently if `signals/<slug>.slack-thread` does not exist.
 - **Always post a final thread reply on terminal states** — when a task reaches Done or Won't Do, post `✅ *<slug>* complete.` or `🚫 *<slug>* cancelled.` as a thread reply after updating the header. This closes the thread visually without deleting it.

@@ -472,10 +472,33 @@ The SlackBridge (`/slack-bridge` skill) is an optional full Spokesman peer that 
 
 - **Woken by `slackbridge-event`** — fired by `orchestrator.py` (on user-attention events) or by `slack-socket-relay.py` (immediately on incoming Slack messages via WebSocket)
 - **Drains `slackbridge-queue`** — two entry types: orchestrator-forwarded `<slug>:<event-type>` entries (worker events) and relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>` entries (inbound Slack messages from the relay); no MCP thread polling needed
-- **Posts to Slack via MCP** — uses the native Slack MCP server (already configured in `~/.claude.json`) for all Slack interactions; no separate bot token or Slack app required
+- **Sends via `slack-send.py`** — all outbound messages use `scripts/slack-send.py` (wraps `slack_sdk.WebClient` with `SLACK_BOT_TOKEN`); no Slack MCP write tools are used for sending
 - **Thread-per-task model** — first event for a slug creates a top-level channel message (header); all subsequent events post as replies in the thread; `signals/<slug>.slack-thread` stores the header `ts` for the lifetime of the task
-- **Thread header updates** — after each state transition, SlackBridge edits the header message via `mcp__slack__update_message` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
+- **Thread header updates** — after each state transition, SlackBridge edits the header message via `slack-send.py update` to reflect the current state (e.g. `State: Attention (plan review) | Priority: P2 | PR: <url>`); this keeps the channel top-level view always current
 - **Thread cleanup** — when a task reaches Done or Won't Do, SlackBridge posts a final reply (`✅ complete.` or `🚫 cancelled.`) and updates the header to the terminal state; the thread is never deleted
+
+### Prerequisites
+
+SlackBridge requires two Slack tokens from the same Slack app:
+
+| Token | Variable | Starts with | Used by | Where to find |
+|---|---|---|---|---|
+| App-Level Token | `SLACK_APP_TOKEN` | `xapp-` | `slack-socket-relay.py` (Socket Mode) | App settings → Basic Information → App-Level Tokens |
+| Bot Token | `SLACK_BOT_TOKEN` | `xoxb-` | `slack-send.py` (Web API sending) | App settings → OAuth & Permissions → Bot User OAuth Token |
+
+**To configure `SLACK_BOT_TOKEN` for sending messages:**
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → open your Slack app
+2. In **OAuth & Permissions** → **Bot Token Scopes**, add:
+   - `chat:write` — post messages to channels
+   - `chat:write.public` — post in channels the bot hasn't joined (optional)
+3. Reinstall the app to your workspace (banner appears at top of the page)
+4. Copy the **Bot User OAuth Token** (`xoxb-...`)
+5. Set it before starting AgentMesh:
+   ```bash
+   export SLACK_BOT_TOKEN=xoxb-...
+   ```
+   Or add to `~/.zshrc` / `~/.bashrc` for persistence.
 
 ### Starting SlackBridge
 

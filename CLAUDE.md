@@ -131,6 +131,7 @@ Responsibilities:
 - Block on `slackbridge-event` (fired by orchestrator.py on worker events and by `slack-socket-relay.py` on inbound Slack messages)
 - Drain `signals/slackbridge-queue` and dispatch each entry: orchestrator-forwarded `<slug>:<event-type>` entries post to Slack threads; relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text>` entries are matched against task threads and processed as user replies — no MCP thread polling needed
 - Process user replies from relay-pushed queue entries for commands (`approve`, `feedback: <text>`, `abort`, etc.)
+- Send all messages to Slack via `slack-send.py` (uses `SLACK_BOT_TOKEN` + `slack_sdk.WebClient`) instead of MCP write tools
 - Parse top-level channel messages starting with `/agentmesh` as slash commands
 - Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
 - Deregister from `signals/active-interfaces` and post a shutdown message on exit
@@ -349,6 +350,7 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
 │   ├── slack-socket-relay.py # Socket Mode WebSocket relay: forwards inbound Slack messages to slackbridge-queue and fires slackbridge-event
+│   ├── slack-send.py       # Slack message sender via slack_sdk.WebClient; replaces MCP for sending; used by SlackBridge
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
 │   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
@@ -629,14 +631,45 @@ Pass `--interface <mode>` to choose which user-facing interfaces are active:
 | `slack` | Slack integration only: starts `slack-socket-relay.py` to deliver messages from Slack to SlackBridge |
 | `both` | Both Spokesman and Slack interfaces active simultaneously |
 
-When `--interface` includes `slack`, `--slack-channel <channel-id>` is required, and `SLACK_APP_TOKEN` must be set in the environment. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read.
+When `--interface` includes `slack`, `--slack-channel <channel-id>` is required, and **both** Slack tokens must be set in the environment:
+
+| Token | Variable | Starts with | Used by |
+|---|---|---|---|
+| App-Level Token | `SLACK_APP_TOKEN` | `xapp-` | `slack-socket-relay.py` — Socket Mode (receiving messages) |
+| Bot Token | `SLACK_BOT_TOKEN` | `xoxb-` | `slack-send.py` — Web API (sending messages) |
 
 Example — start with both interfaces:
 ```bash
-SLACK_APP_TOKEN=xapp-... /spokesman --project WORK --interface both --slack-channel C01234567
+SLACK_APP_TOKEN=xapp-... SLACK_BOT_TOKEN=xoxb-... agentmesh start --project WORK --interface both --channel C01234567
 ```
 
 The SlackBridge skill registers itself in `signals/active-interfaces` when it starts, enabling the orchestrator to forward worker events to both Spokesman and SlackBridge simultaneously.
+
+### Slack App Setup
+
+Both tokens come from the same Slack app. To configure your app:
+
+**App-Level Token (`SLACK_APP_TOKEN`):**
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → open your app
+2. **Basic Information** → **App-Level Tokens** → Generate Token
+3. Add the `connections:write` scope and click Generate
+4. Copy the token (starts with `xapp-`)
+
+**Bot Token (`SLACK_BOT_TOKEN`):**
+1. Same app → **OAuth & Permissions** → **Bot Token Scopes**, add:
+   - `chat:write` — post messages to channels
+   - `chat:write.public` — post in channels the bot hasn't joined (optional but recommended)
+2. **Install App** (or reinstall if scopes were changed) → **Install to Workspace**
+3. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
+
+**Enable Socket Mode:**
+1. **Socket Mode** (left sidebar) → toggle **Enable Socket Mode** on
+
+Set both tokens before starting AgentMesh (add to `~/.zshrc` for persistence):
+```bash
+export SLACK_APP_TOKEN=xapp-...
+export SLACK_BOT_TOKEN=xoxb-...
+```
 
 ### Legacy Entry Point
 
