@@ -51,8 +51,10 @@ while true; do
 
   sleep "$interval"
 
-  # Check for pause flag — skip waking SlackBridge if paused
-  if [ -f "$AGENTMESH/signals/slack-poller-paused" ]; then
+  # Check for pause flag or processing flag — skip waking SlackBridge if either is set
+  # slack-poller-paused: manual or auto-pause (user-facing)
+  # slack-poller-processing: set by SlackBridge while it is processing events (not listening)
+  if [ -f "$AGENTMESH/signals/slack-poller-paused" ] || [ -f "$AGENTMESH/signals/slack-poller-processing" ]; then
     if [[ "$was_paused" -eq 0 ]]; then
       printf '%s\tslack-poller \tpaused\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
       was_paused=1

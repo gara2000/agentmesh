@@ -16,6 +16,7 @@ rm -f "$AGENTMESH/signals/"*.reviewed
 rm -f "$AGENTMESH/signals/"*.review-start
 rm -f "$AGENTMESH/signals/triage_folder"
 rm -f "$AGENTMESH/signals/mode"
+rm -f "$AGENTMESH/signals/slack-poller-processing"
 
 # Kill the workers session entirely (all worker and reviewer windows)
 tmux kill-session -t workers 2>/dev/null || true

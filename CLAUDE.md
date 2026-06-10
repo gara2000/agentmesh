@@ -375,6 +375,7 @@ agentmesh/
     ├── slack-idle-pause-minutes    # idle-pause threshold in minutes written by bootstrap.sh; absent = feature disabled
     ├── slack-bridge-last-user-msg-ts # unix timestamp of last user message; written by SlackBridge on each user interaction; used for idle-pause
     ├── slack-poller-auto-paused    # sentinel flag written by SlackBridge alongside slack-poller-paused when auto-pause triggers; absent = manual pause
+    ├── slack-poller-processing     # flag set by SlackBridge while it is processing events (not listening); poller skips firing when this flag is present
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug

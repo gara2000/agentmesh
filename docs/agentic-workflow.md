@@ -287,7 +287,7 @@ flowchart TD
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
 8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
-9. **Slack socket relay** (optional) — when `--interface slack` or `--interface both` is passed, starts `scripts/slack-socket-relay.py` in `orchestrator:slack-socket`. This is a push-based WebSocket daemon using Slack Socket Mode — it fires `slackbridge-event` immediately when Slack delivers a message. Requires `SLACK_APP_TOKEN` to be set in the environment.
+9. **Slack poller** (optional) — when `--interface slack` or `--interface both` is passed, creates `signals/slack-poller-processing` (so the poller won't fire before SlackBridge is ready) and starts `scripts/slack-poller.sh` in `orchestrator:slack-poller`.
 
 Usage:
 ```bash
@@ -511,6 +511,7 @@ Or use the full `--interface both` approach to run Spokesman and SlackBridge tog
 | `signals/slack-channel-last-ts` | Timestamp of last processed top-level channel message (slash commands) |
 | `signals/<slug>.slack-thread` | Slack `ts` of the header message for the task's thread |
 | `signals/<slug>.slack-last-ts` | Timestamp updated each time a relay-pushed reply is processed (for monitoring; no longer used for deduplication filtering) |
+| `signals/slack-poller-processing` | Flag set by SlackBridge while processing events (not listening); `slack-poller.sh` skips firing `slackbridge-event` when present, preventing signal stacking |
 
 ---
 
