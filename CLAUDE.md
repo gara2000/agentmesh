@@ -372,6 +372,9 @@ agentmesh/
     ├── slack-channel-last-ts       # timestamp of last processed top-level channel message; used by SlackBridge to avoid reprocessing
     ├── <slug>.slack-thread         # Slack thread timestamp written by SlackBridge when it starts a thread for the task
     ├── <slug>.slack-last-ts        # timestamp of last processed reply in the task's Slack thread; used by SlackBridge to avoid reprocessing
+    ├── slack-idle-pause-minutes    # idle-pause threshold in minutes written by bootstrap.sh; absent = feature disabled
+    ├── slack-bridge-last-user-msg-ts # unix timestamp of last user message; written by SlackBridge on each user interaction; used for idle-pause
+    ├── slack-poller-auto-paused    # sentinel flag written by SlackBridge alongside slack-poller-paused when auto-pause triggers; absent = manual pause
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug
@@ -443,6 +446,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  slack-bridge    slash-command               -
 2026-04-26T...  slack-bridge    poller-paused               -
 2026-04-26T...  slack-bridge    poller-resumed              -
+2026-04-26T...  slack-bridge    auto-paused-idle            -
+2026-04-26T...  slack-bridge    auto-resumed                -
 2026-04-26T...  slack-bridge    shutdown                    -
 2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
 2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
@@ -553,6 +558,7 @@ agentmesh start --project <key>
                 [--interface spokesman|slack|both]      # default: spokesman
                 [--channel <slack-channel-id>]          # required if --interface includes slack
                 [--verbosity low|medium|high]           # default: medium (SlackBridge only)
+                [--slack-idle-pause <minutes>]          # default: 0 (disabled); auto-pause polling after N min of Slack inactivity
 ```
 
 **Other commands:**

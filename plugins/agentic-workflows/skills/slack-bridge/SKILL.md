@@ -82,6 +82,8 @@ echo "slackbridge" >> ~/agentmesh/signals/active-interfaces
 ```bash
 echo "<verbosity-level>" > ~/agentmesh/signals/slack-verbosity
 echo "<channel-id>" > ~/agentmesh/signals/slack-channel
+# Initialize idle timer to now so the idle-pause clock starts fresh on startup
+date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
 ```
 
 ### 0c. Startup recovery
@@ -278,6 +280,8 @@ done
 
 ```
 reply_handler <slug> <message>:
+  # Reset idle timer — any user reply counts as activity
+  date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
   case (lowercased message) in
     approve|lgtm|looks good|yes|ok|✅)
       # Determine the right command from the task's last event comment
@@ -360,7 +364,13 @@ CHANNEL_LAST_TS_FILE=~/agentmesh/signals/slack-channel-last-ts
 CHANNEL_LAST_TS=$(cat "$CHANNEL_LAST_TS_FILE" 2>/dev/null || echo "0")
 ```
 
-Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new message starting with `/agentmesh`, parse and dispatch to the slash command handler. Update `CHANNEL_LAST_TS` to the newest seen message ts.
+Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new message starting with `/agentmesh`, reset the idle timer and parse and dispatch to the slash command handler. Update `CHANNEL_LAST_TS` to the newest seen message ts.
+
+For each new `/agentmesh` message found:
+```bash
+# Reset idle timer — any slash command counts as user activity
+date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
+```
 
 #### Slash command handler
 
@@ -439,6 +449,8 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 
 /agentmesh resume
   → rm -f ~/agentmesh/signals/slack-poller-paused
+  → rm -f ~/agentmesh/signals/slack-poller-auto-paused
+  → date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts  (reset idle timer to prevent immediate re-pause)
   → Post to channel: "▶️ Slack polling resumed."
   → Log: slack-bridge  poller-resumed  -
 
@@ -483,7 +495,37 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
   → `bash ~/agentmesh/scripts/release.sh <bump-type>`
   → Post result to channel
 
-### 1f. Loop back
+### 1f. Auto-pause check
+
+After processing all events, replies, and slash commands for this cycle, check whether the Slack poller should be auto-paused due to idle timeout:
+
+```bash
+IDLE_PAUSE_MINUTES=$(cat ~/agentmesh/signals/slack-idle-pause-minutes 2>/dev/null || echo "0")
+if [[ "$IDLE_PAUSE_MINUTES" -gt 0 ]] 2>/dev/null; then
+  IDLE_PAUSE_SECONDS=$((IDLE_PAUSE_MINUTES * 60))
+  LAST_MSG_TS=$(cat ~/agentmesh/signals/slack-bridge-last-user-msg-ts 2>/dev/null || date +%s)
+  NOW=$(date +%s)
+  IDLE_SECONDS=$((NOW - LAST_MSG_TS))
+
+  if [[ "$IDLE_SECONDS" -gt "$IDLE_PAUSE_SECONDS" ]] && [ ! -f ~/agentmesh/signals/slack-poller-paused ]; then
+    # Idle timeout exceeded and not yet paused — auto-pause
+    touch ~/agentmesh/signals/slack-poller-paused
+    touch ~/agentmesh/signals/slack-poller-auto-paused
+    IDLE_MINS=$((IDLE_SECONDS / 60))
+    # Post to Slack channel: "⏸ Polling paused (idle for ${IDLE_MINS}m). Send any message or /agentmesh resume to restart."
+    printf '%s\tslack-bridge  \tauto-paused-idle\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  elif [[ "$IDLE_SECONDS" -le "$IDLE_PAUSE_SECONDS" ]] && [ -f ~/agentmesh/signals/slack-poller-auto-paused ]; then
+    # Activity resumed and the pause was auto-triggered — auto-resume
+    rm -f ~/agentmesh/signals/slack-poller-paused
+    rm -f ~/agentmesh/signals/slack-poller-auto-paused
+    printf '%s\tslack-bridge  \tauto-resumed\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  fi
+fi
+```
+
+Note: Only auto-remove `slack-poller-paused` when `slack-poller-auto-paused` also exists. This distinguishes auto-pause from a manual `/agentmesh pause` — manual pauses are only cleared by `/agentmesh resume`.
+
+### 1g. Loop back
 
 Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each iteration — zero in-memory state across cycles.
 
