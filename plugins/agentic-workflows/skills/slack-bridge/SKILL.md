@@ -84,6 +84,8 @@ echo "<verbosity-level>" > ~/agentmesh/signals/slack-verbosity
 echo "<channel-id>" > ~/agentmesh/signals/slack-channel
 # Initialize idle timer to now so the idle-pause clock starts fresh on startup
 date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
+# Set processing flag — poller must not fire until SlackBridge is ready to listen
+touch ~/agentmesh/signals/slack-poller-processing
 ```
 
 ### 0c. Startup recovery
@@ -185,7 +187,11 @@ Check whether the queue already has pending events before blocking (the orchestr
 
 ```bash
 if [ ! -s "$SLACKBRIDGE_QUEUE" ]; then
+  # Clear the processing flag — SlackBridge is now ready to receive signals
+  rm -f ~/agentmesh/signals/slack-poller-processing
   tmux wait-for slackbridge-event
+  # Set the processing flag — SlackBridge is now processing; poller must not fire
+  touch ~/agentmesh/signals/slack-poller-processing
 fi
 ```
 

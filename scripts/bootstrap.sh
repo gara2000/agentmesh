@@ -74,6 +74,7 @@ rm -f "$SIGNALS/"*.pr-review-count
 rm -f "$SIGNALS/"*.crash-count
 rm -f "$SIGNALS/slack-poller-paused"
 rm -f "$SIGNALS/slack-poller-auto-paused"
+rm -f "$SIGNALS/slack-poller-processing"
 rm -f "$SIGNALS/slack-bridge-last-user-msg-ts"
 # Write idle-pause config (0 = disabled)
 if [[ "$SLACK_IDLE_PAUSE" -gt 0 ]] 2>/dev/null; then
@@ -129,6 +130,8 @@ tmux send-keys -t orchestrator:orchestrator \
 
 # 0h. Launch slack-poller when interface includes slack
 if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
+  # Set processing flag before starting the poller so it doesn't fire until SlackBridge is ready
+  touch "$SIGNALS/slack-poller-processing"
   tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "slack-poller" && \
     tmux kill-window -t orchestrator:slack-poller 2>/dev/null || true
   tmux new-window -t orchestrator -n slack-poller
