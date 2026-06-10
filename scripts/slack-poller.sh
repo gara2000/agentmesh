@@ -9,7 +9,8 @@
 #
 # State-aware behavior:
 #   - At least one task in Attention state → fast tick (default 30s) for low-latency reply processing
-#   - No tasks in Attention state          → slow tick (default 60s) for slash-command polling only
+#   - No tasks in Attention state, adaptive interval set → use adaptive back-off interval
+#   - No tasks in Attention state, no adaptive interval  → slow tick (default 60s)
 set -euo pipefail
 
 # cd to agentmesh so notecove can find its .notecove config
@@ -35,6 +36,7 @@ printf '%s\tslack-poller \tstarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$L
 echo "[slack-poller] started — fast=${FAST_INTERVAL}s, slow=${SLOW_INTERVAL}s"
 
 was_paused=0
+prev_interval=0
 
 while true; do
   # Check for tasks in Attention state to choose the appropriate interval
@@ -45,8 +47,21 @@ while true; do
     interval="$FAST_INTERVAL"
     tick_type="fast"
   else
-    interval="$SLOW_INTERVAL"
-    tick_type="slow"
+    # Check for adaptive back-off interval written by SlackBridge
+    adaptive_interval=$(cat "$AGENTMESH/signals/slack-poller-current-interval" 2>/dev/null || echo "")
+    if [[ -n "$adaptive_interval" ]] && [[ "$adaptive_interval" =~ ^[0-9]+$ ]] && [[ "$adaptive_interval" -gt 0 ]]; then
+      interval="$adaptive_interval"
+      tick_type="adaptive"
+    else
+      interval="$SLOW_INTERVAL"
+      tick_type="slow"
+    fi
+  fi
+
+  # Log when the interval changes
+  if [[ "$interval" != "$prev_interval" ]]; then
+    printf '%s\tslack-poller \tinterval-changed\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+    prev_interval="$interval"
   fi
 
   sleep "$interval"

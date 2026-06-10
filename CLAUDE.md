@@ -373,8 +373,9 @@ agentmesh/
     ├── <slug>.slack-thread         # Slack thread timestamp written by SlackBridge when it starts a thread for the task
     ├── <slug>.slack-last-ts        # timestamp of last processed reply in the task's Slack thread; used by SlackBridge to avoid reprocessing
     ├── slack-idle-pause-minutes    # idle-pause threshold in minutes written by bootstrap.sh; absent = feature disabled
-    ├── slack-bridge-last-user-msg-ts # unix timestamp of last user message; written by SlackBridge on each user interaction; used for idle-pause
+    ├── slack-bridge-last-user-msg-ts # unix timestamp of last user message; written by SlackBridge on each user interaction; used for idle-pause and back-off
     ├── slack-poller-auto-paused    # sentinel flag written by SlackBridge alongside slack-poller-paused when auto-pause triggers; absent = manual pause
+    ├── slack-poller-current-interval # adaptive polling interval (seconds) written by SlackBridge back-off logic; absent = slack-poller uses SLOW_INTERVAL
     ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
     ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
     └── events.log                  # append-only TSV: timestamp, component, event_type, slug
@@ -433,6 +434,13 @@ timestamp       component       event_type                  slug
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  slack-poller    started                     -
+2026-04-26T...  slack-poller    tick-fast                   -
+2026-04-26T...  slack-poller    tick-slow                   -
+2026-04-26T...  slack-poller    tick-adaptive               -
+2026-04-26T...  slack-poller    interval-changed            -
+2026-04-26T...  slack-poller    paused                      -
+2026-04-26T...  slack-poller    resumed                     -
 2026-04-26T...  slack-socket    started                     -
 2026-04-26T...  slack-socket    message-received            -
 2026-04-26T...  slack-socket    reconnecting                -
@@ -448,6 +456,7 @@ timestamp       component       event_type                  slug
 2026-04-26T...  slack-bridge    poller-resumed              -
 2026-04-26T...  slack-bridge    auto-paused-idle            -
 2026-04-26T...  slack-bridge    auto-resumed                -
+2026-04-26T...  slack-bridge    back-off-applied            -
 2026-04-26T...  slack-bridge    shutdown                    -
 2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
 2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
