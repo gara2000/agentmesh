@@ -280,8 +280,9 @@ done
 
 ```
 reply_handler <slug> <message>:
-  # Reset idle timer — any user reply counts as activity
+  # Reset idle timer and back-off interval — any user reply counts as activity
   date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
+  rm -f ~/agentmesh/signals/slack-poller-current-interval
   case (lowercased message) in
     approve|lgtm|looks good|yes|ok|✅)
       # Determine the right command from the task's last event comment
@@ -368,8 +369,9 @@ Use Slack MCP to fetch channel messages newer than CHANNEL_LAST_TS. For each new
 
 For each new `/agentmesh` message found:
 ```bash
-# Reset idle timer — any slash command counts as user activity
+# Reset idle timer and back-off interval — any slash command counts as user activity
 date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
+rm -f ~/agentmesh/signals/slack-poller-current-interval
 ```
 
 #### Slash command handler
@@ -525,7 +527,41 @@ fi
 
 Note: Only auto-remove `slack-poller-paused` when `slack-poller-auto-paused` also exists. This distinguishes auto-pause from a manual `/agentmesh pause` — manual pauses are only cleared by `/agentmesh resume`.
 
-### 1g. Loop back
+### 1g. Back-off interval update
+
+After the auto-pause check, compute the adaptive polling interval based on current idle time and write `signals/slack-poller-current-interval` if it changed. This lets `slack-poller.sh` gradually slow down when Slack is idle, reducing token consumption without a hard on/off boundary.
+
+```bash
+LAST_MSG_TS=$(cat ~/agentmesh/signals/slack-bridge-last-user-msg-ts 2>/dev/null || date +%s)
+NOW=$(date +%s)
+IDLE_SECONDS=$((NOW - LAST_MSG_TS))
+
+# Map idle time to back-off tier
+if [[ "$IDLE_SECONDS" -lt 300 ]]; then
+  # 0–5 min: no back-off — remove the file so slack-poller uses SLOW_INTERVAL
+  NEW_INTERVAL=""
+elif [[ "$IDLE_SECONDS" -lt 900 ]]; then
+  NEW_INTERVAL=120    # 5–15 min → 2 min
+elif [[ "$IDLE_SECONDS" -lt 3600 ]]; then
+  NEW_INTERVAL=300    # 15–60 min → 5 min
+else
+  NEW_INTERVAL=600    # 60+ min → 10 min
+fi
+
+INTERVAL_FILE=~/agentmesh/signals/slack-poller-current-interval
+CURRENT_INTERVAL=$(cat "$INTERVAL_FILE" 2>/dev/null || echo "")
+
+if [[ "$NEW_INTERVAL" != "$CURRENT_INTERVAL" ]]; then
+  if [[ -z "$NEW_INTERVAL" ]]; then
+    rm -f "$INTERVAL_FILE"
+  else
+    echo "$NEW_INTERVAL" > "$INTERVAL_FILE"
+  fi
+  printf '%s\tslack-bridge  \tback-off-applied\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+fi
+```
+
+### 1h. Loop back
 
 Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each iteration — zero in-memory state across cycles.
 

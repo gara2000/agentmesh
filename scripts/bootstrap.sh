@@ -75,6 +75,7 @@ rm -f "$SIGNALS/"*.crash-count
 rm -f "$SIGNALS/slack-poller-paused"
 rm -f "$SIGNALS/slack-poller-auto-paused"
 rm -f "$SIGNALS/slack-bridge-last-user-msg-ts"
+rm -f "$SIGNALS/slack-poller-current-interval"
 # Write idle-pause config (0 = disabled)
 if [[ "$SLACK_IDLE_PAUSE" -gt 0 ]] 2>/dev/null; then
   echo "$SLACK_IDLE_PAUSE" > "$SIGNALS/slack-idle-pause-minutes"
