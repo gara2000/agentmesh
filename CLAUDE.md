@@ -434,6 +434,16 @@ timestamp       component       event_type                  slug
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  slack-poller    started                     -
+2026-04-26T...  slack-poller    mode-fast                   -
+2026-04-26T...  slack-poller    mode-slow                   -
+2026-04-26T...  slack-poller    tick-fast                   -
+2026-04-26T...  slack-poller    tick-slow                   -
+2026-04-26T...  slack-poller    paused-processing           -
+2026-04-26T...  slack-poller    paused-user                 -
+2026-04-26T...  slack-poller    paused-processing+user      -
+2026-04-26T...  slack-poller    resumed                     -
+2026-04-26T...  slack-poller    stopped                     -
 2026-04-26T...  slack-socket    started                     -
 2026-04-26T...  slack-socket    message-received            -
 2026-04-26T...  slack-socket    reconnecting                -
