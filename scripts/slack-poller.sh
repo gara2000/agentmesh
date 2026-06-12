@@ -27,14 +27,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --fast-interval) FAST_INTERVAL="$2"; shift 2 ;;
     --slow-interval) SLOW_INTERVAL="$2"; shift 2 ;;
-    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    *) echo "[slack-poller] unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+trap 'printf "%s\tslack-poller \tstopped\t-\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"; echo "[slack-poller] stopped"' EXIT
 
 printf '%s\tslack-poller \tstarted\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 echo "[slack-poller] started — fast=${FAST_INTERVAL}s, slow=${SLOW_INTERVAL}s"
 
 was_paused=0
+last_tick_type=""
 
 while true; do
   # Check for tasks in Attention state to choose the appropriate interval
@@ -49,14 +52,34 @@ while true; do
     tick_type="slow"
   fi
 
+  # Log mode switch when tick_type changes (skip the very first iteration)
+  if [[ -n "$last_tick_type" && "$tick_type" != "$last_tick_type" ]]; then
+    printf '%s\tslack-poller \tmode-%s\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tick_type" >> "$LOG"
+    echo "[slack-poller] mode changed to ${tick_type} (${attention_count} attention task(s), interval=${interval}s)"
+  fi
+  last_tick_type="$tick_type"
+
   sleep "$interval"
 
   # Check for pause flag or processing flag — skip waking SlackBridge if either is set
   # slack-poller-paused: manual or auto-pause (user-facing)
   # slack-poller-processing: set by SlackBridge while it is processing events (not listening)
-  if [ -f "$AGENTMESH/signals/slack-poller-paused" ] || [ -f "$AGENTMESH/signals/slack-poller-processing" ]; then
+  processing_paused=0
+  user_paused=0
+  [ -f "$AGENTMESH/signals/slack-poller-processing" ] && processing_paused=1
+  [ -f "$AGENTMESH/signals/slack-poller-paused" ] && user_paused=1
+
+  if [[ "$processing_paused" -eq 1 || "$user_paused" -eq 1 ]]; then
     if [[ "$was_paused" -eq 0 ]]; then
-      printf '%s\tslack-poller \tpaused\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+      if [[ "$processing_paused" -eq 1 && "$user_paused" -eq 1 ]]; then
+        pause_reason="processing+user"
+      elif [[ "$processing_paused" -eq 1 ]]; then
+        pause_reason="processing"
+      else
+        pause_reason="user"
+      fi
+      printf '%s\tslack-poller \tpaused-%s\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pause_reason" >> "$LOG"
+      echo "[slack-poller] paused (reason: ${pause_reason})"
       was_paused=1
     fi
     continue
@@ -64,6 +87,7 @@ while true; do
 
   if [[ "$was_paused" -eq 1 ]]; then
     printf '%s\tslack-poller \tresumed\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+    echo "[slack-poller] resumed"
     was_paused=0
   fi
 
