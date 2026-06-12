@@ -8,8 +8,8 @@
 # native access to the Slack MCP for reading and writing Slack messages.
 #
 # State-aware behavior:
-#   - At least one task in Attention state → fast tick (default 30s) for low-latency reply processing
-#   - No tasks in Attention state          → slow tick (default 60s) for slash-command polling only
+#   - At least one task in Attention state → fast tick (default 60s) for low-latency reply processing
+#   - No tasks in Attention state          → slow tick (default 120s) for slash-command polling only
 set -euo pipefail
 
 # cd to agentmesh so notecove can find its .notecove config
@@ -20,8 +20,8 @@ LOG="$AGENTMESH/signals/events.log"
 NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
 # Parse arguments
-FAST_INTERVAL=30
-SLOW_INTERVAL=60
+FAST_INTERVAL=60
+SLOW_INTERVAL=120
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

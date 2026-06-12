@@ -47,7 +47,7 @@ _wait_for_repl() {
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
   local MAX_WORKERS="10" REVIEW_LIMIT="3" INTERFACE="spokesman"
-  local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="30" SLOW_INTERVAL="60"
+  local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="60" SLOW_INTERVAL="120"
   local SLACK_IDLE_PAUSE="0"
 
   while [[ $# -gt 0 ]]; do
