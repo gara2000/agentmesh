@@ -142,7 +142,7 @@ cmd_start() {
       tmux send-keys -t "orchestrator:slack-bridge" "cd $AGENTMESH && claude --dangerously-skip-permissions" Enter
       _wait_for_repl "orchestrator:slack-bridge"
       tmux send-keys -t "orchestrator:slack-bridge" \
-        "/slack-bridge --project $PROJECT --profile $PROFILE --mode $MODE --verbosity $VERBOSITY --no-bootstrap" \
+        "/slack-bridge --project $PROJECT --profile $PROFILE --mode $MODE --verbosity $VERBOSITY --channel $SLACK_CHANNEL --no-bootstrap" \
         Enter
       echo "  ✓ SlackBridge started (orchestrator:slack-bridge)"
     fi

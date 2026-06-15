@@ -134,7 +134,8 @@ Responsibilities:
 - Parse top-level channel messages starting with `/agentmesh` as slash commands
 - Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
 - Deregister from `signals/active-interfaces` and post a shutdown message on exit
-- Never bootstrap or shut down the orchestrator — those responsibilities remain with the Spokesman
+- Bootstrap the system on manual invocation (calls `bootstrap.sh --interface slack`); skip bootstrap when `--no-bootstrap` is set (i.e., when launched by `agentmesh start`)
+- Never shut down the orchestrator — that responsibility remains with the Spokesman
 
 ### Legacy Orchestrator
 
@@ -590,6 +591,7 @@ agentmesh task create <title> \   # create a new task in NoteCove
 
 ### Manual / Legacy
 
+**Spokesman (terminal interface):**
 ```bash
 cd ~/agentmesh
 tmux new-session -s orchestrator
@@ -598,6 +600,16 @@ claude
 ```
 
 The Spokesman bootstraps the entire system (orchestrator.py daemon + dispatcher + watchdog + folder-cleanup) and handles all user interaction from there.
+
+**SlackBridge (Slack-only interface):**
+```bash
+cd ~/agentmesh
+tmux new-session -s orchestrator
+claude
+/slack-bridge --project WORK --channel C01234567
+```
+
+The SlackBridge bootstraps the entire system (same as Spokesman) when invoked manually without `--no-bootstrap`.
 
 > **Note:** `--no-bootstrap` is for use by `agentmesh start` only. Manual invocations use the standard flow above.
 

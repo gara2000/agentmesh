@@ -3,7 +3,7 @@ name: slack-bridge
 description: Full Spokesman peer for AgentMesh that communicates via Slack instead of a tmux terminal. Receives worker events via slackbridge-queue, posts to Slack threads via the Slack MCP, and translates Slack replies into orchestrator commands.
 disable-model-invocation: true
 allowed-tools: Bash(notecove *, tmux *, mkdir *, cat *, echo *, rm *, bash *, sleep *, sed *, python3 *), mcp__slack__*
-hint: "Run the AgentMesh SlackBridge (Slack user-interaction layer). Required: --project <key>, --channel <slack-channel-id>. Optional: --verbosity low|medium|high (default: medium)"
+hint: "Run the AgentMesh SlackBridge (Slack user-interaction layer). Required: --project <key>, --channel <slack-channel-id>. Optional: --profile <id>, --mode standard|auto-review, --max-workers <n>, --review-limit <n>, --verbosity low|medium|high (default: medium), --no-bootstrap (for agentmesh start)"
 ---
 
 # SlackBridge — AgentMesh Slack Interface Layer
@@ -33,10 +33,35 @@ Do not proceed to argument parsing or any further steps if this check fails.
 
 Parse arguments:
 - `--project <key>` — required, NoteCove project key (e.g. `WORK`)
-- `--channel <channel-id>` — required, Slack channel ID where agentmesh posts messages
+- `--channel <channel-id>` — required unless `--no-bootstrap` is set (when `--no-bootstrap` is set, falls back to reading `signals/slack-channel`)
+- `--profile <id>` — optional, defaults to `kmq9h71tepf95rac2b59xdbsq2`
+- `--mode <mode>` — optional, running mode (`standard` or `auto-review`), defaults to `standard`
+- `--max-workers <n>` — optional, max concurrent workers, defaults to `10`
+- `--review-limit <n>` — optional, max auto-review cycles per task before escalating to user, defaults to `3`
 - `--verbosity <level>` — optional, one of `low`, `medium`, `high`, defaults to `medium`
+- `--no-bootstrap` — optional flag; if set, skip the bootstrap phase (for use by `agentmesh start`); default: not set
 
-If `--project` or `--channel` is not provided, stop immediately.
+Set `NO_BOOTSTRAP=true` if `--no-bootstrap` was passed, otherwise `NO_BOOTSTRAP=false`.
+
+If `--project` is not provided, stop immediately.
+
+If `--channel` is not provided and `NO_BOOTSTRAP=false`, stop immediately.
+
+If `--channel` is not provided and `NO_BOOTSTRAP=true`, read the channel from `signals/slack-channel`:
+```bash
+SLACK_CHANNEL=$(cat ~/agentmesh/signals/slack-channel 2>/dev/null || echo "")
+```
+If `SLACK_CHANNEL` is empty after fallback, stop immediately.
+
+### `active-interfaces` registration
+
+Immediately after parsing arguments (before Phase 0.5 or Phase 1), register the SlackBridge in `signals/active-interfaces`:
+
+```bash
+echo "slackbridge" >> ~/agentmesh/signals/active-interfaces
+```
+
+This must run regardless of `--no-bootstrap`. The `signals/` directory is created by `bootstrap.sh` in normal mode; when `--no-bootstrap` is set, `agentmesh start` has already created it.
 
 ---
 
@@ -69,15 +94,31 @@ send_cmd() {
 
 ---
 
-## Phase 0: Startup
+## Phase 0.5: Bootstrap
 
-### 0a. Register in active-interfaces
+**Skip this phase entirely if `NO_BOOTSTRAP=true`.** When `--no-bootstrap` is set, `agentmesh start` has already run `bootstrap.sh` — jump directly to Phase 1 (Startup).
 
 ```bash
-echo "slackbridge" >> ~/agentmesh/signals/active-interfaces
+if [ "$NO_BOOTSTRAP" != "true" ]; then
+  bash ~/agentmesh/scripts/bootstrap.sh \
+    --project <PROJECT> \
+    --profile <PROFILE> \
+    --mode <MODE> \
+    --max-workers <MAX_WORKERS> \
+    --review-limit <REVIEW_LIMIT> \
+    --interface slack \
+    --slack-channel <SLACK_CHANNEL>
+  LOG=~/agentmesh/signals/events.log
+  echo "<MODE>" > ~/agentmesh/signals/mode
+  TRIAGE_FOLDER=$(cat ~/agentmesh/signals/triage_folder)
+fi
 ```
 
-### 0b. Write runtime state files
+---
+
+## Phase 1: Startup
+
+### 1a. Write runtime state files
 
 ```bash
 echo "<verbosity-level>" > ~/agentmesh/signals/slack-verbosity
@@ -88,7 +129,7 @@ date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
 touch ~/agentmesh/signals/slack-poller-processing
 ```
 
-### 0c. Startup recovery
+### 1b. Startup recovery
 
 Query NoteCove for tasks in `Attention` state. For each, check whether the worker window is still alive:
 
@@ -155,12 +196,12 @@ After the recovery loop, check whether the queue is already non-empty (orchestra
 
 ```bash
 if [ -s "$SLACKBRIDGE_QUEUE" ]; then
-  # Jump directly to step 1b to drain it
+  # Jump directly to step 2b to drain it
   :
 fi
 ```
 
-### 0d. Post startup message
+### 1c. Post startup message
 
 Post to the configured channel via Slack MCP:
 ```
@@ -169,11 +210,11 @@ agentmesh SlackBridge is running. Project: {PROJECT}. Verbosity: {VERBOSITY}.
 
 ---
 
-## Phase 1: Event Loop
+## Phase 2: Event Loop
 
 Each iteration:
 
-### 1a. Block on slackbridge-event
+### 2a. Block on slackbridge-event
 
 Re-read runtime state at the top of each wakeup cycle — zero in-memory state across iterations:
 
@@ -195,7 +236,7 @@ if [ ! -s "$SLACKBRIDGE_QUEUE" ]; then
 fi
 ```
 
-### 1a.5. Check orchestrator heartbeat
+### 2a.5. Check orchestrator heartbeat
 
 After each wakeup, verify that orchestrator.py is still alive. If the heartbeat file is stale (not updated in >90 seconds), auto-restart orchestrator.py:
 
@@ -207,7 +248,7 @@ If the restart happens, post to the Slack channel: "⚠️ orchestrator.py was s
 
 If `signals/orchestrator.heartbeat` does not exist (e.g., shortly after bootstrap before orchestrator.py writes its first heartbeat), the check is silently skipped.
 
-### 1b. Drain slackbridge-queue
+### 2b. Drain slackbridge-queue
 
 ```bash
 while [ -s "$SLACKBRIDGE_QUEUE" ]; do
@@ -224,7 +265,7 @@ while [ -s "$SLACKBRIDGE_QUEUE" ]; do
 done
 ```
 
-### 1c. Dispatch events
+### 2c. Dispatch events
 
 Fetch task info for each slug:
 ```bash
@@ -258,7 +299,7 @@ case "$event_rest" in
 esac
 ```
 
-### 1d. Check for new Slack replies
+### 2d. Check for new Slack replies
 
 After draining the queue, check threads only for tasks currently in `Attention` state — tasks in `Doing` have no pending user replies and reading their threads is pure waste:
 
@@ -361,7 +402,7 @@ print(result or 'implementer')
   esac
 ```
 
-### 1e. Check for slash commands
+### 2e. Check for slash commands
 
 Fetch recent messages in the configured channel (not replies — top-level messages only) and check for messages newer than a stored channel-last-ts that start with `/agentmesh`:
 
@@ -501,7 +542,7 @@ date +%s > ~/agentmesh/signals/slack-bridge-last-user-msg-ts
   → `bash ~/agentmesh/scripts/release.sh <bump-type>`
   → Post result to channel
 
-### 1f. Auto-pause check
+### 2f. Auto-pause check
 
 After processing all events, replies, and slash commands for this cycle, check whether the Slack poller should be auto-paused due to idle timeout:
 
@@ -531,9 +572,9 @@ fi
 
 Note: Only auto-remove `slack-poller-paused` when `slack-poller-auto-paused` also exists. This distinguishes auto-pause from a manual `/agentmesh pause` — manual pauses are only cleared by `/agentmesh resume`.
 
-### 1g. Loop back
+### 2g. Loop back
 
-Go to step 1a. Re-read `VERBOSITY` and `LOG` from files at the top of each iteration — zero in-memory state across cycles.
+Go to step 2a. Re-read `VERBOSITY` and `LOG` from files at the top of each iteration — zero in-memory state across cycles.
 
 ---
 
