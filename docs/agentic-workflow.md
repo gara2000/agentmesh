@@ -12,7 +12,8 @@ Session: orchestrator          ← user attaches here only
   window 1: dispatcher         ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog           ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup     ← scripts/folder-cleanup.sh (bash loop)
-  window 4: orchestrator       ← scripts/orchestrator.py (Python daemon)
+  window 4: ready-poller       ← scripts/ready-poller.sh (bash loop)
+  window 5: orchestrator       ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-42     ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
   window N: slack-socket        ← scripts/slack-socket-relay.py (Python daemon, when --interface includes slack)
   window N: slack-bridge       ← /slack-bridge skill (Claude Code, when using Slack interface)
@@ -286,8 +287,9 @@ flowchart TD
 5. **Dispatcher** — launches `scripts/dispatcher.sh` in `orchestrator:dispatcher`.
 6. **Watchdog** — launches `scripts/watchdog.sh` in `orchestrator:watchdog`.
 7. **Folder cleanup** — launches `scripts/folder-cleanup.sh` in `orchestrator:folder-cleanup`.
-8. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
-9. **Slack poller** (optional) — when `--interface slack` or `--interface both` is passed, creates `signals/slack-poller-processing` (so the poller won't fire before SlackBridge is ready) and starts `scripts/slack-poller.sh` in `orchestrator:slack-poller`.
+8. **Ready poller** — launches `scripts/ready-poller.sh --project $PROJECT` in `orchestrator:ready-poller`. Polls every 30 seconds for `Ready` tasks and fires a `scan` command to the orchestrator when found, ensuring tasks aren't stuck waiting for an event to trigger pickup.
+9. **Orchestrator daemon** — always kills any existing `orchestrator:orchestrator` window and starts a fresh one. This ensures a stale or old-version orchestrator is never left running after bootstrap.
+10. **Slack poller** (optional) — when `--interface slack` or `--interface both` is passed, creates `signals/slack-poller-processing` (so the poller won't fire before SlackBridge is ready) and starts `scripts/slack-poller.sh` in `orchestrator:slack-poller`.
 
 Usage:
 ```bash

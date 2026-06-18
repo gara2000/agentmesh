@@ -119,7 +119,13 @@ tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }
 
-# 0g. Launch orchestrator.py daemon (handles all event routing and worker spawning)
+# 0g. Launch ready-poller daemon in a background window
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "ready-poller" || {
+  tmux new-window -t orchestrator -n ready-poller
+  tmux send-keys -t orchestrator:ready-poller "bash $SCRIPTS/ready-poller.sh --project $PROJECT" Enter
+}
+
+# 0i. Launch orchestrator.py daemon (handles all event routing and worker spawning)
 # Always kill and restart — ensures stale/old-version orchestrators are replaced on every bootstrap.
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" && \
   tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
@@ -128,7 +134,7 @@ tmux send-keys -t orchestrator:orchestrator \
   "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
   Enter
 
-# 0h. Launch slack-poller when interface includes slack
+# 0j. Launch slack-poller when interface includes slack
 if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
   # Set processing flag before starting the poller so it doesn't fire until SlackBridge is ready
   touch "$SIGNALS/slack-poller-processing"
@@ -141,7 +147,7 @@ if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
 fi
 
 if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
-  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, orchestrator.py, and slack-poller running"
+  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, ready-poller, orchestrator.py, and slack-poller running"
 else
-  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, and orchestrator.py running"
+  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, ready-poller, and orchestrator.py running"
 fi
