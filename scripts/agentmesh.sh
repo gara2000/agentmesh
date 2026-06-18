@@ -173,7 +173,7 @@ cmd_stop() {
   fi
 
   # 2. Kill known windows in the orchestrator session
-  for win in slack-bridge slack-poller main folder-cleanup watchdog dispatcher orchestrator; do
+  for win in slack-bridge slack-poller main ready-poller folder-cleanup watchdog dispatcher orchestrator; do
     tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
   done
 
@@ -207,7 +207,7 @@ cmd_status() {
   fi
 
   # tmux windows
-  for win in dispatcher watchdog folder-cleanup; do
+  for win in dispatcher watchdog folder-cleanup ready-poller; do
     if _window_exists "$win"; then
       printf "%-22s ✓ running\n" "$win"
     else

@@ -256,6 +256,18 @@ Responsibilities:
 
 The folder-cleanup window is killed by the orchestrator at shutdown.
 
+### Ready Poller
+
+**One instance.** Runs in the `orchestrator` session, window `ready-poller`. Pure bash, no Claude.
+
+Responsibilities:
+- Poll NoteCove every 30 seconds for tasks in `Ready` state
+- When any `Ready` tasks are found, write `-|scan` to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event`
+- The orchestrator wakes up and calls `pick_up_ready_tasks()` to pick up and spawn workers for the ready tasks
+- Ensures tasks that become `Ready` while the orchestrator is idle (no worker events) are picked up promptly
+
+The ready-poller window is killed by `agentmesh stop` at shutdown.
+
 ---
 
 ## tmux Layout
@@ -266,7 +278,8 @@ Session: orchestrator       ← user attaches here only
   window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
   window 2: watchdog        ← scripts/watchdog.sh (bash loop)
   window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
-  window 4: orchestrator    ← scripts/orchestrator.py (Python daemon)
+  window 4: ready-poller    ← scripts/ready-poller.sh (bash loop)
+  window 5: orchestrator    ← scripts/orchestrator.py (Python daemon)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
   window N: slack-socket    ← scripts/slack-socket-relay.py (Python daemon, when --interface includes slack)
   window N: slack-bridge    ← /slack-bridge skill (Claude Code, when using Slack interface)
@@ -349,6 +362,7 @@ agentmesh/
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
+│   ├── ready-poller.sh     # Ready task poller; fires scan command when Ready tasks are found
 │   ├── slack-socket-relay.py # Socket Mode WebSocket relay: forwards inbound Slack messages to slackbridge-queue and fires slackbridge-event
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
 │   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
@@ -435,6 +449,8 @@ timestamp       component       event_type                  slug
 2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 2026-04-26T...  pr-monitor      started                     WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
+2026-04-26T...  ready-poller    started                     -
+2026-04-26T...  ready-poller    scan-triggered              -
 2026-04-26T...  slack-poller    started                     -
 2026-04-26T...  slack-poller    mode-fast                   -
 2026-04-26T...  slack-poller    mode-slow                   -
