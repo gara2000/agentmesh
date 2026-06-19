@@ -94,18 +94,6 @@ The orchestrator translates worker events into Spokesman events:
 
 ## Roles
 
-### Spokesman
-
-**One instance.** Runs in the `orchestrator` tmux session, window `main`. This is the only session the user attaches to. The Spokesman is a thin user-interaction layer — it never spawns workers directly.
-
-Responsibilities:
-- Bootstrap the system (calls `bootstrap.sh` which starts orchestrator.py and all daemons)
-- Block on `spokesman-event` and drain `spokesman-queue` after each unblock
-- Triage new tasks (`event:task-ready`): orchestrator.py already attempted type-map triage (by typeId then typeName); the Spokesman handles only the LLM fallback (tasks with no matching typeId or typeName); decide agent type using judgment and send `spawn` command back to orchestrator.py
-- Present user-attention events to the user (questions, plan ready, PR ready, review results)
-- Write decisions to NoteCove (state changes, feedback comments) and relay commands to orchestrator.py via `orchestrator-cmds`
-- When all tasks complete: tell orchestrator.py to shut down and exit
-
 ### Orchestrator Daemon (orchestrator.py)
 
 **One instance.** Runs in the `orchestrator` tmux session, window `orchestrator`. Pure Python, always running — never blocked by user interaction.
@@ -122,82 +110,9 @@ Responsibilities:
 - Forward user-attention events to all registered interfaces (reads `signals/active-interfaces`; falls back to `spokesman` only when empty)
 - Execute commands from Spokesman: fire resume signals, spawn agents, clean up
 
-### SlackBridge
-
-**One instance (optional).** Runs in the `orchestrator` tmux session, window `slack-bridge` (or any user-chosen window). A full Spokesman peer that communicates via Slack instead of a tmux terminal. Registered in `signals/active-interfaces` as `slackbridge`; the orchestrator fans events to both Spokesman and SlackBridge simultaneously.
-
-Responsibilities:
-- Register in `signals/active-interfaces` and write `signals/slack-channel` and `signals/slack-verbosity` at startup
-- Block on `slackbridge-event` (fired by orchestrator.py on worker events and by `slack-socket-relay.py` on inbound Slack messages)
-- Drain `signals/slackbridge-queue` and dispatch each entry: orchestrator-forwarded `<slug>:<event-type>` entries post to Slack threads; relay-pushed `slack-message:<channel_id>:<thread_ts>:<user_id>:<text>` entries are matched against task threads and processed as user replies — no MCP thread polling needed
-- Process user replies from relay-pushed queue entries for commands (`approve`, `feedback: <text>`, `abort`, etc.)
-- Parse top-level channel messages starting with `/agentmesh` as slash commands
-- Write commands to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event` (same as Spokesman)
-- Deregister from `signals/active-interfaces` and post a shutdown message on exit
-- Bootstrap the system on manual invocation (calls `bootstrap.sh --interface slack`); skip bootstrap when `--no-bootstrap` is set (i.e., when launched by `agentmesh start`)
-- Never shut down the orchestrator — that responsibility remains with the Spokesman
-
 ### Legacy Orchestrator
 
 **Kept for compatibility.** The original `/orchestrator` Claude Code skill (`plugins/agentic-workflows/skills/orchestrator/SKILL.md`) remains unchanged. Use `/spokesman` as the new entry point for the Spokesman + orchestrator.py architecture.
-
-### Implementer
-
-**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
-
-Responsibilities:
-- Pick up the assigned task from NoteCove (no `notecove init` — inherited from orchestrator)
-- Explore task context, linked notes, and the codebase
-- Ask questions via `QUESTIONS-<N>` notes, signal `Attention`, block on resume
-- Create an implementation plan via `PLAN` note, signal `Attention` for review, block on resume
-- Implement the plan (TDD where applicable), create a PR
-- Signal `Attention` when PR is ready — block on resume (approved → exit, feedback → continue)
-- Exit only after receiving the orchestrator's resume signal (which means the user approved)
-- Never interact with the user directly
-- Never mark its own task `Done`
-
-### Designer
-
-**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
-
-Responsibilities:
-- Pick up the assigned frontend/UI design task from NoteCove
-- Explore task context and the codebase to understand what's being built
-- Ask questions via `QUESTIONS-<N>` notes if requirements are ambiguous
-- Create a DESIGN note with aesthetic direction, component breakdown, and proposed subtasks; signal `event:design-ready` for user review
-- After design approval, create child tasks with rich DESCRIPTION notes (aesthetic guidance, acceptance criteria, specific files to create/modify)
-- Signal `event:completion` — orchestrator auto-acks and marks Done
-- Never implement code — designs and decomposes only
-- Never mark its own task `Done`
-
-### Investigator
-
-**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
-
-Responsibilities:
-- Pick up the assigned research task from NoteCove
-- Explore task context, the codebase, and external resources (WebSearch/WebFetch)
-- Ask questions via `QUESTIONS-<N>` notes if scope is ambiguous
-- Write structured Context notes under a `Context/` subfolder in the task folder
-- Signal `event:research-ready` — Spokesman presents research to user for approval; block until approved or feedback received
-- Never write code or create PRs — research and documentation only
-- Never create subtasks — it is a leaf agent
-- Never mark its own task `Done`
-
-### Documenter
-
-**N instances (up to `max-workers`).** Each runs in the `workers` tmux session in a window named after its task slug (e.g. `workers:WORK-pm4`), spawned with `claude --dangerously-skip-permissions`.
-
-Responsibilities:
-- Pick up the assigned documentation task from NoteCove
-- Read code to understand it; write or update README files, API docs, inline comments, and architecture notes
-- Ask questions via `QUESTIONS-<N>` notes if documentation scope is ambiguous
-- Skip the plan phase — proceed directly from exploration to writing (low risk, docs-only)
-- Create a docs-only PR (no logic changes, no test-breaking changes)
-- Signal `Attention` when PR is ready — standard approval/feedback loop
-- Exit only after receiving the orchestrator's resume signal (user approved)
-- Never change logic, fix bugs, add features, or rename variables
-- Never mark its own task `Done`
 
 ### Dispatcher
 
@@ -301,20 +216,6 @@ Session: workers
 
 Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read and improve them directly.
 
-| Skill | Invoked by | Source |
-|---|---|---|
-| `/spokesman` | User (manually) | `plugins/agentic-workflows/skills/spokesman/SKILL.md` |
-| `/slack-bridge` | User (manually) | `plugins/agentic-workflows/skills/slack-bridge/SKILL.md` |
-| `/orchestrator` | User (manually, legacy) | `plugins/agentic-workflows/skills/orchestrator/SKILL.md` |
-| `/implementer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/implementer/SKILL.md` |
-| `/planner` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/planner/SKILL.md` |
-| `/brainstormer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/brainstormer/SKILL.md` |
-| `/designer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/designer/SKILL.md` |
-| `/investigator` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/investigator/SKILL.md` |
-| `/documenter` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/documenter/SKILL.md` |
-| `/plan-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/plan-reviewer/SKILL.md` |
-| `/pr-reviewer` | orchestrator.py (via `spawn-agent.sh`) | `plugins/agentic-workflows/skills/pr-reviewer/SKILL.md` |
-
 Skills inherit from a two-level base hierarchy:
 
 ```
@@ -405,142 +306,21 @@ The `signals/` directory and its contents are runtime artifacts — created fres
 ```
 timestamp       component       event_type                  slug
 2026-04-26T...  dispatcher      worker-any-event-received   -
-2026-04-26T...  dispatcher      orchestrator-event-fired    -
-2026-04-26T...  watchdog        crash-detected              WORK-xyz
-2026-04-26T...  watchdog        crash-limit-reached         WORK-xyz
-2026-04-26T...  watchdog        worker-exited-clean         WORK-xyz
-2026-04-26T...  orchestrator    bootstrap-complete          -
 2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
-2026-04-26T...  orchestrator    task-triage-forwarded       WORK-xyz
-2026-04-26T...  spokesman       task-triaged                WORK-xyz
 2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
 2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
-2026-04-26T...  orchestrator    attention-resumed           WORK-xyz
-2026-04-26T...  orchestrator    review-approved             WORK-xyz
-2026-04-26T...  orchestrator    review-feedback             WORK-xyz
-2026-04-26T...  orchestrator    plan-reviewer-spawned       WORK-xyz
-2026-04-26T...  orchestrator    reviewer-spawning           WORK-xyz
-2026-04-26T...  orchestrator    reviewer-spawned            WORK-xyz
-2026-04-26T...  orchestrator    worker-crash-requeued       WORK-xyz
-2026-04-26T...  orchestrator    crash-limit-reached         WORK-xyz
-2026-04-26T...  orchestrator    pr-monitor-spawned          WORK-xyz
-2026-04-26T...  orchestrator    pr-auto-approved            WORK-xyz
-2026-04-26T...  orchestrator    pr-review-passed-to-worker  WORK-xyz
-2026-04-26T...  orchestrator    anomaly-detected:<key>      WORK-xyz
-2026-04-26T...  orchestrator    anomaly-resolved:<key>      WORK-xyz
-2026-04-26T...  orchestrator    review-limit-reached:plan   WORK-xyz
-2026-04-26T...  orchestrator    review-limit-reached:pr     WORK-xyz
-2026-04-26T...  orchestrator    research-ready-forwarded    WORK-xyz
-2026-04-26T...  spokesman       research-approved           WORK-xyz
-2026-04-26T...  spokesman       agent-completion-ack        WORK-xyz
 2026-04-26T...  spokesman       attention-resumed           WORK-xyz
-2026-04-26T...  spokesman       attention-feedback          WORK-xyz
-2026-04-26T...  spokesman       plan-reviewer-requested     WORK-xyz
-2026-04-26T...  spokesman       reviewer-requested          WORK-xyz
-2026-04-26T...  spokesman       review-approved             WORK-xyz
-2026-04-26T...  spokesman       review-feedback             WORK-xyz
-2026-04-26T...  spokesman       anomaly-detected            WORK-xyz
-2026-04-26T...  spokesman       crash-limit-reached         WORK-xyz
-2026-04-26T...  spokesman       review-rejected             WORK-xyz
-2026-04-26T...  spokesman       review-aborted              WORK-xyz
-2026-04-26T...  spokesman       worker-respawned            WORK-xyz
-2026-04-26T...  spokesman       orchestrator-restarted      -
-2026-04-26T...  spokesman       shutdown                    -
-2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
-2026-04-26T...  pr-monitor      started                     WORK-xyz
+2026-04-26T...  watchdog        crash-detected              WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
-2026-04-26T...  ready-poller    started                     -
 2026-04-26T...  ready-poller    scan-triggered              -
-2026-04-26T...  slack-poller    started                     -
-2026-04-26T...  slack-poller    mode-fast                   -
-2026-04-26T...  slack-poller    mode-slow                   -
-2026-04-26T...  slack-poller    tick-fast                   -
-2026-04-26T...  slack-poller    tick-slow                   -
-2026-04-26T...  slack-poller    paused-processing           -
-2026-04-26T...  slack-poller    paused-user                 -
-2026-04-26T...  slack-poller    paused-processing+user      -
-2026-04-26T...  slack-poller    resumed                     -
-2026-04-26T...  slack-poller    stopped                     -
-2026-04-26T...  slack-socket    started                     -
-2026-04-26T...  slack-socket    message-received            -
-2026-04-26T...  slack-socket    reconnecting                -
-2026-04-26T...  slack-socket    stopped                     -
-2026-04-26T...  slack-bridge    started                     -
-2026-04-26T...  slack-bridge    task-triaged                WORK-xyz
 2026-04-26T...  slack-bridge    thread-created              WORK-xyz
-2026-04-26T...  slack-bridge    thread-header-updated       WORK-xyz
-2026-04-26T...  slack-bridge    thread-closed               WORK-xyz
-2026-04-26T...  slack-bridge    reply-received              WORK-xyz
-2026-04-26T...  slack-bridge    slash-command               -
-2026-04-26T...  slack-bridge    poller-paused               -
-2026-04-26T...  slack-bridge    poller-resumed              -
-2026-04-26T...  slack-bridge    auto-paused-idle            -
-2026-04-26T...  slack-bridge    auto-resumed                -
-2026-04-26T...  slack-bridge    shutdown                    -
-2026-04-26T...  plan-reviewer   plan-review-started         WORK-xyz
-2026-04-26T...  plan-reviewer   error-no-plan               WORK-xyz
-2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
-2026-04-26T...  pr-reviewer     pr-review-started           WORK-xyz
-2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
 2026-04-26T...  implementer     started                     WORK-xyz
-2026-04-26T...  implementer     signaling-attention         WORK-xyz
-2026-04-26T...  implementer     resumed                     WORK-xyz
-2026-04-26T...  implementer     signaling-plan              WORK-xyz
-2026-04-26T...  implementer     resumed-from-plan           WORK-xyz
-2026-04-26T...  implementer     implementing                WORK-xyz
-2026-04-26T...  implementer     pr-created                  WORK-xyz
-2026-04-26T...  implementer     signaling-attention-pr-ready WORK-xyz
-2026-04-26T...  implementer     approved                    WORK-xyz
-2026-04-26T...  implementer     feedback-received           WORK-xyz
-2026-04-26T...  designer        started                     WORK-xyz
-2026-04-26T...  designer        signaling-attention         WORK-xyz
-2026-04-26T...  designer        resumed                     WORK-xyz
-2026-04-26T...  designer        signaling-design            WORK-xyz
-2026-04-26T...  designer        resumed-from-design         WORK-xyz
-2026-04-26T...  designer        signaling-design-revised    WORK-xyz
-2026-04-26T...  designer        resumed-from-design-revised WORK-xyz
-2026-04-26T...  designer        signaling-completion        WORK-xyz
-2026-04-26T...  designer        approved                    WORK-xyz
-2026-04-26T...  investigator    started                     WORK-xyz
-2026-04-26T...  investigator    signaling-attention         WORK-xyz
-2026-04-26T...  investigator    resumed                     WORK-xyz
-2026-04-26T...  investigator    researching                 WORK-xyz
-2026-04-26T...  investigator    signaling-research-ready    WORK-xyz
-2026-04-26T...  investigator    resumed                     WORK-xyz
-2026-04-26T...  investigator    approved                    WORK-xyz
-2026-04-26T...  investigator    feedback-received           WORK-xyz
-2026-04-26T...  documenter      started                     WORK-xyz
-2026-04-26T...  documenter      signaling-attention         WORK-xyz
-2026-04-26T...  documenter      resumed                     WORK-xyz
-2026-04-26T...  documenter      implementing                WORK-xyz
-2026-04-26T...  documenter      pr-created                  WORK-xyz
-2026-04-26T...  documenter      signaling-attention-pr-ready WORK-xyz
-2026-04-26T...  documenter      approved                    WORK-xyz
-2026-04-26T...  documenter      feedback-received           WORK-xyz
+2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
+2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
+2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
 ```
 
----
-
-## Proactive Issue Reporting
-
-Workers are expected to file triage tasks for anything noteworthy they observe during their work — bugs, inconsistencies, missing tests, documentation gaps, security concerns — **even if unrelated to their assigned task**.
-
-All triage tasks go into the **Triage** folder at the root of the NoteCove storage directory. Workers resolve the folder ID dynamically at startup:
-
-```bash
-TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
-```
-
-Then create triage tasks using `${TRIAGE_FOLDER}`:
-
-```bash
-notecove task create "<title>" \
-  --folder ${TRIAGE_FOLDER} \
-  --project WORK \
-  --content-file - --content-format markdown --json
-```
-
-An automated triage process will eventually process these tasks. Workers should file them immediately rather than batching.
+For the full list of event types per component, see each component's skill or script source.
 
 ---
 
@@ -607,81 +387,11 @@ agentmesh task create <title> \   # create a new task in NoteCove
 
 ### Manual / Legacy
 
-**Spokesman (terminal interface):**
-```bash
-cd ~/agentmesh
-tmux new-session -s orchestrator
-claude
-/spokesman --project WORK
-```
+**Spokesman** (terminal interface): `tmux new-session -s orchestrator && claude && /spokesman --project WORK`
 
-The Spokesman bootstraps the entire system (orchestrator.py daemon + dispatcher + watchdog + folder-cleanup) and handles all user interaction from there.
+**SlackBridge** (Slack interface): `tmux new-session -s orchestrator && claude && /slack-bridge --project WORK --channel C01234567`
 
-**SlackBridge (Slack-only interface):**
-```bash
-cd ~/agentmesh
-tmux new-session -s orchestrator
-claude
-/slack-bridge --project WORK --channel C01234567
-```
-
-The SlackBridge bootstraps the entire system (same as Spokesman) when invoked manually without `--no-bootstrap`.
-
-> **Note:** `--no-bootstrap` is for use by `agentmesh start` only. Manual invocations use the standard flow above.
-
-### Running Modes
-
-Pass `--mode <mode>` to choose how the orchestrator handles plan and PR reviews:
-
-| Mode | Behavior |
-|---|---|
-| `standard` (default) | User manually reviews plans and PRs; reviewers spawn only on explicit user request |
-| `auto-review` | Plan-reviewers and PR-reviewers spawn automatically; review is passed back to implementers automatically; user only approves the final PR |
-
-**`auto-review` mode flow:**
-1. When a plan is ready → plan-reviewer spawns automatically, review passed back to implementer (no user prompt)
-2. When a PR is ready → pr-reviewer spawns automatically, review passed back to implementer (no user prompt); implementer applies fixes and re-signals when ready
-3. After implementer re-signals PR-ready (post-review) → user sees the final PR and approves or gives feedback
-4. Implementer questions → user is always asked (no automation for Q&A)
-
-Example:
-```bash
-/spokesman --project WORK --mode auto-review
-```
-
-### Review Limit (`--review-limit`)
-
-In `auto-review` mode, the orchestrator tracks how many times each task has gone through an automatic review cycle (separately for plan reviews and PR reviews). If the cycle count exceeds the limit, the orchestrator escalates to the Spokesman instead of spawning another reviewer — the user must intervene manually.
-
-| Option | Default | Description |
-|---|---|---|
-| `--review-limit <n>` | `3` | Max auto-review cycles per task per review type before escalating to user |
-
-Counter files (`signals/<slug>.plan-review-count` and `signals/<slug>.pr-review-count`) are cleared at task terminal state (done, abort, crash) and on bootstrap.
-
-Example:
-```bash
-/spokesman --project WORK --mode auto-review --review-limit 5
-```
-
-### Interface (`--interface`)
-
-Pass `--interface <mode>` to choose which user-facing interfaces are active:
-
-| Interface | Behavior |
-|---|---|
-| `spokesman` (default) | Only the Spokesman Claude Code process handles user interaction |
-| `slack` | Slack integration only: starts `slack-socket-relay.py` to deliver messages from Slack to SlackBridge |
-| `both` | Both Spokesman and Slack interfaces active simultaneously |
-
-When `--interface` includes `slack`, `--slack-channel <channel-id>` is required, and `SLACK_APP_TOKEN` must be set in the environment. The channel ID is written to `signals/slack-channel` for the SlackBridge skill to read.
-
-Example — start with both interfaces:
-```bash
-SLACK_APP_TOKEN=xapp-... /spokesman --project WORK --interface both --slack-channel C01234567
-```
-
-The SlackBridge skill registers itself in `signals/active-interfaces` when it starts, enabling the orchestrator to forward worker events to both Spokesman and SlackBridge simultaneously.
+> `--no-bootstrap` is for use by `agentmesh start` only. Manual invocations use the standard flow above.
 
 ### Legacy Entry Point
 
