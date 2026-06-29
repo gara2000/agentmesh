@@ -4,7 +4,7 @@
 
 events:
   questions:
-    fired_by: [implementer, planner, brainstormer, designer, investigator]
+    fired_by: [implementer, planner, brainstormer, designer, investigator, ticketer]
     next_state: doing
     requires_user_input: true
     meaning: "Agent has questions for the user"
@@ -77,6 +77,18 @@ events:
     next_state: done
     requires_user_input: false
     meaning: "Subtasks created (or skipped), parent marked Done"
+
+  tickets-draft:
+    fired_by: [ticketer]
+    next_state: doing
+    requires_user_input: true
+    meaning: "Ticket draft ready — awaiting user confirmation before creating in Atlassian"
+
+  tickets-created:
+    fired_by: [ticketer]
+    next_state: done
+    requires_user_input: false
+    meaning: "Tickets successfully created in Jira — task auto-completed by orchestrator"
 
   plan-review-complete:
     fired_by: [plan-reviewer]

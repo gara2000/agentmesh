@@ -240,7 +240,7 @@ title=$(echo "$task_info" | python3 -c "import sys,json; print(json.load(sys.std
 seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 ```
 
-**Rule for user-input events:** For every event that requires user input (questions, plan-ready, plan-revised, pr-submitted, pr-ready, plan-review-complete, pr-review-complete, review-limit-reached, ideas-ready, selection-ready, design-ready, design-revised, research-ready, unknown), immediately re-launch `tmux wait-for spokesman-event` in background (Bash tool, `run_in_background=true`) right after presenting the attention block — **before** waiting for user response. This ensures new worker signals are captured while the user is reading and deciding.
+**Rule for user-input events:** For every event that requires user input (questions, plan-ready, plan-revised, pr-submitted, pr-ready, plan-review-complete, pr-review-complete, review-limit-reached, ideas-ready, selection-ready, design-ready, design-revised, research-ready, tickets-draft, unknown), immediately re-launch `tmux wait-for spokesman-event` in background (Bash tool, `run_in_background=true`) right after presenting the attention block — **before** waiting for user response. This ensures new worker signals are captured while the user is reading and deciding.
 
 Dispatch on event type:
 
@@ -263,6 +263,8 @@ case "$event_rest" in
   event:design-ready)     → designer design ready for review
   event:design-revised)   → designer design revised (same as design-ready attention)
   event:research-ready)   → investigator research complete, awaiting user approval
+  event:tickets-draft)    → ticketer draft ready for user confirmation before Jira creation
+  event:tickets-created)  → ticketer completed (auto-announce, no user input needed)
   event:crash-limit-reached) → worker crash limit (warn user, no auto-resume)
   *)                      → unknown (log and tell user)
 esac
@@ -664,6 +666,51 @@ Wait for the user to respond.
 **If feedback provided:** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
 
 **If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
+
+---
+
+### Event: `event:tickets-draft` — ticketer draft ready for confirmation
+
+```
+── Ticketer: Draft Ready ────────────────────────
+Task: <slug> — <title>
+The ticketer has drafted the Jira tickets for your review.
+Open NoteCove to read the DRAFT note, then:
+  • 'confirm' or 'proceed' — approve the draft and create the tickets in Jira
+  • feedback               — describe changes needed to the draft
+  • 'abort'                — mark the task Won't Do
+─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'confirm' or 'proceed':** log `attention-resumed`, set `Doing` → `send_cmd <slug> resume`
+
+**If feedback provided:** log `attention-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
+
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
+
+---
+
+### Event: `event:tickets-created` — ticketer completed
+
+Auto-announce — no user input required. The orchestrator has already marked the task Done.
+
+```bash
+printf '%s\tspokesman    \ttickets-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+```
+
+Display a completion announcement:
+
+```
+── Ticketer: Tickets Created ───────────────────
+Task: <slug> — <title>
+Jira tickets have been created successfully.
+Open NoteCove to see the COMPLETION note for the list of created tickets.
+────────────────────────────────────────────────
+```
+
+Continue draining the queue without waiting for user input.
 
 ---
 
