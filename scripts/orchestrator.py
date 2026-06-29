@@ -42,6 +42,7 @@ TYPE_MAP: dict[str, str] = {
     "documentation": "documenter",
     "design":        "designer",
     "investigation": "investigator",
+    "ticketing":     "ticketer",
 }
 
 # ---------------------------------------------------------------------------
@@ -343,6 +344,11 @@ class Orchestrator:
             self.pick_up_ready_tasks()
         elif event_type == "event:research-ready":
             subprocess.run(["bash", str(EVENTS / "research-ready.sh"), slug])
+        elif event_type == "event:tickets-draft":
+            subprocess.run(["bash", str(EVENTS / "tickets-draft.sh"), slug])
+        elif event_type == "event:tickets-created":
+            subprocess.run(["bash", str(EVENTS / "tickets-created.sh"), slug, resume_sig, self.project])
+            self.pick_up_ready_tasks()
         elif event_type == "event:completion":
             subprocess.run(["bash", str(EVENTS / "completion.sh"), slug, resume_sig, self.project])
             self.pick_up_ready_tasks()
@@ -420,7 +426,7 @@ class Orchestrator:
             # TODO: read role from skill metadata (skill frontmatter 'role:' key) instead of
             # validating against a hardcoded allowlist — once all skills declare role: this
             # list can be driven by discovered skill files rather than maintained here.
-            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator", "documenter") else "implementer"
+            agent_type = args if args in ("implementer", "planner", "brainstormer", "designer", "investigator", "documenter", "ticketer") else "implementer"
             self._in_flight.discard(slug)
             self._spawn_worker(slug, agent_type)
             # Called with self._lock held — pick_up_ready_tasks() must not acquire the lock

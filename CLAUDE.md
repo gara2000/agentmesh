@@ -62,7 +62,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 <!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
 | Event Tag | Fired by | Meaning |
 |---|---|---|
-| `event:questions` | Implementer / Planner / Brainstormer / Investigator | Agent has questions for the user |
+| `event:questions` | Implementer / Planner / Brainstormer / Investigator / Ticketer | Agent has questions for the user |
 | `event:plan-ready` | Implementer | Plan note written (first submission), awaiting review |
 | `event:plan-revised` | Implementer | Plan revised after reviewer feedback; re-review requested |
 | `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
@@ -73,6 +73,8 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
 | `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
 | `event:research-ready` | Investigator | Context notes written — awaiting user review and approval |
+| `event:tickets-draft` | Ticketer | Ticket draft written — awaiting user confirmation before creating in Atlassian |
+| `event:tickets-created` | Ticketer | Tickets created in Jira — task auto-completed by orchestrator |
 | `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
 | `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
 | `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
@@ -205,6 +207,7 @@ Session: workers
   window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
   window N: WORK-def         ← /investigator skill (Claude Code, yolo mode) — for research/context-gathering tasks
   window N: WORK-ghi         ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
+  window N: WORK-jkl         ← /ticketer skill (Claude Code, yolo mode) — for Jira ticket creation tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
