@@ -436,6 +436,13 @@ class Orchestrator:
             (SIGNALS / f"{slug}.review-start").unlink(missing_ok=True)
             _print(f"resuming {slug} via {resume_sig}")
             tmux_signal(resume_sig)
+            # If the task is already in a terminal state (e.g., Spokesman approved a
+            # research-ready or completion task), clean up the worker window and registry.
+            # The resume signal above unblocks the worker; task_done handles the rest.
+            state = get_task_state(slug)
+            if state in ("done", "won't do"):
+                task_done(slug, self.project)
+                tmux(f"kill-window -t orchestrator:pr-mon-{slug} 2>/dev/null || true")
             self.pick_up_ready_tasks()
         elif cmd in ("done", "pr-approved"):
             log("orchestrator ", "review-approved", slug)
