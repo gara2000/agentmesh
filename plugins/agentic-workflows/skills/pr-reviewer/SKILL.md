@@ -189,8 +189,7 @@ If the artifact to review cannot be located (no PLAN note, no PR URL), **do not 
 
 ```bash
 notecove task comments add <slug> --user "PR Reviewer" "event:<review-type>-complete No artifact found — <explain what was missing>."
-printf '%s	pr-reviewer  	error-no-artifact	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tpr-reviewer  \terror-no-artifact\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 notecove task change <slug> --state Attention
 signal_fire "event:<review-type>-complete"
 exit 0
