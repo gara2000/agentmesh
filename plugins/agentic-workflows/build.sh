@@ -103,7 +103,7 @@ if not re.search(pattern, content, re.DOTALL):
     print(f"ERROR: BASE-AGENT markers not found in {family_file}", file=sys.stderr)
     sys.exit(1)
 
-new_content = re.sub(pattern, replacement, content, flags=re.DOTALL, count=1)
+new_content = re.sub(pattern, lambda m: replacement, content, flags=re.DOTALL, count=1)
 
 with open(family_file, 'w') as f:
     f.write(new_content)
@@ -186,7 +186,7 @@ if not re.search(pattern, content, re.DOTALL):
     print(f"ERROR: markers not found in {skill_file}", file=sys.stderr)
     sys.exit(1)
 
-new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+new_content = re.sub(pattern, lambda m: replacement, content, flags=re.DOTALL)
 
 with open(skill_file, 'w') as f:
     f.write(new_content)
@@ -488,7 +488,7 @@ if not re.search(pattern, content, re.DOTALL):
     print(f"ERROR: EVENTS-TABLE markers not found in {skill_file}", file=sys.stderr)
     sys.exit(1)
 
-new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+new_content = re.sub(pattern, lambda m: replacement, content, flags=re.DOTALL)
 
 with open(skill_file, 'w') as f:
     f.write(new_content)

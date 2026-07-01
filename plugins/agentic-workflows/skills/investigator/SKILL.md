@@ -160,17 +160,13 @@ Follow this lookup order:
    EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
    import sys
    text = sys.stdin.read()
-   if 'Description:
-' in text:
-       print(text.split('Description:
-', 1)[1].strip())
+   if 'Description:\n' in text:
+       print(text.split('Description:\n', 1)[1].strip())
    else:
        print('')
    ")
    if [ -n "$EXISTING_DESC" ]; then
-       printf '%s
-
-%s' "[[F:<folder-id>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+       printf '%s\n\n%s' "[[F:<folder-id>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
    else
        notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
    fi
@@ -184,17 +180,13 @@ Follow this lookup order:
    EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
    import sys
    text = sys.stdin.read()
-   if 'Description:
-' in text:
-       print(text.split('Description:
-', 1)[1].strip())
+   if 'Description:\n' in text:
+       print(text.split('Description:\n', 1)[1].strip())
    else:
        print('')
    ")
    if [ -n "$EXISTING_DESC" ]; then
-       printf '%s
-
-%s' "[[F:<folder-longid>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
+       printf '%s\n\n%s' "[[F:<folder-longid>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
    else
        notecove task change <slug> --content "[[F:<folder-longid>|<folder-path>]]" --content-format markdown
    fi
