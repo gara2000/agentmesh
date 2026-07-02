@@ -68,6 +68,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
 | `event:pr-revised:<url>` | Implementer | PR revised after reviewer feedback; re-review requested |
 | `event:pr-ready-final:<url>` | Implementer | PR is ready for user approval — no further automated review needed |
+| `event:confluence-ready:<url>` | Documenter | Confluence page created/updated at `<url>` in personal space, awaiting user review — no PR created |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
@@ -91,6 +92,7 @@ The orchestrator translates worker events into Spokesman events:
 | `event:pr-ready:<url>` | `event:pr-submitted:<url>` | Standard mode | PR needs user decision (approve / review / feedback / abort) |
 | `event:pr-revised:<url>` | `event:pr-submitted:<url>` | Standard mode | Revised PR needs user decision |
 | `event:pr-ready-final:<url>` | `event:pr-ready:<url>` | Auto-review mode, post-review | PR validated; ready for final user approval |
+| `event:confluence-ready:<url>` | `event:confluence-submitted:<url>` | Always | Confluence docs ready; needs user decision (approve / feedback / abort) |
 
 ---
 

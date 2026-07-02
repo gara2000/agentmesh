@@ -372,6 +372,9 @@ class Orchestrator:
             subprocess.run(["bash", str(EVENTS / "pr-ready-final.sh"), slug, pr_url])
         elif event_type == "event:pr-review-complete":
             subprocess.run(["bash", str(EVENTS / "pr-review-complete.sh"), slug, resume_sig, self.mode])
+        elif event_type.startswith("event:confluence-ready:"):
+            confluence_url = event_type[len("event:confluence-ready:"):]
+            subprocess.run(["bash", str(EVENTS / "confluence-ready.sh"), slug, confluence_url])
         elif event_type in ("event:questions", "event:ideas-ready", "event:selection-ready",
                              "event:design-ready", "event:design-revised"):
             self._forward_to_spokesman(slug, event_type)
