@@ -42,6 +42,13 @@ events:
     requires_user_input: true
     meaning: "PR ready for user approval — no further automated review needed"
 
+  confluence-ready:
+    fired_by: [documenter]
+    url_bearing: true
+    next_state: doing
+    requires_user_input: true
+    meaning: "Confluence page created/updated in personal space, awaiting user review — no PR created"
+
   ideas-ready:
     fired_by: [brainstormer]
     next_state: doing

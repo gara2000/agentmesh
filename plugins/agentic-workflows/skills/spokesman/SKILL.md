@@ -240,7 +240,7 @@ title=$(echo "$task_info" | python3 -c "import sys,json; print(json.load(sys.std
 seq=$(cat ~/agentmesh/signals/<slug>.seq 2>/dev/null || echo "0")
 ```
 
-**Rule for user-input events:** For every event that requires user input (questions, plan-ready, plan-revised, pr-submitted, pr-ready, plan-review-complete, pr-review-complete, review-limit-reached, ideas-ready, selection-ready, design-ready, design-revised, research-ready, tickets-draft, unknown), immediately re-launch `tmux wait-for spokesman-event` in background (Bash tool, `run_in_background=true`) right after presenting the attention block — **before** waiting for user response. This ensures new worker signals are captured while the user is reading and deciding.
+**Rule for user-input events:** For every event that requires user input (questions, plan-ready, plan-revised, pr-submitted, pr-ready, confluence-submitted, plan-review-complete, pr-review-complete, review-limit-reached, ideas-ready, selection-ready, design-ready, design-revised, research-ready, tickets-draft, unknown), immediately re-launch `tmux wait-for spokesman-event` in background (Bash tool, `run_in_background=true`) right after presenting the attention block — **before** waiting for user response. This ensures new worker signals are captured while the user is reading and deciding.
 
 Dispatch on event type:
 
@@ -254,6 +254,7 @@ case "$event_rest" in
   event:plan-revised)     → plan revised (standard mode only, same as plan-ready attention)
   event:pr-submitted:*)   → PR submitted (standard mode): needs user decision (approve / review / feedback / abort)
   event:pr-ready:*)       → PR validated (auto-review mode, post-review via event:pr-ready-final): ready for final user approval
+  event:confluence-submitted:*) → Confluence docs ready for review: needs user decision (approve / feedback / abort)
   event:plan-review-complete) → post-plan-review attention
   event:pr-review-complete)   → post-PR-review attention
   event:review-limit-reached:plan) → plan review limit escalation (requires user decision)
@@ -443,6 +444,36 @@ Options:
   • feedback   — provide feedback for the worker to act on
   • 'abort'    — mark the task Won't Do
 ─────────────────────────────────────────────────
+```
+
+Wait for the user to respond.
+
+**If 'approve':** log `review-approved` → `send_cmd <slug> pr-approved`
+
+**If feedback provided:** log `review-feedback`, comment `"<feedback>"`, set `Doing` → `send_cmd <slug> resume`
+
+**If 'abort':** log `review-aborted`, set `Won't Do` → `send_cmd <slug> abort`
+
+---
+
+### Event: `event:confluence-submitted:<url>` — Confluence docs ready for review
+
+Fired by the orchestrator when a documenter signals `event:confluence-ready:<url>`. The documenter has created or updated Confluence pages in the user's personal space and is awaiting review and approval.
+
+Extract Confluence URL from event: `confluence_url=${event_rest#event:confluence-submitted:}`
+
+Re-launch `tmux wait-for spokesman-event` in background immediately (user-input event).
+
+```
+── Confluence Docs Ready ─────────────────────
+Task: <slug> — <title>
+The documenter has written/updated Confluence documentation.
+Page: <confluence_url>
+Options:
+  • 'approve'  — accept and mark task done
+  • feedback   — provide feedback for the documenter to act on
+  • 'abort'    — mark the task Won't Do
+─────────────────────────────────────────────
 ```
 
 Wait for the user to respond.
