@@ -35,14 +35,15 @@ NOTECOVE_BIN = "node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 # ---------------------------------------------------------------------------
 
 TYPE_MAP: dict[str, str] = {
-    "feature":       "implementer",
-    "bug":           "implementer",
-    "plan":          "planner",
-    "brainstorming": "brainstormer",
-    "documentation": "documenter",
-    "design":        "designer",
-    "investigation": "investigator",
-    "ticketing":     "ticketer",
+    "feature":         "implementer",
+    "bug":             "implementer",
+    "plan":            "planner",
+    "brainstorming":   "brainstormer",
+    "documentation":   "documenter",
+    "design":          "designer",
+    "investigation":   "investigator",
+    "ticketing":       "ticketer",
+    "skill-creation":  "skill-creator",
 }
 
 # ---------------------------------------------------------------------------

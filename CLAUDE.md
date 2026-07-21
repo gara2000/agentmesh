@@ -210,6 +210,7 @@ Session: workers
   window N: WORK-def         ← /investigator skill (Claude Code, yolo mode) — for research/context-gathering tasks
   window N: WORK-ghi         ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
   window N: WORK-jkl         ← /ticketer skill (Claude Code, yolo mode) — for Jira ticket creation tasks
+  window N: WORK-mno         ← /skill-creator skill (Claude Code, yolo mode) — for creating/improving agentmesh skills
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
@@ -226,7 +227,7 @@ Skills inherit from a two-level base hierarchy:
 ```
 shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
   ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
-  │     └── implementer, planner, brainstormer, investigator, documenter
+  │     └── implementer, planner, brainstormer, investigator, documenter, skill-creator
   └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
         └── plan-reviewer, pr-reviewer
 ```
