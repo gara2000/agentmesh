@@ -44,6 +44,7 @@ TYPE_MAP: dict[str, str] = {
     "investigation":   "investigator",
     "ticketing":       "ticketer",
     "skilling":        "skill-creator",
+    "rfc":             "rfc-creator",
 }
 
 # ---------------------------------------------------------------------------

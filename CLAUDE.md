@@ -68,7 +68,7 @@ When a task reaches `Attention`, the orchestrator reads the **last comment** to 
 | `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
 | `event:pr-revised:<url>` | Implementer | PR revised after reviewer feedback; re-review requested |
 | `event:pr-ready-final:<url>` | Implementer | PR is ready for user approval — no further automated review needed |
-| `event:confluence-ready:<url>` | Documenter | Confluence page created/updated at `<url>` in personal space, awaiting user review — no PR created |
+| `event:confluence-ready:<url>` | Documenter / RFC Creator | Confluence page created/updated at `<url>` in personal space, awaiting user review — no PR created |
 | `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
 | `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
 | `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
@@ -211,6 +211,7 @@ Session: workers
   window N: WORK-ghi         ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
   window N: WORK-jkl         ← /ticketer skill (Claude Code, yolo mode) — for Jira ticket creation tasks
   window N: WORK-mno         ← /skill-creator skill (Claude Code, yolo mode) — for creating/improving agentmesh skills
+  window N: WORK-pqr         ← /rfc-creator skill (Claude Code, yolo mode) — for RFC/architecture proposal creation tasks
   window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
   window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
   ...
