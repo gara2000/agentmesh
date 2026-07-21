@@ -746,7 +746,7 @@ TYPE_MAP: dict[str, str] = {
 }
 ```
 
-The key is the lowercased NoteCove typeId/typeName (e.g. `"skill-creation"`).
+The key is the lowercased NoteCove typeId/typeName (e.g. `"skilling"` for the Skilling task type).
 
 ### 4f. Update protocol.yaml (if skill fires events)
 
