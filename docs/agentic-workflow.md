@@ -99,7 +99,8 @@ flowchart TD
     I -->|brainstormer| BR[Spawn /brainstormer]
     I -->|designer| DE[Spawn /designer]
     I -->|documenter| DOC[Spawn /documenter]
-    W & P & BR & DE & DOC --> J[Register in signals/workers]
+    I -->|skill-creator| SC[Spawn /skill-creator]
+    W & P & BR & DE & DOC & SC --> J[Register in signals/workers]
     J --> K([Enter event loop])
 ```
 
