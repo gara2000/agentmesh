@@ -409,13 +409,8 @@ cmd_switch() {
   for win in main orchestrator ready-poller; do
     tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
   done
-
-  # Kill any pr-mon-* windows (they belong to the old project's PR tracking)
-  tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null \
-    | grep "^pr-mon-" \
-    | while read -r w; do
-        tmux kill-window -t "orchestrator:$w" 2>/dev/null || true
-      done || true
+  # pr-mon-* windows are left running — they are lightweight bash loops that
+  # will queue a merge event if the PR merges while the user is on another project
 
   # 3. Clear orchestrator/spokesman-owned state; preserve worker-owned state
   #    Worker-owned: queue, workers registry, per-task .seq/.merged/.crash-count/.review-start/review-count
