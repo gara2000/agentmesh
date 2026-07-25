@@ -406,8 +406,11 @@ cmd_switch() {
   #    Leave project-agnostic daemons running (dispatcher, watchdog, folder-cleanup)
   #    Leave the workers session untouched
   echo "  · stopping project-scoped components..."
+  # Kill by window name — loop to handle duplicates (tmux kill-window only removes the first match)
   for win in main orchestrator ready-poller; do
-    tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
+    while tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qx "$win"; do
+      tmux kill-window -t "orchestrator:$win" 2>/dev/null || break
+    done
   done
   # pr-mon-* windows are left running — they are lightweight bash loops that
   # will queue a merge event if the PR merges while the user is on another project
@@ -425,12 +428,13 @@ cmd_switch() {
   cd "$AGENTMESH"
   $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
 
-  # 5. Resolve and persist Triage folder ID for the new project
+  # 5. Resolve and persist Triage folder ID for the new project (optional — not all projects have one)
   local TRIAGE_FOLDER
   TRIAGE_FOLDER=$($NOTECOVE folder list --json | python3 -c "
 import sys, json
 folders = json.load(sys.stdin)
-print(next(f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None))")
+match = next((f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None), '')
+print(match)")
   echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
   # 6. Write mode and orchestrator restart command for the new project
@@ -439,14 +443,14 @@ print(next(f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] i
     > "$SIGNALS/orchestrator-restart-cmd"
 
   # 7. Start orchestrator.py with the new project
-  tmux new-window -t orchestrator -n orchestrator
+  tmux new-window -t "orchestrator:" -n orchestrator
   tmux send-keys -t orchestrator:orchestrator \
     "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
     Enter
   echo "  ✓ orchestrator.py started (project: $PROJECT)"
 
   # 8. Start ready-poller with the new project
-  tmux new-window -t orchestrator -n ready-poller
+  tmux new-window -t "orchestrator:" -n ready-poller
   tmux send-keys -t orchestrator:ready-poller \
     "bash $SCRIPTS/ready-poller.sh --project $PROJECT" Enter
   echo "  ✓ ready-poller started"
