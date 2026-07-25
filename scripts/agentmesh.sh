@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agentmesh — AgentMesh lifecycle CLI
-# Usage: agentmesh <start|stop|status|attach> [options]
+# Usage: agentmesh <start|stop|switch|status|attach> [options]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -46,7 +46,7 @@ _wait_for_repl() {
 
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
-  local MAX_WORKERS="10" REVIEW_LIMIT="3" INTERFACE="spokesman"
+  local MAX_WORKERS="30" REVIEW_LIMIT="3" INTERFACE="spokesman"
   local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="60" SLOW_INTERVAL="120"
   local SLACK_IDLE_PAUSE="0"
 
@@ -374,6 +374,105 @@ cmd_task() {
   esac
 }
 
+# ── switch ─────────────────────────────────────────────────────────────────
+
+cmd_switch() {
+  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
+  local MAX_WORKERS="30" REVIEW_LIMIT="3"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project)              PROJECT="$2";              shift 2 ;;
+      --profile)              PROFILE="$2";              shift 2 ;;
+      --mode)                 MODE="$2";                 shift 2 ;;
+      --max-workers)          MAX_WORKERS="$2";          shift 2 ;;
+      --review-limit)         REVIEW_LIMIT="$2";         shift 2 ;;
+      *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  if [[ -z "$PROJECT" ]]; then
+    echo "Error: --project is required" >&2
+    exit 1
+  fi
+
+  # 1. Verify orchestrator session exists (agentmesh must be running)
+  if ! _session_exists orchestrator; then
+    echo "Error: agentmesh is not running. Use 'agentmesh start' first." >&2
+    exit 1
+  fi
+
+  # 2. Kill project-scoped components (spokesman, orchestrator.py, ready-poller)
+  #    Leave project-agnostic daemons running (dispatcher, watchdog, folder-cleanup)
+  #    Leave the workers session untouched
+  echo "  · stopping project-scoped components..."
+  # Kill by window name — loop to handle duplicates (tmux kill-window only removes the first match)
+  for win in main orchestrator ready-poller; do
+    while tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qx "$win"; do
+      tmux kill-window -t "orchestrator:$win" 2>/dev/null || break
+    done
+  done
+  # pr-mon-* windows are left running — they are lightweight bash loops that
+  # will queue a merge event if the PR merges while the user is on another project
+
+  # 3. Clear orchestrator/spokesman-owned state; preserve worker-owned state
+  #    Worker-owned: queue, workers registry, per-task .seq/.merged/.crash-count/.review-start/review-count
+  #    Orchestrator-owned: spokesman-queue, orchestrator-cmds, active-interfaces, heartbeat
+  : > "$SIGNALS/spokesman-queue"
+  : > "$SIGNALS/slackbridge-queue"
+  : > "$SIGNALS/orchestrator-cmds"
+  : > "$SIGNALS/active-interfaces"
+
+  # 4. Re-init NoteCove for the new project
+  local NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
+  cd "$AGENTMESH"
+  $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
+
+  # 5. Resolve and persist Triage folder ID for the new project (optional — not all projects have one)
+  local TRIAGE_FOLDER
+  TRIAGE_FOLDER=$($NOTECOVE folder list --json | python3 -c "
+import sys, json
+folders = json.load(sys.stdin)
+match = next((f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None), '')
+print(match)")
+  echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
+
+  # 6. Write mode and orchestrator restart command for the new project
+  echo "$MODE" > "$SIGNALS/mode"
+  echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
+    > "$SIGNALS/orchestrator-restart-cmd"
+
+  # 7. Start orchestrator.py with the new project
+  tmux new-window -t "orchestrator:" -n orchestrator
+  tmux send-keys -t orchestrator:orchestrator \
+    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
+    Enter
+  echo "  ✓ orchestrator.py started (project: $PROJECT)"
+
+  # 8. Start ready-poller with the new project
+  tmux new-window -t "orchestrator:" -n ready-poller
+  tmux send-keys -t orchestrator:ready-poller \
+    "bash $SCRIPTS/ready-poller.sh --project $PROJECT" Enter
+  echo "  ✓ ready-poller started"
+
+  # 9. Start Spokesman with the new project (--no-bootstrap since daemons are already running)
+  tmux new-window -t "orchestrator:" -n main
+  tmux send-keys -t "orchestrator:main" "cd $AGENTMESH && claude --dangerously-skip-permissions" Enter
+  _wait_for_repl "orchestrator:main"
+  tmux send-keys -t "orchestrator:main" \
+    "/spokesman --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT --no-bootstrap" \
+    Enter
+  echo "  ✓ Spokesman started (orchestrator:main)"
+
+  # 10. Fresh heartbeat
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
+
+  echo ""
+  echo "agentmesh switched to project: ${PROJECT}. Mode: ${MODE}."
+  echo "  · existing workers from previous project are still running"
+  echo "  · dispatcher, watchdog, folder-cleanup remain active"
+}
+
 # ── dispatch ───────────────────────────────────────────────────────────────────
 
 COMMAND="${1:-}"
@@ -382,17 +481,19 @@ shift || true
 case "$COMMAND" in
   start)         cmd_start         "$@" ;;
   stop)          cmd_stop          "$@" ;;
+  switch)        cmd_switch        "$@" ;;
   status)        cmd_status        "$@" ;;
   attach)        cmd_attach        "$@" ;;
   task)          cmd_task          "$@" ;;
   pause-poller)  cmd_pause_poller  "$@" ;;
   resume-poller) cmd_resume_poller "$@" ;;
   *)
-    echo "Usage: agentmesh <start|stop|status|attach|task|pause-poller|resume-poller> [options]" >&2
+    echo "Usage: agentmesh <start|stop|switch|status|attach|task|pause-poller|resume-poller> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
     echo "  start          Start the agentmesh system" >&2
     echo "  stop           Stop the agentmesh system" >&2
+    echo "  switch         Switch to a different project (preserves running workers)" >&2
     echo "  status         Show component health" >&2
     echo "  attach         Attach to the orchestrator tmux session" >&2
     echo "  task create    Create a new task in NoteCove" >&2
