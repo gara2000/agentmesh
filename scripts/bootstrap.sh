@@ -4,6 +4,7 @@
 #                     [--interface spokesman|slack|both] [--slack-channel <channel-id>]
 #                     [--fast-interval <seconds>] [--slow-interval <seconds>]
 #                     [--slack-idle-pause <minutes>]
+#                     [--switch]  # preserve worker-owned signals when switching projects
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -24,6 +25,7 @@ SLACK_CHANNEL=""
 FAST_INTERVAL="60"
 SLOW_INTERVAL="120"
 SLACK_IDLE_PAUSE="0"
+SWITCH="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --fast-interval) FAST_INTERVAL="$2"; shift 2 ;;
     --slow-interval) SLOW_INTERVAL="$2"; shift 2 ;;
     --slack-idle-pause) SLACK_IDLE_PAUSE="$2"; shift 2 ;;
+    --switch) SWITCH="true"; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -55,10 +58,22 @@ fi
 cd "$AGENTMESH"
 $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
 
-# 0b. Create signals directory, empty queue, registry, and log; clear stale runtime flags
+# 0b. Create signals directory and clear/preserve runtime state
 mkdir -p "$SIGNALS"
-: > "$SIGNALS/queue"
-: > "$SIGNALS/workers"
+
+# Worker-owned state: preserved during --switch so running workers from the other project are not disrupted
+if [[ "$SWITCH" != "true" ]]; then
+  : > "$SIGNALS/queue"
+  : > "$SIGNALS/workers"
+  rm -f "$SIGNALS/"*.seq
+  rm -f "$SIGNALS/"*.merged
+  rm -f "$SIGNALS/"*.review-start
+  rm -f "$SIGNALS/"*.plan-review-count
+  rm -f "$SIGNALS/"*.pr-review-count
+  rm -f "$SIGNALS/"*.crash-count
+fi
+
+# Orchestrator/spokesman-owned state: always safe to clear (new instances replace old ones)
 : > "$SIGNALS/events.log"
 : > "$SIGNALS/spokesman-queue"
 : > "$SIGNALS/slackbridge-queue"
@@ -66,12 +81,7 @@ mkdir -p "$SIGNALS"
 : > "$SIGNALS/orchestrator-cmds"
 # Write slack-channel file (empty when slack interface is not in use)
 echo "${SLACK_CHANNEL}" > "$SIGNALS/slack-channel"
-rm -f "$SIGNALS/"*.merged
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
-rm -f "$SIGNALS/"*.review-start
-rm -f "$SIGNALS/"*.plan-review-count
-rm -f "$SIGNALS/"*.pr-review-count
-rm -f "$SIGNALS/"*.crash-count
 rm -f "$SIGNALS/slack-poller-paused"
 rm -f "$SIGNALS/slack-poller-auto-paused"
 rm -f "$SIGNALS/slack-poller-processing"
