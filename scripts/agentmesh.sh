@@ -29,22 +29,6 @@ _heartbeat_age() {
   echo $((now - last_modified))
 }
 
-# Wait for Claude REPL prompt (❯\u00a0) to appear in a tmux window.
-# _timeout iterations × 0.2 s = 60 s real-time fallback.
-_wait_for_repl() {
-  local session_window="$1"
-  local elapsed=0 timeout=300
-  while [ $elapsed -lt $timeout ]; do
-    if tmux capture-pane -t "$session_window" -p 2>/dev/null | grep -q $'❯\xc2\xa0'; then
-      return 0
-    fi
-    sleep 0.2
-    elapsed=$((elapsed + 1))
-  done
-  echo "Warning: timed out waiting for Claude REPL in $session_window" >&2
-  return 1
-}
-
 # ── start ──────────────────────────────────────────────────────────────────────
 
 cmd_start() {
