@@ -40,7 +40,19 @@ fi
 cd "$AGENTMESH"
 $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes --events
 
-# 0b. Create signals directory and log; clear stale runtime flags
+# 0b. Kill any surviving per-task processes BEFORE clearing their state.
+#     A sidecar that outlives the wipe below is actively harmful: with its
+#     baseline files gone its next diff computes first_run=true, so it absorbs
+#     everything new — including a reply the user is waiting on — into history
+#     and never writes it to the inbox. The agent then blocks forever on a
+#     message that was silently discarded.
+#     The launcher's reconcile pass re-spawns a sidecar for every live worker on
+#     its first scan, so killing them here costs nothing.
+for _w in $(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -E '^(side-|pr-mon-)' || true); do
+  tmux kill-window -t "orchestrator:${_w}" 2>/dev/null || true
+done
+
+# 0c. Create signals directory and log; clear stale runtime flags
 mkdir -p "$SIGNALS"
 : > "$SIGNALS/workers"
 : > "$SIGNALS/events.log"
@@ -52,7 +64,12 @@ rm -f "$SIGNALS/"*.inbox
 rm -f "$SIGNALS/"*.seq
 rm -f "$SIGNALS/"*.seen-comments
 rm -f "$SIGNALS/"*.seen-state
-date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/launcher.heartbeat"
+rm -f "$SIGNALS/"*.backoff
+rm -f "$SIGNALS/"*.sidecar-handle
+# Deliberately NOT stamping launcher.heartbeat here. The heartbeat means "a scan
+# completed", not "a process was started" — pre-stamping makes a launcher that
+# dies on startup report healthy. launcher.py writes it after each scan.
+rm -f "$SIGNALS/launcher.heartbeat"
 
 LOG="$SIGNALS/events.log"
 
@@ -65,23 +82,23 @@ echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
 printf '%s\tlauncher     \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
-# 0c. Create orchestrator and workers tmux sessions (if not already running)
+# 0e. Create orchestrator and workers tmux sessions (if not already running)
 tmux new-session -d -s orchestrator 2>/dev/null || true
 tmux new-session -d -s workers 2>/dev/null || true
 
-# 0d. Launch watchdog in a background window
+# 0f. Launch watchdog in a background window
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "watchdog" || {
   tmux new-window -t orchestrator -n watchdog
   tmux send-keys -t orchestrator:watchdog "bash $SCRIPTS/watchdog.sh" Enter
 }
 
-# 0e. Launch folder-cleanup daemon in a background window
+# 0g. Launch folder-cleanup daemon in a background window
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup" || {
   tmux new-window -t orchestrator -n folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }
 
-# 0f. Launch the launcher daemon.
+# 0h. Launch the launcher daemon.
 #     Always kill and restart so a stale/old-version launcher is replaced on every
 #     bootstrap. Wrapped in a restart loop: nothing supervises the launcher, and
 #     it is pure Python with no Claude dependency, so respawning in place is the
@@ -90,7 +107,7 @@ tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "launcher" && \
   tmux kill-window -t orchestrator:launcher 2>/dev/null || true
 tmux new-window -t orchestrator -n launcher
 tmux send-keys -t orchestrator:launcher \
-  "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; echo '[launcher] exited — restarting in 5s'; sleep 5; done" \
+  "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; printf '%s\tlauncher     \tprocess-exited-restarting\t-\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> '$LOG'; echo '[launcher] exited — restarting in 5s'; sleep 5; done" \
   Enter
 
 echo "[bootstrap] complete — watchdog, folder-cleanup, and launcher running"

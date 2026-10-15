@@ -331,7 +331,7 @@ flowchart TD
     Live -->|yes| Poll
     Live -->|no| State{"Task state?"}
     State -->|terminal| Clean["Clean exit:<br/>reset crash count, clean up"]
-    State -->|attention| Strand["Stranded: deregister only,<br/>keep sidecar + inbox<br/>→ launcher adopts"]
+    State -->|attention| Strand["Stranded: count the crash,<br/>deregister, keep sidecar + inbox<br/>→ launcher adopts (capped at 3)"]
     State -->|doing| Count{"Crash count"}
     Count -->|"< 3"| Retry["Backoff 30s × 2^(n-1)<br/>clean up → set Ready"]
     Count -->|"≥ 3"| Block["Set Blocked<br/>+ explanatory comment"]
@@ -343,6 +343,8 @@ On crash retry the task goes back to `Ready` and the launcher picks it up on its
 At the crash limit the task is set to `Blocked` with a comment explaining why. **That comment is the user-visible escalation** — no process relays notifications any more.
 
 An `Attention` task whose window is gone is **not** a clean exit: the task is mid-conversation and its worker died. The watchdog deregisters it so it is not re-reported every poll, but leaves the sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it.
+
+This path still **counts crashes**. Adoption respawns on a 30s cadence, so a worker that reproducibly dies right after `await_user` would otherwise be respawned forever with no cap and nothing reported. At three the task is set `Blocked` with a comment warning that the user's reply may never have been read.
 
 Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.seq`, `.launching`, `.seen-comments`, and `.seen-state` files.
 
@@ -480,9 +482,15 @@ Notes keep detailed context out of the task record, and out of comments. If a wo
 
 ## Reliability
 
-**Launcher heartbeat.** `launcher.py` writes `signals/launcher.heartbeat` every 30 seconds. `agentmesh status` reports it stale past 90 seconds (3 missed intervals). The launcher's restart loop handles recovery, so a stale heartbeat means the process is wedged rather than simply dead.
+**Launcher heartbeat.** `launcher.py` writes `signals/launcher.heartbeat` at the end of each completed scan, and `agentmesh status` reports it stale past 90 seconds (3 missed scans at the default interval).
 
-**Sidecar coverage.** A worker whose sidecar has died is deaf to the user: it will block on `await_user` forever. `agentmesh status` compares the sidecar count against the worker count and warns when sidecars are missing.
+Stamping only on a completed scan is deliberate. Stamping at startup — or from a background thread — let a launcher crash-looping every 5 seconds keep the file perpetually fresh, so status reported `✓ running` while nothing was picked up at all. Freshness now means *work is being picked up*. `bootstrap.sh` does not pre-stamp it, and each restart of the supervision loop is logged as `process-exited-restarting`.
+
+**Sidecar coverage.** A worker whose sidecar has died is deaf to the user: it will block on `await_user` forever. The launcher's reconciliation pass respawns it within a scan, and `agentmesh status` compares the sidecar count against the worker count meanwhile.
+
+Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one a hung NoteCove wedged the poll loop silently — the sidecar's window stayed alive, so both the watchdog and `status` kept counting it as healthy while the agent it was meant to wake blocked indefinitely.
+
+**Bootstrap kills sidecars before clearing their state.** A sidecar that outlives the wipe of its own baseline files computes `first_run=true` on its next diff and absorbs everything new — including a reply the user is waiting on — into history, writing nothing to the inbox. Reconciliation respawns them on the first scan, so killing them costs nothing.
 
 **Inbox durability.** The inbox is an append-only file, so a nudge delivered while the agent was mid-turn is not lost — the agent picks it up on its next `await_user`.
 

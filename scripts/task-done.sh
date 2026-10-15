@@ -75,7 +75,9 @@ rm -f "$AGENTMESH/signals/${SLUG}.seq" \
       "$AGENTMESH/signals/${SLUG}.untyped" \
       "$AGENTMESH/signals/${SLUG}.seen-comments" \
       "$AGENTMESH/signals/${SLUG}.seen-state" \
-      "$AGENTMESH/signals/${SLUG}.merged"
+      "$AGENTMESH/signals/${SLUG}.merged" \
+      "$AGENTMESH/signals/${SLUG}.sidecar-handle" \
+      "$AGENTMESH/signals/${SLUG}.backoff"
 
 printf '%s\ttask-done    \tcleanup-complete\t%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SLUG" >> "$AGENTMESH/signals/events.log"

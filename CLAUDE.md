@@ -96,7 +96,7 @@ Responsibilities, in order, every `--poll-interval` seconds (default 30):
 - **Adopt orphaned tasks** — spawn a worker for any `Doing`/`Attention` task with no live worker window (see below)
 - **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
-- Write `signals/launcher.heartbeat` every 30s for `agentmesh status`
+- Write `signals/launcher.heartbeat` **after each completed scan** for `agentmesh status`
 
 Adoption runs first: finishing work already in flight takes priority over starting more of it, and both draw from the same slot budget.
 
@@ -119,7 +119,9 @@ If `tmux list-windows` cannot be queried at all, the whole pass is skipped rathe
 
 **The launcher does not set `Doing`.** The worker does, as its first action. That leaves the task in `Ready` while Claude boots (10–60s), so the launcher writes `signals/<slug>.launching` before spawning and skips any slug holding a live flag; the worker clears it on claiming the task. The flag expires after 5 minutes so a worker that dies during boot does not wedge the task permanently.
 
-The launcher window runs inside a restart loop (`while true; do python3 launcher.py …; sleep 5; done`) — nothing supervises it, and it has no Claude dependency, so respawning in place is the simplest form of supervision.
+The launcher window runs inside a restart loop (`while true; do python3 launcher.py …; sleep 5; done`) — nothing supervises it, and it has no Claude dependency, so respawning in place is the simplest form of supervision. Each restart is logged as `process-exited-restarting`.
+
+**The heartbeat is written only after a completed scan**, never at startup and never from a background thread. Both of those made a launcher crash-looping every 5s look perfectly healthy: each restart refreshed the file, so `agentmesh status` reported `✓ running` while nothing was ever picked up. Freshness now means "work is being picked up", which is what the check is for. `bootstrap.sh` deliberately does not pre-stamp it either.
 
 ### Sidecar reconciliation
 
@@ -167,7 +169,7 @@ Responsibilities:
   - Read `signals/<slug>.crash-count` (default 0); increment
   - If crash count < 3: write the count, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), clean up the task's side processes, and set the task back to `Ready` — the launcher spawns a fresh worker on its next scan
   - If crash count ≥ 3: delete the count file, set the task to `Blocked`, and comment on the task explaining why. `Blocked` plus the comment *is* the user-visible escalation; no process relays notifications any more.
-- If the window is gone and the task is in `attention` → **stranded, not finished**: the task is mid-conversation with the user and its worker is gone. Deregister it (so it is not re-reported every poll) but leave its sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it.
+- If the window is gone and the task is in `attention` → **stranded, not finished**: the task is mid-conversation with the user and its worker is gone. Deregister it (so it is not re-reported every poll) but leave its sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it. **This path still counts crashes**: adoption respawns every 30s, so a worker that reproducibly dies right after `await_user` would otherwise loop forever with nothing said to the user. At the limit the task is set `Blocked` with a comment noting the reply may never have been read.
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
@@ -283,13 +285,14 @@ agentmesh/
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
-    ├── launcher.heartbeat  # UTC timestamp written by launcher.py every 30s; read by `agentmesh status`
+    ├── launcher.heartbeat  # UTC timestamp written by launcher.py after each completed scan; read by `agentmesh status`
     ├── events.log          # append-only TSV: timestamp, component, event_type, slug
     ├── <slug>.inbox            # line-delimited JSON; sidecar/pr-monitor write, agent reads and clears
     ├── <slug>.seq              # nudge sequence counter; written by the agent, read by the sidecar
     ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
     ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
     ├── <slug>.backoff          # sentinel while the watchdog sleeps out a crash backoff; adoption skips these
+    ├── <slug>.sidecar-handle   # comment-author name the running sidecar filters on; checked before reusing it
     ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
     ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
     ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged

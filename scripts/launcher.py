@@ -112,10 +112,6 @@ class Launcher:
     def run(self) -> None:
         _print(f"project={self.project} max-workers={self.max_workers} poll={self.poll_interval}s")
         log("launcher     ", "bootstrap-complete")
-        self._write_heartbeat()
-
-        t_heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
-        t_heartbeat.start()
 
         # Single loop: re-adopt orphaned work, pick up new work, sleep. There is
         # no event loop any more because nothing reports back to the launcher.
@@ -129,10 +125,18 @@ class Launcher:
                 self.reconcile_sidecars()
                 self.adopt_orphaned_tasks()
                 self.pick_up_ready_tasks()
+            # Stamped only after a full scan completes. A launcher that dies
+            # mid-scan must not look healthy — with a separate heartbeat thread
+            # (or a stamp at startup) a process crash-looping every 5s kept the
+            # file perpetually fresh, so `agentmesh status` reported it running
+            # while nothing was ever picked up.
+            self._write_heartbeat()
             self._stop.wait(self.poll_interval)
 
     # -----------------------------------------------------------------------
-    # Heartbeat — read by `agentmesh status`
+    # Heartbeat — read by `agentmesh status`.
+    # Written only at the end of a completed scan, so its freshness means "work
+    # is being picked up", not merely "a process exists".
     # -----------------------------------------------------------------------
 
     def _write_heartbeat(self) -> None:
@@ -141,12 +145,6 @@ class Launcher:
             (SIGNALS / "launcher.heartbeat").write_text(ts)
         except OSError:
             pass
-
-    def _heartbeat_loop(self) -> None:
-        while not self._stop.is_set():
-            self._stop.wait(30)
-            if not self._stop.is_set():
-                self._write_heartbeat()
 
     # -----------------------------------------------------------------------
     # In-flight guard
@@ -232,16 +230,30 @@ class Launcher:
         registering it would make the watchdog treat its exit as a task crash.
         """
         window = f"side-{slug}"
-        running = run_bash(
-            f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qxF '{window}'"
-        )
-        if running.returncode == 0:
-            return
 
         # The agent handle doubles as the comment author name the sidecar filters
         # on. spawn-agent.sh passes the skill name, and skills set --user to the
         # capitalised role, so map handle -> author name the same way here.
         author = AGENT_AUTHOR.get(agent_handle, agent_handle.capitalize())
+        handle_file = SIGNALS / f"{slug}.sidecar-handle"
+
+        running = run_bash(
+            f"tmux list-windows -t orchestrator -F '#{{window_name}}' 2>/dev/null | grep -qxF '{window}'"
+        )
+        if running.returncode == 0:
+            # A sidecar already exists. Reuse it only if it is filtering on the
+            # same author — adoption can re-spawn a worker of a different type
+            # than the one that stranded, and a stale handle makes the new agent's
+            # own comments look foreign, so it wakes itself on every write.
+            try:
+                existing = handle_file.read_text().strip()
+            except OSError:
+                existing = ""
+            if existing == author:
+                return
+            log("launcher     ", f"sidecar-handle-changed:{existing or 'unknown'}->{author}", slug)
+            _print(f"{slug}: sidecar handle changed ({existing or 'unknown'} -> {author}) — respawning")
+            tmux(f"kill-window -t orchestrator:{window} 2>/dev/null || true")
 
         # -d so the launcher does not lose focus; 'orchestrator:' with a trailing
         # colon appends at the end of the window list, avoiding index collisions
@@ -263,6 +275,7 @@ class Launcher:
             _print(f"ERROR: failed to create sidecar window for {slug} ({stderr!r})")
             return
 
+        handle_file.write_text(author)
         log("launcher     ", "sidecar-spawned", slug)
         _print(f"spawned sidecar for {slug}")
 
@@ -484,8 +497,6 @@ class Launcher:
     # -----------------------------------------------------------------------
 
     def pick_up_ready_tasks(self) -> None:
-        self._write_heartbeat()
-
         slots = self._free_slots()
         if slots <= 0:
             return
@@ -506,7 +517,7 @@ class Launcher:
             tasks = json.loads(result.stdout)
         except (json.JSONDecodeError, ValueError):
             return
-        if not tasks:
+        if not isinstance(tasks, list) or not tasks:
             return
 
         # Lower priority number = higher priority (P0 > P1 > P2); untriaged

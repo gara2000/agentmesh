@@ -39,6 +39,9 @@ NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 SLUG=""
 AGENT_HANDLE=""
 POLL_INTERVAL="60"
+# Upper bound on any single NoteCove call. Comfortably above a normal local-socket
+# response, low enough that a hang costs one poll cycle rather than the session.
+CALL_TIMEOUT="30"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,8 +79,19 @@ log_event() {
 # re-reports rather than silently swallowing a change.
 # ---------------------------------------------------------------------------
 check_for_changes() {
-  local task_json
-  task_json=$($NOTECOVE task show "$SLUG" --json 2>/dev/null) || return 0
+  local task_json rc
+  # Bound the call. Without a timeout a hung NoteCove wedges this loop forever,
+  # and the failure is invisible: the sidecar's window stays alive, so both the
+  # watchdog and `agentmesh status` keep counting it as healthy while the agent
+  # it is supposed to wake blocks indefinitely.
+  task_json=$(timeout "$CALL_TIMEOUT" $NOTECOVE task show "$SLUG" --json 2>/dev/null)
+  rc=$?
+  if [[ $rc -eq 124 ]]; then
+    log_event "notecove-call-timed-out"
+    echo "[sidecar] $SLUG: notecove task show timed out after ${CALL_TIMEOUT}s — will retry"
+    return 0
+  fi
+  [[ $rc -ne 0 ]] && return 0
   [[ -z "$task_json" ]] && return 0
 
   # Pass baselines by path so python does the whole diff in one pass.
@@ -219,7 +233,7 @@ fire_nudge() {
 # ---------------------------------------------------------------------------
 sse_loop() {
   local probe
-  probe=$($NOTECOVE events recent --types "task.*" --limit 1 --json 2>&1 | head -1)
+  probe=$(timeout "$CALL_TIMEOUT" $NOTECOVE events recent --types "task.*" --limit 1 --json 2>&1 | head -1)
   if [[ "$probe" == *"does not have events:subscribe"* ]]; then
     log_event "sse-unavailable:no-permission"
     echo "[sidecar] $SLUG: SSE unavailable (token lacks events:subscribe) — relying on ${POLL_INTERVAL}s poll"

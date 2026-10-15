@@ -398,6 +398,96 @@ class TestReconcileSidecars(unittest.TestCase):
         self.assertEqual(spawned, [], "its sidecar is alive — only the registry needed fixing")
 
 
+class TestSidecarHandleReconciliation(unittest.TestCase):
+    """A reused sidecar must be filtering on the current agent's author name.
+
+    Adoption can respawn a worker of a different type than the one that stranded.
+    A stale handle makes the new agent's own comments look foreign, so it wakes
+    itself on every comment it writes — a runaway.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+        self.l = lnch.Launcher(project="WORK", max_workers=5,
+                               profile="test-profile", poll_interval=30)
+
+    def _spawn(self, agent_handle, sidecar_running, recorded_handle=None):
+        """Returns (killed, created) tmux calls."""
+        calls = []
+        if recorded_handle is not None:
+            (Path(self._tmp.name) / "WORK-abc.sidecar-handle").write_text(recorded_handle)
+
+        def fake_run_bash(cmd):
+            return MagicMock(returncode=0 if sidecar_running else 1, stdout="")
+
+        with (
+            patch.object(lnch, "run_bash", side_effect=fake_run_bash),
+            patch.object(lnch, "tmux", side_effect=lambda a: calls.append(a) or MagicMock(returncode=0)),
+            patch.object(lnch.time, "sleep"),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            self.l._spawn_sidecar("WORK-abc", agent_handle)
+        return [c for c in calls if "kill-window" in c], [c for c in calls if "new-window" in c]
+
+    def test_reuses_sidecar_when_handle_matches(self):
+        killed, created = self._spawn("implementer", True, recorded_handle="Implementer")
+        self.assertEqual(killed, [], "a correctly-configured sidecar must be left alone")
+        self.assertEqual(created, [], "and must not be duplicated")
+
+    def test_respawns_sidecar_when_handle_changed(self):
+        killed, created = self._spawn("investigator", True, recorded_handle="Implementer")
+        self.assertEqual(len(killed), 1, "a stale-handle sidecar must be killed")
+        self.assertEqual(len(created), 1, "and replaced")
+
+    def test_respawns_sidecar_when_handle_unknown(self):
+        """No record means we cannot prove it is correct — replace it."""
+        killed, created = self._spawn("implementer", True, recorded_handle=None)
+        self.assertEqual(len(killed), 1)
+        self.assertEqual(len(created), 1)
+
+    def test_records_handle_on_spawn(self):
+        self._spawn("implementer", False)
+        self.assertEqual(
+            (Path(self._tmp.name) / "WORK-abc.sidecar-handle").read_text(), "Implementer"
+        )
+
+
+class TestHeartbeatSemantics(unittest.TestCase):
+    """The heartbeat must mean "a scan completed", not "a process started".
+
+    A separate heartbeat thread (or a stamp at startup) let a launcher
+    crash-looping every 5s keep the file perpetually fresh, so `agentmesh status`
+    reported it healthy while nothing was ever picked up.
+    """
+
+    def test_no_background_heartbeat_thread_exists(self):
+        self.assertFalse(
+            hasattr(lnch.Launcher, "_heartbeat_loop"),
+            "a background heartbeat thread would report a dead launcher as healthy",
+        )
+
+    def test_pickup_does_not_stamp_the_heartbeat(self):
+        import inspect
+        src = inspect.getsource(lnch.Launcher.pick_up_ready_tasks)
+        self.assertNotIn(
+            "_write_heartbeat", src,
+            "only the completed-scan path may stamp the heartbeat",
+        )
+
+    def test_run_loop_stamps_after_the_scan(self):
+        import inspect
+        src = inspect.getsource(lnch.Launcher.run)
+        self.assertIn("_write_heartbeat", src)
+        self.assertLess(
+            src.index("pick_up_ready_tasks"), src.index("self._write_heartbeat()"),
+            "the stamp must follow the scan, not precede it",
+        )
+
+
 class TestRegisterWorker(unittest.TestCase):
     """Registry writes must not duplicate a slug.
 

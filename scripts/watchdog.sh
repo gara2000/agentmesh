@@ -38,7 +38,8 @@ cleanup_task() {
   tmux kill-window -t "orchestrator:pr-mon-${slug}" 2>/dev/null || true
   rm -f "${SIGNALS}/${slug}.inbox" "${SIGNALS}/${slug}.seq" \
         "${SIGNALS}/${slug}.launching" "${SIGNALS}/${slug}.seen-comments" \
-        "${SIGNALS}/${slug}.seen-state"
+        "${SIGNALS}/${slug}.seen-state" \
+        "${SIGNALS}/${slug}.sidecar-handle"
 }
 
 echo "[watchdog] started"
@@ -120,13 +121,32 @@ while true; do
       fi
     elif [[ "$state" == "attention" ]]; then
       # Attention + dead window is NOT a clean exit: the task is mid-conversation
-      # with the user and its worker is gone. Deregister so this is not re-reported
-      # every poll, but leave the task's sidecar, inbox, and seq intact — the
-      # launcher's adoption pass will spawn a fresh worker for it, and a pending
-      # user reply sitting in the inbox must survive until that worker reads it.
-      echo "[watchdog] $slug window gone while in Attention — leaving for launcher adoption"
-      log_event "worker-stranded-attention" "$slug"
-      rm -f "${SIGNALS}/${slug}.crash-count"
+      # with the user and its worker is gone. Normally we deregister and leave the
+      # sidecar, inbox, and seq intact for the launcher's adoption pass — a reply
+      # waiting in the inbox must survive until the new worker reads it.
+      #
+      # But this path MUST still count crashes. Adoption respawns on a 30s
+      # cadence, so a worker that reproducibly dies right after await_user would
+      # otherwise be respawned forever, with no cap and nothing told to the user.
+      # (Resetting the counter here, as this branch first did, guaranteed that.)
+      crash_count_file="${SIGNALS}/${slug}.crash-count"
+      crash_count=0
+      [[ -f "$crash_count_file" ]] && crash_count=$(cat "$crash_count_file" 2>/dev/null || echo 0)
+      new_count=$((crash_count + 1))
+
+      if [[ $new_count -ge $MAX_CRASH_COUNT ]]; then
+        echo "[watchdog] $slug died in Attention $new_count times — setting Blocked"
+        log_event "crash-limit-reached-attention" "$slug"
+        rm -f "$crash_count_file"
+        $NOTECOVE task comments add "$slug" --user "Watchdog" \
+          "Worker died ${new_count} times while waiting for your input, so the task has been set to Blocked and will not be retried automatically. Any reply you left may not have been read — needs investigation." 2>/dev/null || true
+        $NOTECOVE task change "$slug" --state Blocked 2>/dev/null || true
+        cleanup_task "$slug"
+      else
+        echo "[watchdog] $slug window gone while in Attention ($new_count) — leaving for launcher adoption"
+        log_event "worker-stranded-attention" "$slug"
+        echo "$new_count" > "$crash_count_file"
+      fi
     else
       echo "[watchdog] $slug window gone but state=$state — no action needed"
       log_event "worker-exited-clean" "$slug"
