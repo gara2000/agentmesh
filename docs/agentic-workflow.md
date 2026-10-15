@@ -64,6 +64,31 @@ The inline approach keeps the conversation in one place and is the more common o
 
 The launcher's entire job is picking up work and starting workers. After spawning, it never communicates with an agent again.
 
+Each scan does two passes: **adopt** orphaned work, then **pick up** new work. Adoption runs first because finishing work already in flight beats starting more of it, and both draw from the same slot budget.
+
+### Adoption — recovering orphaned work
+
+A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died, and nothing else would ever look at the task again: the pickup scan only queries `Ready`, and `bootstrap.sh` truncates `signals/workers`, so after a restart the watchdog has no record of it either.
+
+```mermaid
+flowchart TD
+    List["List Doing + Attention tasks"]
+    List --> Live{"Worker window alive?"}
+    Live -->|yes| Skip1["Skip — still working"]
+    Live -->|no| Launching{"\.launching flag live?"}
+    Launching -->|yes| Skip2["Skip — worker mid-boot"]
+    Launching -->|no| Type{"Type still maps<br/>to an agent?"}
+    Type -->|no| Skip3["Skip + log<br/>adoption-skipped-untyped"]
+    Type -->|yes| Adopt["Spawn worker + sidecar<br/>(state untouched)"]
+    Adopt --> Resume["Worker sets Doing,<br/>re-reads notes + comments"]
+```
+
+**State is deliberately untouched** — the launcher only spawns. The respawned worker sets its own `Doing` and restores context from its task folder notes, so the user never has to re-queue anything by hand.
+
+The pass runs every scan, not just at startup, because a worker can be reaped while its task sits in `Attention` at any time — not only across a restart.
+
+> The pre-refactor Spokesman did this in its "Phase 0.5: Startup Recovery". This is that logic moved into the launcher and extended to cover `Doing` as well as `Attention` — the old version only recovered `Attention`, so a task killed mid-implementation was stranded even before the refactor.
+
 ### Task pickup
 
 ```mermaid
@@ -160,6 +185,9 @@ Agents source `scripts/agent-notecove.sh`, which provides four functions:
 | `post_summary <text>` | Post one brief comment as `<handle>` |
 | `await_user <state>` | Set state, publish the nudge seq, block until the inbox is non-empty |
 | `read_inbox` | Print the inbox as line-delimited JSON and clear it |
+| `finish_task <state> <project>` | Set the terminal state **and** run the cleanup that must go with it |
+
+`finish_task` is not optional sugar over `notecove task change --state Done`. It is the only thing that releases tasks blocked on this one and stops this task's sidecar and pr-monitor — before the refactor the orchestrator's event handlers did that, and they are gone. A bare state change leaves dependents blocked forever and leaks two processes.
 
 ### Inbox format
 
@@ -288,7 +316,8 @@ flowchart TD
     Poll["Poll registry every 30s"] --> Live{"Window alive?"}
     Live -->|yes| Poll
     Live -->|no| State{"Task state?"}
-    State -->|not doing| Clean["Clean exit:<br/>reset crash count, clean up"]
+    State -->|terminal| Clean["Clean exit:<br/>reset crash count, clean up"]
+    State -->|attention| Strand["Stranded: deregister only,<br/>keep sidecar + inbox<br/>→ launcher adopts"]
     State -->|doing| Count{"Crash count"}
     Count -->|"< 3"| Retry["Backoff 30s × 2^(n-1)<br/>clean up → set Ready"]
     Count -->|"≥ 3"| Block["Set Blocked<br/>+ explanatory comment"]
@@ -298,6 +327,8 @@ flowchart TD
 On crash retry the task goes back to `Ready` and the launcher picks it up on its next scan — the watchdog does not spawn workers itself.
 
 At the crash limit the task is set to `Blocked` with a comment explaining why. **That comment is the user-visible escalation** — no process relays notifications any more.
+
+An `Attention` task whose window is gone is **not** a clean exit: the task is mid-conversation and its worker died. The watchdog deregisters it so it is not re-reported every poll, but leaves the sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it.
 
 Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.seq`, `.launching`, `.seen-comments`, and `.seen-state` files.
 
@@ -358,7 +389,9 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 ## Task Cleanup Helper
 
-`scripts/task-done.sh <slug> <project> [<nudge-sig>]` runs when a task reaches a terminal state: kills the worker, sidecar, and PR-monitor windows, unregisters from `signals/workers`, removes per-task signal files, and sets any task whose only remaining blocker was this one back to `Ready`.
+`scripts/task-done.sh <slug> <project>` is called by the worker itself through `finish_task`. It unblocks dependents **first** — that is the step nothing else performs — then stops the sidecar and PR monitor, unregisters from `signals/workers`, and removes per-task signal files.
+
+It deliberately does not kill the calling worker's own window: the worker is running the script, so killing its window would terminate it mid-run. The worker exits on its own and the watchdog reaps the registry entry.
 
 ---
 
@@ -438,3 +471,15 @@ Notes keep detailed context out of the task record, and out of comments. If a wo
 **Inbox durability.** The inbox is an append-only file, so a nudge delivered while the agent was mid-turn is not lost — the agent picks it up on its next `await_user`.
 
 **Launching-flag expiry.** A worker that dies before claiming its task leaves a `.launching` flag behind. The flag expires after 5 minutes, after which the next scan retries the task rather than leaving it stranded in `Ready`.
+
+**Recovery requires nothing from the user.** `agentmesh stop` kills every worker, but their tasks stay in `Doing`/`Attention` and the launcher's adoption pass respawns a worker for each within one scan of the next start. Do **not** set tasks back to `Ready` — that loses context, because an adopted worker resumes from its notes whereas a re-queued one starts over.
+
+| Cause | Recovered by |
+|---|---|
+| `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
+| Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (backoff, 3 attempts) |
+| Worker reaped while `Attention` | Launcher adoption, next scan |
+| Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
+| Three consecutive crashes | **Not recovered** — set `Blocked` with a comment, deliberately |
+
+The only thing adoption cannot recover is a task whose type no longer maps to an agent: it logs `adoption-skipped-untyped` and leaves the task alone, since there is no way to know which agent owned the work. Restore the type and the next scan takes it.

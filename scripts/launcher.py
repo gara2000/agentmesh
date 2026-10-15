@@ -117,10 +117,14 @@ class Launcher:
         t_heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat")
         t_heartbeat.start()
 
-        # Single loop: scan for Ready tasks, launch what fits, sleep. There is no
-        # event loop any more because nothing reports back to the launcher.
+        # Single loop: re-adopt orphaned work, pick up new work, sleep. There is
+        # no event loop any more because nothing reports back to the launcher.
+        #
+        # Adoption runs first: finishing work already in flight takes priority
+        # over starting more of it, and both draw from the same slot budget.
         while not self._stop.is_set():
             with self._lock:
+                self.adopt_orphaned_tasks()
                 self.pick_up_ready_tasks()
             self._stop.wait(self.poll_interval)
 
@@ -179,12 +183,29 @@ class Launcher:
             "bash", str(SCRIPTS / "spawn-agent.sh"),
             "workers", slug, f"/{agent_type}", slug, self.project,
         ])
-        with open(SIGNALS / "workers", "a") as f:
-            f.write(f"{slug} {slug} {agent_type}\n")
+        self._register_worker(slug, agent_type)
         log("launcher     ", f"{agent_type}-spawned", slug)
         _print(f"spawned {agent_type} for {slug}")
 
         self._spawn_sidecar(slug, agent_type)
+
+    def _register_worker(self, slug: str, agent_type: str) -> None:
+        """Record the worker in signals/workers, replacing any existing entry.
+
+        Replace rather than append: adoption can re-spawn a worker for a slug the
+        registry still lists (the watchdog reaps stale entries only on its next
+        30s poll). A duplicate line would inflate the active-worker count and
+        silently consume a max-workers slot.
+        """
+        workers_file = SIGNALS / "workers"
+        lines = []
+        if workers_file.exists():
+            lines = [
+                l for l in workers_file.read_text().splitlines()
+                if l.strip() and l.split()[0] != slug
+            ]
+        lines.append(f"{slug} {slug} {agent_type}")
+        workers_file.write_text("\n".join(lines) + "\n")
 
     def _spawn_sidecar(self, slug: str, agent_handle: str) -> None:
         """Launch the sidecar window for slug (idempotent).
@@ -231,12 +252,10 @@ class Launcher:
         _print(f"spawned sidecar for {slug}")
 
     # -----------------------------------------------------------------------
-    # Task pickup
+    # Slot accounting — shared by adoption and pickup
     # -----------------------------------------------------------------------
 
-    def pick_up_ready_tasks(self) -> None:
-        self._write_heartbeat()
-
+    def _free_slots(self) -> int:
         workers_file = SIGNALS / "workers"
         active_count = 0
         if workers_file.exists():
@@ -250,7 +269,96 @@ class Launcher:
             if self._is_launching(f.name[: -len(".launching")])
         ])
 
-        slots = self.max_workers - active_count - launching
+        return self.max_workers - active_count - launching
+
+    def _live_worker_windows(self) -> set[str]:
+        result = run_bash("tmux list-windows -t workers -F '#{window_name}' 2>/dev/null || true")
+        return {w.strip() for w in result.stdout.splitlines() if w.strip()}
+
+    def _list_tasks(self, state: str) -> list:
+        result = run_bash(
+            f"{NOTECOVE_BIN} task list --state '{state}' --project {self.project} --limit 50 --json"
+        )
+        try:
+            tasks = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        return tasks if isinstance(tasks, list) else []
+
+    # -----------------------------------------------------------------------
+    # Adoption — re-attach workers to mid-flight tasks that lost theirs
+    # -----------------------------------------------------------------------
+
+    def adopt_orphaned_tasks(self) -> None:
+        """Spawn a worker for any Doing/Attention task with no live worker window.
+
+        A task in Doing or Attention means a worker was working on it. If its tmux
+        window is gone, that worker died, and nothing else will ever look at the
+        task again:
+
+          - the normal scan only queries Ready (pick_up_ready_tasks)
+          - bootstrap.sh truncates signals/workers, so after a restart the
+            watchdog has no record of the task to notice it died
+          - the watchdog only treats state 'doing' as a crash; a task stranded in
+            Attention is logged as a clean exit
+
+        Without this pass, `agentmesh stop && agentmesh start` silently abandons
+        every in-flight task and the user has to re-queue each one by hand. The
+        pre-refactor Spokesman did this in its "Phase 0.5: Startup Recovery"; this
+        is that logic, moved to the launcher and extended to Doing as well as
+        Attention.
+
+        It runs every scan, not just at startup, because a worker can be reaped
+        while its task sits in Attention at any time — not only across a restart.
+
+        State is deliberately untouched: the launcher only spawns. The respawned
+        worker sets its own Doing (base-agent.md Step 1) and restores context by
+        re-reading its task folder notes and the task's comments.
+        """
+        live_windows = self._live_worker_windows()
+
+        for state in ("Doing", "Attention"):
+            for task in self._list_tasks(state):
+                if self._free_slots() <= 0:
+                    return
+
+                slug_obj = task.get("slug", {})
+                slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
+                if not slug:
+                    continue
+
+                # Worker is alive and working — nothing to do. This is what makes
+                # the pass safe to run on every scan and across launcher restarts.
+                if slug in live_windows:
+                    continue
+
+                # A worker spawned moments ago has no window yet; the flag is the
+                # only evidence it exists. Adopting now would double-spawn it.
+                if self._is_launching(slug):
+                    continue
+
+                agent_type = self._triage(task)
+                if agent_type is None:
+                    # The task was picked up once, so it had a usable type then.
+                    # Someone has since removed or changed it; we cannot know which
+                    # agent owned the work, so leave it rather than guess.
+                    log("launcher     ", "adoption-skipped-untyped", slug)
+                    _print(f"cannot adopt {slug}: type no longer maps to an agent")
+                    continue
+
+                log("launcher     ", f"task-adopted:{state.lower()}", slug)
+                _print(f"adopting {slug} (was {state}, worker gone) -> {agent_type}")
+                self._spawn_worker(slug, agent_type)
+                live_windows.add(slug)
+
+    # -----------------------------------------------------------------------
+    # Task pickup
+    # -----------------------------------------------------------------------
+
+    def pick_up_ready_tasks(self) -> None:
+        self._write_heartbeat()
+
+        slots = self._free_slots()
         if slots <= 0:
             return
 

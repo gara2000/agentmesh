@@ -68,8 +68,8 @@ Task state is owned by **the worker agent and the user — nothing else.**
 | `Ready` | User | Available for pickup. The launcher reads it but never writes it. |
 | `Doing` | Worker | The worker has claimed the task; its first action after booting. |
 | `Attention` | Worker | The worker needs the user and is blocked. |
-| `Done` | Worker (after the user approves) or User | Work accepted. |
-| `Won't Do` | Worker (on `abort`) or User | Work abandoned. |
+| `Done` | Worker via `finish_task` (after the user approves) or User | Work accepted. |
+| `Won't Do` | Worker via `finish_task` (on `abort`) or User | Work abandoned. |
 | `Blocked` | Watchdog (crash limit) or User | Needs investigation. |
 
 The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashed worker cannot set its own state, and the alternative is a task stuck in `Doing` with nothing running.
@@ -91,14 +91,23 @@ The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashe
 
 Its entire job is picking up work and starting workers. It does not route events, does not talk to running agents, and does not change task state.
 
-Responsibilities:
-- Scan NoteCove every `--poll-interval` seconds (default 30) for `Ready` tasks, up to `max-workers` in parallel
-- Triage each by `typeIds` then `typeNames` against `TYPE_MAP`
-- Spawn the worker agent and its sidecar for each matched task
+Responsibilities, in order, every `--poll-interval` seconds (default 30):
+- **Adopt orphaned tasks** — spawn a worker for any `Doing`/`Attention` task with no live worker window (see below)
+- **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
 - Write `signals/launcher.heartbeat` every 30s for `agentmesh status`
 
+Adoption runs first: finishing work already in flight takes priority over starting more of it, and both draw from the same slot budget.
+
 **Untyped tasks are refused, not guessed.** A task is only picked up when its type maps through `TYPE_MAP`. Anything else — no type at all, or a type like `chore` that maps to nothing — is left in `Ready` with no default agent. The refusal posts exactly one comment, deduped via `signals/<slug>.untyped`, and is logged on every scan. Setting a supported type makes the task eligible again on the next scan.
+
+**Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `bootstrap.sh` truncates `signals/workers`, so after a restart the watchdog has no record of it either.
+
+Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker + sidecar for any whose window is missing. It skips tasks whose worker is alive (which is what makes the pass safe to run repeatedly and across launcher restarts), tasks holding a live `.launching` flag (a worker mid-boot has no window yet), and tasks whose type no longer maps to an agent (without it there is no way to know which agent owned the work).
+
+**State is deliberately untouched** — the launcher only spawns. The respawned worker sets its own `Doing` and restores context by re-reading its task folder notes and the task's comments. Every skill is told at startup that it may be a restarted worker and must read existing notes before redoing work.
+
+> Without this pass, `agentmesh stop && agentmesh start` silently abandons every in-flight task and the user has to re-queue each one by hand. The pre-refactor Spokesman did this in its "Phase 0.5: Startup Recovery"; this is that logic moved into the launcher and extended to cover `Doing` as well as `Attention`.
 
 **The launcher does not set `Doing`.** The worker does, as its first action. That leaves the task in `Ready` while Claude boots (10–60s), so the launcher writes `signals/<slug>.launching` before spawning and skips any slug holding a live flag; the worker clears it on claiming the task. The flag expires after 5 minutes so a worker that dies during boot does not wedge the task permanently.
 
@@ -144,8 +153,9 @@ Responsibilities:
   - Read `signals/<slug>.crash-count` (default 0); increment
   - If crash count < 3: write the count, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), clean up the task's side processes, and set the task back to `Ready` — the launcher spawns a fresh worker on its next scan
   - If crash count ≥ 3: delete the count file, set the task to `Blocked`, and comment on the task explaining why. `Blocked` plus the comment *is* the user-visible escalation; no process relays notifications any more.
+- If the window is gone and the task is in `attention` → **stranded, not finished**: the task is mid-conversation with the user and its worker is gone. Deregister it (so it is not re-reported every poll) but leave its sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it.
 - Remove the entry from the registry regardless (window gone = worker dead)
-- If the state is anything other than `doing` → the worker finished cleanly; reset the crash count and clean up
+- If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
 Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.seq`, `.launching`, `.seen-comments`, and `.seen-state` files.
 
@@ -251,7 +261,7 @@ agentmesh/
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── pr-monitor.sh       # PR merge detector; writes the merge to the worker's inbox
 │   ├── spawn-agent.sh      # launches a Claude agent in a new tmux window
-│   ├── task-done.sh        # terminal-state cleanup: kills windows, unregisters, unblocks dependents
+│   ├── task-done.sh        # terminal-state cleanup, called by the worker via finish_task: unblocks dependents, stops sidecar/pr-monitor
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / switch / status / attach / task
 │   └── test_triage.py      # unit tests for launcher triage and the .launching guard
 └── signals/                # runtime directory, created on bootstrap
@@ -282,6 +292,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        implementer-spawned             WORK-xyz
 2026-04-26T...  launcher        sidecar-spawned                 WORK-xyz
 2026-04-26T...  launcher        task-refused-untyped            WORK-abc
+2026-04-26T...  launcher        task-adopted:attention           WORK-xyz
+2026-04-26T...  launcher        adoption-skipped-untyped         WORK-abc
 2026-04-26T...  launcher        launching-flag-expired          WORK-xyz
 2026-04-26T...  sidecar         started                         WORK-xyz
 2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
@@ -292,6 +304,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  implementer     awaiting-user                   WORK-xyz
 2026-04-26T...  implementer     resumed                         WORK-xyz
 2026-04-26T...  watchdog        crash-detected                  WORK-xyz
+2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
+2026-04-26T...  task-done       cleanup-complete                 WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
 2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
 ```
@@ -377,6 +391,32 @@ notecove events        ✓ available (push)
 - **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — it will block on `await_user` forever. `status` warns explicitly when they diverge.
 - **`notecove events`** shows whether sidecars are waking on SSE push (sub-second) or on the 60-second safety-net poll. Both work; this tells you which.
 - **`untyped tasks`** appears only when tasks have been refused for a missing or unmapped type.
+
+---
+
+## Recovery
+
+Nothing needs doing by hand. `agentmesh stop` kills every worker, but the tasks they were on stay in `Doing` or `Attention`, and the launcher's **adoption pass** spawns a fresh worker + sidecar for each of them within one scan of the next `agentmesh start`.
+
+```bash
+agentmesh stop
+agentmesh start --project WORK
+grep task-adopted signals/events.log      # one line per recovered task
+```
+
+You do **not** need to set tasks back to `Ready`. Doing so would actually lose context: the respawned worker reads its task folder notes and the task's comments to pick up where the previous one left off, whereas re-queuing starts it over.
+
+This covers every way a worker can disappear, not just a deliberate restart:
+
+| Cause | Recovered by |
+|---|---|
+| `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
+| Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (with backoff, 3 attempts) |
+| Worker reaped while `Attention` | Launcher adoption, next scan |
+| Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
+| Three consecutive crashes | Not recovered — the task is set `Blocked` with an explanatory comment, deliberately |
+
+The one thing adoption cannot recover is a task whose type no longer maps to an agent; it logs `adoption-skipped-untyped` and leaves the task alone, because there is no way to know which agent owned the work. Restore the type and the next scan picks it up.
 
 ---
 

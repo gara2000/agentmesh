@@ -98,6 +98,15 @@ while true; do
         cleanup_task "$slug"
         $NOTECOVE task change "$slug" --state Ready 2>/dev/null || true
       fi
+    elif [[ "$state" == "attention" ]]; then
+      # Attention + dead window is NOT a clean exit: the task is mid-conversation
+      # with the user and its worker is gone. Deregister so this is not re-reported
+      # every poll, but leave the task's sidecar, inbox, and seq intact — the
+      # launcher's adoption pass will spawn a fresh worker for it, and a pending
+      # user reply sitting in the inbox must survive until that worker reads it.
+      echo "[watchdog] $slug window gone while in Attention — leaving for launcher adoption"
+      log_event "worker-stranded-attention" "$slug"
+      rm -f "${SIGNALS}/${slug}.crash-count"
     else
       echo "[watchdog] $slug window gone but state=$state — no action needed"
       log_event "worker-exited-clean" "$slug"

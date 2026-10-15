@@ -179,6 +179,136 @@ class TestPickUpReadyTasks(unittest.TestCase):
         self.assertEqual(spawned, [("WORK-abc", "implementer")])
 
 
+class TestAdoptOrphanedTasks(unittest.TestCase):
+    """
+    adopt_orphaned_tasks() re-attaches a worker to a Doing/Attention task whose
+    worker window is gone.
+
+    Without it, `agentmesh stop && agentmesh start` silently abandons every
+    in-flight task: bootstrap truncates signals/workers, the normal scan only
+    queries Ready, and the watchdog has no registry entry left to notice.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, by_state: dict, live_windows=()):
+        """by_state maps state name -> task list. Returns slugs adopted."""
+        adopted = []
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+
+        with (
+            patch.object(l, "_list_tasks", side_effect=lambda s: by_state.get(s, [])),
+            patch.object(l, "_live_worker_windows", return_value=set(live_windows)),
+            patch.object(l, "_spawn_worker") as mock_sw,
+            patch.object(lnch, "log"),
+            patch.object(lnch, "_print"),
+        ):
+            mock_sw.side_effect = lambda slug, agent_type: adopted.append((slug, agent_type))
+            l.adopt_orphaned_tasks()
+
+        return adopted
+
+    def test_adopts_doing_task_with_dead_window(self):
+        adopted = self._run({"Doing": [_make_task(["bug"], ["Bug"])]})
+        self.assertEqual(adopted, [("WORK-abc", "implementer")])
+
+    def test_adopts_attention_task_with_dead_window(self):
+        """The pre-refactor Spokesman recovered exactly this case."""
+        adopted = self._run({"Attention": [_make_task(["bug"], ["Bug"])]})
+        self.assertEqual(adopted, [("WORK-abc", "implementer")])
+
+    def test_skips_task_whose_worker_is_alive(self):
+        """Makes the pass safe to run every scan and across launcher restarts."""
+        adopted = self._run(
+            {"Doing": [_make_task(["bug"], ["Bug"])]}, live_windows=["WORK-abc"]
+        )
+        self.assertEqual(adopted, [], "a live worker must never be double-spawned")
+
+    def test_skips_task_that_is_still_launching(self):
+        """A worker mid-boot has no window yet; the flag is its only evidence."""
+        (Path(self._tmp.name) / "WORK-abc.launching").touch()
+        adopted = self._run({"Doing": [_make_task(["bug"], ["Bug"])]})
+        self.assertEqual(adopted, [], "a booting worker must not be double-spawned")
+
+    def test_skips_task_whose_type_no_longer_maps(self):
+        """Without a resolvable type we cannot know which agent owned the work."""
+        adopted = self._run({"Doing": [_make_task(["chore"], ["Chore"])]})
+        self.assertEqual(adopted, [])
+
+    def test_adopts_across_both_states_in_one_pass(self):
+        adopted = self._run({
+            "Doing": [_make_task(["bug"], ["Bug"], slug_short="WORK-a")],
+            "Attention": [_make_task(["investigation"], ["Investigation"], slug_short="WORK-b")],
+        })
+        self.assertEqual(
+            sorted(adopted), [("WORK-a", "implementer"), ("WORK-b", "investigator")]
+        )
+
+    def test_respects_max_workers(self):
+        """Adoption draws from the same slot budget as normal pickup."""
+        l = lnch.Launcher(project="WORK", max_workers=1,
+                          profile="test-profile", poll_interval=30)
+        adopted = []
+        tasks = [
+            _make_task(["bug"], ["Bug"], slug_short="WORK-a"),
+            _make_task(["bug"], ["Bug"], slug_short="WORK-b"),
+        ]
+        with (
+            patch.object(l, "_list_tasks", side_effect=lambda s: tasks if s == "Doing" else []),
+            patch.object(l, "_live_worker_windows", return_value=set()),
+            patch.object(l, "_spawn_worker") as mock_sw,
+            patch.object(lnch, "log"),
+            patch.object(lnch, "_print"),
+        ):
+            # Registering consumes the single slot, as the real _spawn_worker does.
+            def fake_spawn(slug, agent_type):
+                adopted.append(slug)
+                l._register_worker(slug, agent_type)
+            mock_sw.side_effect = fake_spawn
+            l.adopt_orphaned_tasks()
+
+        self.assertEqual(len(adopted), 1, "must not exceed max-workers")
+
+
+class TestRegisterWorker(unittest.TestCase):
+    """Registry writes must not duplicate a slug.
+
+    Adoption can re-spawn a worker for a slug the registry still lists, since the
+    watchdog only reaps stale entries on its next 30s poll. A duplicate line
+    would inflate the active count and silently consume a max-workers slot.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_reregistering_replaces_rather_than_appends(self):
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        l._register_worker("WORK-abc", "implementer")
+        l._register_worker("WORK-abc", "implementer")
+        lines = (Path(self._tmp.name) / "workers").read_text().strip().splitlines()
+        self.assertEqual(lines, ["WORK-abc WORK-abc implementer"])
+
+    def test_distinct_slugs_coexist(self):
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        l._register_worker("WORK-a", "implementer")
+        l._register_worker("WORK-b", "planner")
+        lines = (Path(self._tmp.name) / "workers").read_text().strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(l._free_slots(), 3)
+
+
 class TestAgentAuthorMap(unittest.TestCase):
     """Every agent TYPE_MAP can spawn must have a comment-author entry.
 

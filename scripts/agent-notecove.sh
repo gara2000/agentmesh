@@ -97,3 +97,27 @@ task_state() {
     notecove task show "$SLUG" --json \
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('stateId',''))"
 }
+
+# finish_task <state> <project>
+#
+# Set the task's terminal state and run the cleanup that has to happen with it.
+# Use this instead of a bare `notecove task change --state Done`.
+#
+#   finish_task "Done" "$PROJECT"        # user approved
+#   finish_task "Won't Do" "$PROJECT"    # user aborted
+#
+# Setting the state is not sufficient on its own: tasks blocked on this one have
+# to be released, and this task's sidecar and pr-monitor have to be stopped.
+# Nothing else does either — before the NoteCove refactor the orchestrator's
+# event handlers ran this, and they no longer exist.
+#
+# Safe to call from inside the worker: task-done.sh unblocks dependents first and
+# never kills the calling worker's own window, so the script cannot terminate
+# itself partway through. Exit normally afterwards; the watchdog reaps whatever
+# is left.
+finish_task() {
+    local state="${1:?finish_task: state required}"
+    local project="${2:?finish_task: project required}"
+    notecove task change "$SLUG" --state "$state"
+    bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
+}

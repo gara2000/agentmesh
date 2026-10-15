@@ -75,9 +75,22 @@ You and the user are the only ones who change task state. Nothing else will do i
 
 - Set `Doing` as your first action when you start work.
 - Set `Attention` when you need the user (via `await_user`).
-- Set `Done` once the user approves, or `Won't Do` on abort.
+- **Finish with `finish_task`**, never a bare state change:
 
-If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit cleanly rather than continuing.
+```bash
+finish_task "Done" "<project>"        # the user approved
+finish_task "Won't Do" "<project>"    # the user aborted
+```
+
+`finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
+
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit cleanly rather than continuing. Do not call `finish_task`: the user has already set the state.
+
+### If you were restarted mid-task
+
+You may be a replacement for a worker that died. The launcher spawns a fresh worker for any task left in `Doing` or `Attention` with no live worker window, so finding existing notes in your task folder is normal, not an error.
+
+Read them before doing anything: a `PLAN`, `QUESTIONS-<N>`, or `COMPLETION` note means that work is already done. Pick up from where it left off rather than repeating it, and check the task's comments for the conversation so far.
 
 ---
 
@@ -104,8 +117,9 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **Always post a summary comment before `await_user`** — otherwise the user is woken by a state change with no explanation of what you want.
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
 - **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
-- **Set your own terminal state** — `Done` on approval, `Won't Do` on abort. Nothing else does it for you.
-- **Exit cleanly on a state change you did not make** — the user has taken the task elsewhere.
+- **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
+- **Exit cleanly on a state change you did not make** — the user has taken the task elsewhere. Do not call `finish_task`.
+- **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 <!-- BASE-AGENT:END -->
 
 ---
