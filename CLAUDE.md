@@ -358,3 +358,69 @@ agentmesh task create <title> \   # create a new task in NoteCove
 `agentmesh task create` wraps `notecove task create` with folder name resolution: pass a folder name (e.g. `Triage`) or folder ID directly to `--folder`.
 
 > Set a **type** on every task. A task whose type does not map to an agent stays in `Ready` and the launcher comments once to say so — see the Launcher section above for the supported types.
+
+### Verifying a healthy system
+
+```bash
+agentmesh status
+```
+
+```
+launcher               ✓ running  (heartbeat: 4s ago)
+watchdog               ✓ running
+folder-cleanup         ✓ running
+active workers         2  (WORK-abc,WORK-def)
+sidecars               2
+notecove events        ✓ available (push)
+```
+
+- **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — it will block on `await_user` forever. `status` warns explicitly when they diverge.
+- **`notecove events`** shows whether sidecars are waking on SSE push (sub-second) or on the 60-second safety-net poll. Both work; this tells you which.
+- **`untyped tasks`** appears only when tasks have been refused for a missing or unmapped type.
+
+---
+
+## Migrating from the Spokesman architecture
+
+The Spokesman-based architecture (plugin ≤ 2.x) is gone, not deprecated. The two cannot coexist — once a worker stops writing to `signals/queue`, the whole event layer is dead code.
+
+```bash
+agentmesh stop                      # kills every running agent
+cd ~/agentmesh && git pull
+claude plugin update agentic-workflows@agentmesh
+agentmesh start --project WORK
+```
+
+On the first bootstrap, `notecove init --events` may raise an approval prompt in the NoteCove desktop app. Approving it enables push change detection; declining leaves sidecars on the 60-second poll, which is fully functional.
+
+### What changed for the user
+
+| Before | Now |
+|---|---|
+| Answer in the Spokesman terminal session | Comment on the task in NoteCove |
+| `continue` / `spawn reviewer` / `approve` menu | Free text, plus reserved `approve` / `abort` |
+| Orchestrator marked tasks `Done` | The agent sets `Done` itself after you `approve` |
+| Untyped tasks were LLM-triaged by the Spokesman | Untyped tasks stay `Ready` and are commented on once |
+| `--mode auto-review`, `--review-limit` | Removed — no reviewer agents |
+| `--interface slack`, `--channel`, `--verbosity` | Removed — NoteCove only |
+| `agentmesh pause-poller` / `resume-poller` | Removed with the Slack poller |
+
+Nothing in `signals/` persists across a bootstrap, so there is no migration state to unwind — `bootstrap.sh` clears it on every start.
+
+### Testing a branch before merging
+
+The `agentmesh` plugin marketplace is a **local directory** pointing at `~/agentmesh/plugins`, and `~/bin/agentmesh` symlinks to `~/agentmesh/scripts/agentmesh.sh`. Both resolve to the **main worktree**.
+
+Running daemons out of a feature worktree while the installed plugin still serves the old skills therefore gives you new daemons driving old agents, which block forever. Check the branch out in the main worktree instead:
+
+```bash
+agentmesh stop
+cd ~/agentmesh
+git fetch origin <branch>
+git checkout --detach origin/<branch>    # detached: the branch is already checked out in its worktree
+claude plugin update agentic-workflows@agentmesh
+claude plugin list | grep -A1 'agentic-workflows@agentmesh'   # confirm the new version is live
+agentmesh start --project WORK
+```
+
+Roll back with `git checkout main` and another `claude plugin update`.
