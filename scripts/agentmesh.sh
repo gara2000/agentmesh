@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # agentmesh — AgentMesh lifecycle CLI
-# Usage: agentmesh <start|stop|switch|status|attach> [options]
+# Usage: agentmesh <start|stop|switch|status|attach|task> [options]
+#
+# There is no user-interaction process to start: agents talk to the user through
+# NoteCove task comments, so `start` brings up daemons and returns.
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -18,7 +21,7 @@ _session_exists() {
 }
 
 _heartbeat_age() {
-  local hb="$SIGNALS/orchestrator.heartbeat"
+  local hb="$SIGNALS/launcher.heartbeat"
   [ -f "$hb" ] || { echo 9999; return; }
   local last_modified now
   last_modified=$(python3 -c "import os; print(int(os.path.getmtime('$hb')))")
@@ -45,35 +48,21 @@ _wait_for_repl() {
 # ── start ──────────────────────────────────────────────────────────────────────
 
 cmd_start() {
-  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
-  local MAX_WORKERS="30" REVIEW_LIMIT="3" INTERFACE="spokesman"
-  local VERBOSITY="medium" SLACK_CHANNEL="" FAST_INTERVAL="60" SLOW_INTERVAL="120"
-  local SLACK_IDLE_PAUSE="0"
+  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+  local MAX_WORKERS="30" POLL_INTERVAL="30"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --project)              PROJECT="$2";              shift 2 ;;
-      --profile)              PROFILE="$2";              shift 2 ;;
-      --mode)                 MODE="$2";                 shift 2 ;;
-      --max-workers)          MAX_WORKERS="$2";          shift 2 ;;
-      --review-limit)         REVIEW_LIMIT="$2";         shift 2 ;;
-      --interface)            INTERFACE="$2";            shift 2 ;;
-      --verbosity)            VERBOSITY="$2";            shift 2 ;;
-      --channel|--slack-channel) SLACK_CHANNEL="$2";    shift 2 ;;
-      --fast-interval)        FAST_INTERVAL="$2";        shift 2 ;;
-      --slow-interval)        SLOW_INTERVAL="$2";        shift 2 ;;
-      --slack-idle-pause)     SLACK_IDLE_PAUSE="$2";     shift 2 ;;
+      --project)       PROJECT="$2";       shift 2 ;;
+      --profile)       PROFILE="$2";       shift 2 ;;
+      --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
+      --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
 
   if [[ -z "$PROJECT" ]]; then
     echo "Error: --project is required" >&2
-    exit 1
-  fi
-
-  if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "$SLACK_CHANNEL" ]]; then
-    echo "Error: --slack-channel is required when --interface includes slack" >&2
     exit 1
   fi
 
@@ -92,103 +81,42 @@ cmd_start() {
     echo "  · workers session already running"
   fi
 
-  # 2–7. Bootstrap (initializes signals/, starts dispatcher/watchdog/folder-cleanup/orchestrator.py)
-  local orch_age
-  orch_age=$(_heartbeat_age)
-  if [ "$orch_age" -lt 60 ]; then
-    echo "  · orchestrator.py already running (heartbeat: ${orch_age}s ago)"
+  # 2. Bootstrap (initializes signals/, starts watchdog, folder-cleanup, launcher)
+  local age
+  age=$(_heartbeat_age)
+  if [ "$age" -lt 60 ]; then
+    echo "  · launcher already running (heartbeat: ${age}s ago)"
   else
     bash "$SCRIPTS/bootstrap.sh" \
       --project "$PROJECT" \
       --profile "$PROFILE" \
-      --mode "$MODE" \
       --max-workers "$MAX_WORKERS" \
-      --review-limit "$REVIEW_LIMIT" \
-      --interface "$INTERFACE" \
-      ${SLACK_CHANNEL:+--slack-channel "$SLACK_CHANNEL"} \
-      --fast-interval "$FAST_INTERVAL" \
-      --slow-interval "$SLOW_INTERVAL" \
-      --slack-idle-pause "$SLACK_IDLE_PAUSE"
-    # Persist mode for Spokesman to read on recovery
-    echo "$MODE" > "$SIGNALS/mode"
-  fi
-
-  # 8. Write slack-channel file if interface includes slack
-  if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
-    echo "$SLACK_CHANNEL" > "$SIGNALS/slack-channel"
-  fi
-
-  # 9. Start Spokesman (orchestrator:main)
-  if [[ "$INTERFACE" == "spokesman" || "$INTERFACE" == "both" ]]; then
-    if _window_exists "main"; then
-      echo "  · Spokesman already running (orchestrator:main)"
-    else
-      tmux new-window -t "orchestrator:" -n main
-      tmux send-keys -t "orchestrator:main" "cd $AGENTMESH && claude --dangerously-skip-permissions" Enter
-      _wait_for_repl "orchestrator:main"
-      tmux send-keys -t "orchestrator:main" \
-        "/spokesman --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT --no-bootstrap" \
-        Enter
-      echo "  ✓ Spokesman started (orchestrator:main)"
-    fi
-  fi
-
-  # 10. Start SlackBridge (orchestrator:slack-bridge) + slack-poller
-  if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
-    if _window_exists "slack-bridge"; then
-      echo "  · SlackBridge already running (orchestrator:slack-bridge)"
-    else
-      tmux new-window -t "orchestrator:" -n slack-bridge
-      tmux send-keys -t "orchestrator:slack-bridge" "cd $AGENTMESH && claude --dangerously-skip-permissions" Enter
-      _wait_for_repl "orchestrator:slack-bridge"
-      tmux send-keys -t "orchestrator:slack-bridge" \
-        "/slack-bridge --project $PROJECT --profile $PROFILE --mode $MODE --verbosity $VERBOSITY --channel $SLACK_CHANNEL --no-bootstrap" \
-        Enter
-      echo "  ✓ SlackBridge started (orchestrator:slack-bridge)"
-    fi
-
-    if _window_exists "slack-poller"; then
-      echo "  · slack-poller already running (orchestrator:slack-poller)"
-    else
-      tmux new-window -t "orchestrator:" -n slack-poller
-      tmux send-keys -t "orchestrator:slack-poller" \
-        "bash $SCRIPTS/slack-poller.sh --fast-interval $FAST_INTERVAL --slow-interval $SLOW_INTERVAL" \
-        Enter
-      echo "  ✓ slack-poller started (orchestrator:slack-poller)"
-    fi
+      --poll-interval "$POLL_INTERVAL"
   fi
 
   echo ""
-  echo "agentmesh started. Project: ${PROJECT}. Interface: ${INTERFACE}. Mode: ${MODE}."
+  echo "agentmesh started. Project: ${PROJECT}."
+  echo "Agents interact through NoteCove task comments — open NoteCove to talk to them."
 }
 
 # ── stop ───────────────────────────────────────────────────────────────────────
 
 cmd_stop() {
-  # 1. Send shutdown command to orchestrator.py (best-effort — it may not be running)
-  if [ -f "$SIGNALS/orchestrator-cmds" ]; then
-    echo "-|shutdown" >> "$SIGNALS/orchestrator-cmds"
-    tmux wait-for -S orchestrator-cmd-event 2>/dev/null || true
-    sleep 2
-  fi
-
-  # 2. Kill known windows in the orchestrator session
-  for win in slack-bridge slack-poller main ready-poller folder-cleanup watchdog dispatcher orchestrator; do
+  # 1. Kill known windows in the orchestrator session
+  for win in folder-cleanup watchdog launcher; do
     tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
   done
 
-  # Kill any pr-mon-* windows
+  # 2. Kill per-task windows. side-* and pr-mon-* are not tracked in
+  #    signals/workers, so nothing else would ever reap them — kill explicitly.
   tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null \
-    | grep "^pr-mon-" \
+    | grep -E "^(pr-mon-|side-)" \
     | while read -r w; do
         tmux kill-window -t "orchestrator:$w" 2>/dev/null || true
       done || true
 
   # 3. Kill workers session
   tmux kill-session -t workers 2>/dev/null || true
-
-  # 4. Clear active-interfaces
-  : > "$SIGNALS/active-interfaces" 2>/dev/null || true
 
   echo "agentmesh stopped."
 }
@@ -199,46 +127,19 @@ cmd_status() {
   local age
   age=$(_heartbeat_age)
 
-  # orchestrator.py
   if [ "$age" -lt 90 ]; then
-    printf "%-22s ✓ running  (heartbeat: %ss ago)\n" "orchestrator.py" "$age"
+    printf "%-22s ✓ running  (heartbeat: %ss ago)\n" "launcher" "$age"
   else
-    printf "%-22s ✗ not running\n" "orchestrator.py"
+    printf "%-22s ✗ not running\n" "launcher"
   fi
 
-  # tmux windows
-  for win in dispatcher watchdog folder-cleanup ready-poller; do
+  for win in watchdog folder-cleanup; do
     if _window_exists "$win"; then
       printf "%-22s ✓ running\n" "$win"
     else
       printf "%-22s ✗ not running\n" "$win"
     fi
   done
-
-  # spokesman
-  if _window_exists "main"; then
-    printf "%-22s ✓ running  (tmux: orchestrator:main)\n" "spokesman"
-  else
-    printf "%-22s ✗ not running\n" "spokesman"
-  fi
-
-  # slack-bridge
-  if _window_exists "slack-bridge"; then
-    printf "%-22s ✓ running\n" "slack-bridge"
-  else
-    printf "%-22s ✗ not running\n" "slack-bridge"
-  fi
-
-  # slack-poller
-  if _window_exists "slack-poller"; then
-    if [ -f "$SIGNALS/slack-poller-paused" ]; then
-      printf "%-22s ✓ running  (paused)\n" "slack-poller"
-    else
-      printf "%-22s ✓ running\n" "slack-poller"
-    fi
-  else
-    printf "%-22s ✗ not running\n" "slack-poller"
-  fi
 
   # active workers
   local workers=0 worker_names=""
@@ -252,36 +153,28 @@ cmd_status() {
     printf "%-22s %s\n" "active workers" "$workers"
   fi
 
-  # mode
-  local mode="unknown"
-  [ -f "$SIGNALS/mode" ] && mode=$(cat "$SIGNALS/mode")
-  printf "%-22s %s\n" "mode" "$mode"
-
-  # active interfaces
-  local interfaces="(none)"
-  if [ -f "$SIGNALS/active-interfaces" ] && [ -s "$SIGNALS/active-interfaces" ]; then
-    interfaces=$(tr '\n' ',' < "$SIGNALS/active-interfaces" | sed 's/,$//')
+  # sidecars — one per live worker; a worker without one is deaf to the user
+  local sidecars
+  sidecars=$(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -c "^side-" || echo 0)
+  printf "%-22s %s\n" "sidecars" "$sidecars"
+  if [ "$sidecars" -lt "$workers" ]; then
+    printf "%-22s ⚠ fewer sidecars than workers — those workers cannot be nudged\n" ""
   fi
-  printf "%-22s %s\n" "active interfaces" "$interfaces"
 
-  # slack idle-pause setting
-  if [ -f "$SIGNALS/slack-idle-pause-minutes" ]; then
-    local idle_mins
-    idle_mins=$(cat "$SIGNALS/slack-idle-pause-minutes")
-    printf "%-22s %s min\n" "slack idle-pause" "$idle_mins"
+  # SSE availability — sidecars fall back to polling without it
+  local notecove="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
+  if $notecove events recent --types "task.*" --limit 1 --json >/dev/null 2>&1; then
+    printf "%-22s ✓ available (push)\n" "notecove events"
+  else
+    printf "%-22s ✗ unavailable — sidecars polling only\n" "notecove events"
   fi
-}
 
-# ── pause-poller / resume-poller ───────────────────────────────────────────────
-
-cmd_pause_poller() {
-  touch "$SIGNALS/slack-poller-paused"
-  echo "slack-poller paused."
-}
-
-cmd_resume_poller() {
-  rm -f "$SIGNALS/slack-poller-paused"
-  echo "slack-poller resumed."
+  # tasks refused for missing/unmapped type
+  local untyped
+  untyped=$(find "$SIGNALS" -maxdepth 1 -name '*.untyped' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$untyped" -gt 0 ]; then
+    printf "%-22s %s  (set a supported type to unblock)\n" "untyped tasks" "$untyped"
+  fi
 }
 
 # ── attach ─────────────────────────────────────────────────────────────────────
@@ -377,16 +270,15 @@ cmd_task() {
 # ── switch ─────────────────────────────────────────────────────────────────
 
 cmd_switch() {
-  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2" MODE="standard"
-  local MAX_WORKERS="30" REVIEW_LIMIT="3"
+  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+  local MAX_WORKERS="30" POLL_INTERVAL="30"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --project)              PROJECT="$2";              shift 2 ;;
-      --profile)              PROFILE="$2";              shift 2 ;;
-      --mode)                 MODE="$2";                 shift 2 ;;
-      --max-workers)          MAX_WORKERS="$2";          shift 2 ;;
-      --review-limit)         REVIEW_LIMIT="$2";         shift 2 ;;
+      --project)       PROJECT="$2";       shift 2 ;;
+      --profile)       PROFILE="$2";       shift 2 ;;
+      --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
+      --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -402,33 +294,25 @@ cmd_switch() {
     exit 1
   fi
 
-  # 2. Kill project-scoped components (spokesman, orchestrator.py, ready-poller)
-  #    Leave project-agnostic daemons running (dispatcher, watchdog, folder-cleanup)
-  #    Leave the workers session untouched
-  echo "  · stopping project-scoped components..."
-  # Kill by window name — loop to handle duplicates (tmux kill-window only removes the first match)
-  for win in main orchestrator ready-poller; do
-    while tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qx "$win"; do
-      tmux kill-window -t "orchestrator:$win" 2>/dev/null || break
-    done
+  # 2. Kill the launcher — the only project-scoped component. watchdog and
+  #    folder-cleanup are project-agnostic; the workers session is untouched.
+  #    Loop because tmux kill-window only removes the first name match.
+  echo "  · stopping the launcher..."
+  while tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -qx "launcher"; do
+    tmux kill-window -t "orchestrator:launcher" 2>/dev/null || break
   done
-  # pr-mon-* windows are left running — they are lightweight bash loops that
-  # will queue a merge event if the PR merges while the user is on another project
 
-  # 3. Clear orchestrator/spokesman-owned state; preserve worker-owned state
-  #    Worker-owned: queue, workers registry, per-task .seq/.merged/.crash-count/.review-start/review-count
-  #    Orchestrator-owned: spokesman-queue, orchestrator-cmds, active-interfaces, heartbeat
-  : > "$SIGNALS/spokesman-queue"
-  : > "$SIGNALS/slackbridge-queue"
-  : > "$SIGNALS/orchestrator-cmds"
-  : > "$SIGNALS/active-interfaces"
+  # Per-task windows are left running: sidecars keep serving workers from the
+  # previous project (they are project-agnostic, keyed only on a task slug), and
+  # pr-monitors keep watching for merges.
 
-  # 4. Re-init NoteCove for the new project
+  # 3. Re-init NoteCove for the new project
   local NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
   cd "$AGENTMESH"
-  $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
+  $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes --events
 
-  # 5. Resolve and persist Triage folder ID for the new project (optional — not all projects have one)
+  # 4. Resolve and persist Triage folder ID for the new project
+  #    (optional — not all projects have one)
   local TRIAGE_FOLDER
   TRIAGE_FOLDER=$($NOTECOVE folder list --json | python3 -c "
 import sys, json
@@ -437,40 +321,20 @@ match = next((f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'
 print(match)")
   echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
-  # 6. Write mode and orchestrator restart command for the new project
-  echo "$MODE" > "$SIGNALS/mode"
-  echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
-    > "$SIGNALS/orchestrator-restart-cmd"
-
-  # 7. Start orchestrator.py with the new project
-  tmux new-window -t "orchestrator:" -n orchestrator
-  tmux send-keys -t orchestrator:orchestrator \
-    "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
+  # 5. Start the launcher on the new project
+  tmux new-window -t "orchestrator:" -n launcher
+  tmux send-keys -t orchestrator:launcher \
+    "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; echo '[launcher] exited — restarting in 5s'; sleep 5; done" \
     Enter
-  echo "  ✓ orchestrator.py started (project: $PROJECT)"
+  echo "  ✓ launcher started (project: $PROJECT)"
 
-  # 8. Start ready-poller with the new project
-  tmux new-window -t "orchestrator:" -n ready-poller
-  tmux send-keys -t orchestrator:ready-poller \
-    "bash $SCRIPTS/ready-poller.sh --project $PROJECT" Enter
-  echo "  ✓ ready-poller started"
-
-  # 9. Start Spokesman with the new project (--no-bootstrap since daemons are already running)
-  tmux new-window -t "orchestrator:" -n main
-  tmux send-keys -t "orchestrator:main" "cd $AGENTMESH && claude --dangerously-skip-permissions" Enter
-  _wait_for_repl "orchestrator:main"
-  tmux send-keys -t "orchestrator:main" \
-    "/spokesman --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT --no-bootstrap" \
-    Enter
-  echo "  ✓ Spokesman started (orchestrator:main)"
-
-  # 10. Fresh heartbeat
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
+  # 6. Fresh heartbeat
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/launcher.heartbeat"
 
   echo ""
-  echo "agentmesh switched to project: ${PROJECT}. Mode: ${MODE}."
-  echo "  · existing workers from previous project are still running"
-  echo "  · dispatcher, watchdog, folder-cleanup remain active"
+  echo "agentmesh switched to project: ${PROJECT}."
+  echo "  · existing workers and their sidecars are still running"
+  echo "  · watchdog and folder-cleanup remain active"
 }
 
 # ── dispatch ───────────────────────────────────────────────────────────────────
@@ -485,10 +349,8 @@ case "$COMMAND" in
   status)        cmd_status        "$@" ;;
   attach)        cmd_attach        "$@" ;;
   task)          cmd_task          "$@" ;;
-  pause-poller)  cmd_pause_poller  "$@" ;;
-  resume-poller) cmd_resume_poller "$@" ;;
   *)
-    echo "Usage: agentmesh <start|stop|switch|status|attach|task|pause-poller|resume-poller> [options]" >&2
+    echo "Usage: agentmesh <start|stop|switch|status|attach|task> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
     echo "  start          Start the agentmesh system" >&2
@@ -497,8 +359,6 @@ case "$COMMAND" in
     echo "  status         Show component health" >&2
     echo "  attach         Attach to the orchestrator tmux session" >&2
     echo "  task create    Create a new task in NoteCove" >&2
-    echo "  pause-poller   Pause the Slack poller (creates signals/slack-poller-paused)" >&2
-    echo "  resume-poller  Resume the Slack poller (removes signals/slack-poller-paused)" >&2
     exit 1
     ;;
 esac

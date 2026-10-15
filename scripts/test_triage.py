@@ -1,35 +1,24 @@
 """
-Unit tests for orchestrator.py type→agent triage logic.
+Unit tests for launcher.py type→agent triage logic.
 
 Tests the TYPE_MAP matching in pick_up_ready_tasks():
 - typeId match (e.g. "bug" → implementer)
 - typeName-only match (e.g. typeId="chore"/typeName="Investigation" → investigator)
-- no match (forwarded to spokesman)
+- no usable type → refused, left in Ready, no worker spawned
+
+There is no LLM triage fallback: a task whose type does not resolve through
+TYPE_MAP is refused outright rather than being guessed at or defaulted.
 """
+import json
 import sys
-import types
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-
-# ---------------------------------------------------------------------------
-# Minimal import shim so orchestrator.py can be imported without
-# the full runtime environment (yaml, anomaly_checks, real filesystem).
-# ---------------------------------------------------------------------------
-
-# Stub out anomaly_checks before importing orchestrator
-anomaly_stub = types.ModuleType("anomaly_checks")
-anomaly_stub.AnomalyChecker = MagicMock()
-sys.modules["anomaly_checks"] = anomaly_stub
-
-# Stub out yaml (used by _load_valid_events)
-yaml_stub = types.ModuleType("yaml")
-yaml_stub.safe_load = lambda f: {"events": {}}
-sys.modules["yaml"] = yaml_stub
+from unittest.mock import MagicMock, patch
 
 SCRIPTS = Path(__file__).parent
 sys.path.insert(0, str(SCRIPTS))
-import orchestrator as orch  # noqa: E402
+import launcher as lnch  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -38,168 +27,169 @@ import orchestrator as orch  # noqa: E402
 
 def _make_task(type_ids: list, type_names: list, slug_short: str = "WORK-abc") -> dict:
     return {
+        "slug": {"short": slug_short, "full": f"{slug_short}:longid"},
+        "title": f"Test task {slug_short}",
         "typeIds": type_ids,
         "typeNames": type_names,
-        "title": f"Test task {slug_short}",
-        "priority": 3,
-        "slug": {
-            "short": slug_short,
-            "full": f"{slug_short}:uniqueid123",
-        },
+        "priority": 1,
     }
 
 
-class TestTypeMapLookup(unittest.TestCase):
-    """Verify TYPE_MAP entries cover all expected type names / IDs."""
+class TestTriageMapping(unittest.TestCase):
+    """_triage() resolves a task's type to an agent type, or None."""
+
+    def setUp(self):
+        self.l = lnch.Launcher(project="WORK", max_workers=5,
+                               profile="test-profile", poll_interval=30)
 
     def test_typeids_that_match_directly(self):
-        """typeIds that exactly match TYPE_MAP keys are resolved without typeName fallback."""
-        for type_id, expected_agent in [
-            ("bug", "implementer"),
-            ("feature", "implementer"),
-            ("plan", "planner"),
-            ("brainstorming", "brainstormer"),
-            ("documentation", "documenter"),
-            ("design", "designer"),
-            ("investigation", "investigator"),
-        ]:
+        for type_id, expected in lnch.TYPE_MAP.items():
             with self.subTest(type_id=type_id):
-                result = next(
-                    (orch.TYPE_MAP[t.lower()] for t in [type_id] if t.lower() in orch.TYPE_MAP),
-                    None,
-                )
-                self.assertEqual(result, expected_agent)
+                self.assertEqual(self.l._triage(_make_task([type_id], [])), expected)
 
     def test_typenames_that_match_map_keys(self):
-        """typeNames from the actual NoteCove project resolve via TYPE_MAP keys."""
-        for type_name, expected_agent in [
-            ("Bug", "implementer"),
-            ("Feature", "implementer"),
-            ("Investigation", "investigator"),  # typeId is "chore" — won't match by ID
-            ("Plan", "planner"),               # typeId is a UUID — won't match by ID
-            ("Brainstorming", "brainstormer"), # typeId is a UUID — won't match by ID
-        ]:
-            with self.subTest(type_name=type_name):
-                result = next(
-                    (orch.TYPE_MAP[n.lower()] for n in [type_name] if n.lower() in orch.TYPE_MAP),
-                    None,
-                )
-                self.assertEqual(result, expected_agent)
-
-
-class TestPickUpReadyTasksTriage(unittest.TestCase):
-    """
-    Integration-level tests for the triage branch inside pick_up_ready_tasks().
-    We patch away I/O (notecove, spawn, tmux signals) and inspect which path
-    (direct-spawn vs spokesman-forward) is taken for different typeId/typeName combos.
-    """
-
-    def _make_orchestrator(self):
-        o = orch.Orchestrator(
-            project="WORK", mode="standard", max_workers=5,
-            profile="test-profile", review_limit=3,
+        # typeIds is opaque; the display name is what carries the meaning.
+        self.assertEqual(
+            self.l._triage(_make_task(["chore"], ["Investigation"])), "investigator"
         )
-        return o
-
-    def _run_triage(self, tasks: list):
-        """
-        Run pick_up_ready_tasks() with a mocked task list and capture:
-        - spawned: list of (slug, agent_type)
-        - forwarded: list of slugs forwarded to spokesman
-        - spokesman_signalled: bool
-        """
-        spawned = []
-        forwarded = []
-        spokesman_signalled = []
-
-        o = self._make_orchestrator()
-
-        with (
-            patch.object(orch, "run_bash") as mock_rb,
-            patch.object(orch, "notecove") as mock_nc,
-            patch.object(orch, "append_spokesman_queue") as mock_sq,
-            patch.object(orch, "tmux_signal") as mock_ts,
-            patch.object(o, "_spawn_worker") as mock_sw,
-            patch.object(o, "_maybe_shutdown"),
-            patch.object(orch, "log"),
-        ):
-            # task list returns our tasks
-            mock_rb.return_value = MagicMock(returncode=0, stdout=__import__("json").dumps(tasks))
-
-            # workers file: empty (no active workers)
-            o._in_flight.clear()
-
-            mock_sw.side_effect = lambda slug, agent_type: spawned.append((slug, agent_type))
-            mock_sq.side_effect = lambda slug, event: forwarded.append(slug)
-            mock_ts.side_effect = lambda sig: spokesman_signalled.append(sig)
-
-            o.pick_up_ready_tasks()
-
-        return spawned, forwarded, any(s == "spokesman-event" for s in spokesman_signalled)
-
-    def test_bug_typeid_spawns_implementer_directly(self):
-        tasks = [_make_task(["bug"], ["Bug"])]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [("WORK-abc", "implementer")])
-        self.assertNotIn("WORK-abc", forwarded)
-        self.assertFalse(sig, "spokesman-event should NOT fire when typeId matched directly")
-
-    def test_feature_typeid_spawns_implementer_directly(self):
-        tasks = [_make_task(["feature"], ["Feature"])]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [("WORK-abc", "implementer")])
-        self.assertFalse(sig)
-
-    def test_chore_typeid_with_investigation_typename_spawns_investigator(self):
-        """Real-world case: typeId='chore', typeName='Investigation'."""
-        tasks = [_make_task(["chore"], ["Investigation"])]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [("WORK-abc", "investigator")])
-        self.assertNotIn("WORK-abc", forwarded)
-        self.assertFalse(sig)
-
-    def test_uuid_typeid_with_plan_typename_spawns_planner(self):
-        """Real-world case: typeId=UUID, typeName='Plan'."""
-        tasks = [_make_task(["s016tmt5yt57enbm2pp71ah734"], ["Plan"])]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [("WORK-abc", "planner")])
-        self.assertNotIn("WORK-abc", forwarded)
-        self.assertFalse(sig)
-
-    def test_uuid_typeid_with_brainstorming_typename_spawns_brainstormer(self):
-        """Real-world case: typeId=UUID, typeName='Brainstorming'."""
-        tasks = [_make_task(["t1wxdcdv6af13mezkwzgyss5k6"], ["Brainstorming"])]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [("WORK-abc", "brainstormer")])
-        self.assertFalse(sig)
-
-    def test_unknown_type_forwarded_to_spokesman(self):
-        """Tasks with no matching typeId or typeName go to spokesman for LLM triage."""
-        tasks = [_make_task([], [], slug_short="WORK-xyz")]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertEqual(spawned, [])
-        self.assertIn("WORK-xyz", forwarded)
-        self.assertTrue(sig, "spokesman-event must fire when a task is forwarded")
+        self.assertEqual(
+            self.l._triage(_make_task(["7f3a-uuid"], ["Plan"])), "planner"
+        )
 
     def test_typeid_takes_priority_over_typename(self):
-        """If typeId matches, typeName fallback is not used (no double-match side effects)."""
-        tasks = [_make_task(["bug"], ["Investigation"])]  # conflicting names
-        spawned, forwarded, sig = self._run_triage(tasks)
-        # typeId "bug" wins → implementer, not investigator
-        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertEqual(
+            self.l._triage(_make_task(["bug"], ["Documentation"])), "implementer"
+        )
 
-    def test_mixed_batch_some_matched_some_forwarded(self):
-        """Mix of known-type and unknown-type tasks in one pick_up cycle."""
+    def test_matching_is_case_insensitive(self):
+        self.assertEqual(self.l._triage(_make_task(["BUG"], [])), "implementer")
+        self.assertEqual(self.l._triage(_make_task([], ["FEATURE"])), "implementer")
+
+    def test_no_type_returns_none(self):
+        self.assertIsNone(self.l._triage(_make_task([], [])))
+
+    def test_unmapped_type_returns_none(self):
+        """An unmapped type is refused, not defaulted to implementer."""
+        self.assertIsNone(self.l._triage(_make_task(["chore"], ["Chore"])))
+
+
+class TestPickUpReadyTasks(unittest.TestCase):
+    """
+    Integration-level tests for pick_up_ready_tasks(). I/O (notecove, spawn) is
+    patched out so we can inspect which path is taken for each type combination.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, tasks: list):
+        """Returns (spawned, refused) where refused is the list of commented slugs."""
+        spawned, refused = [], []
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+
+        with (
+            patch.object(lnch, "run_bash") as mock_rb,
+            patch.object(lnch, "notecove") as mock_nc,
+            patch.object(l, "_spawn_worker") as mock_sw,
+            patch.object(l, "_write_heartbeat"),
+            patch.object(lnch, "log"),
+            patch.object(lnch, "_print"),
+        ):
+            mock_rb.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks))
+            mock_sw.side_effect = lambda slug, agent_type: spawned.append((slug, agent_type))
+            mock_nc.side_effect = lambda args: refused.append(args) or ""
+            l.pick_up_ready_tasks()
+
+        return spawned, refused
+
+    def test_bug_typeid_spawns_implementer(self):
+        spawned, refused = self._run([_make_task(["bug"], ["Bug"])])
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertEqual(refused, [])
+
+    def test_chore_typeid_with_investigation_typename_spawns_investigator(self):
+        spawned, _ = self._run([_make_task(["chore"], ["Investigation"])])
+        self.assertEqual(spawned, [("WORK-abc", "investigator")])
+
+    def test_untyped_task_is_refused_and_not_spawned(self):
+        spawned, refused = self._run([_make_task([], [])])
+        self.assertEqual(spawned, [], "an untyped task must not spawn a worker")
+        self.assertEqual(len(refused), 1, "the refusal must be commented exactly once")
+        self.assertIn("comments add", refused[0])
+
+    def test_untyped_task_is_left_in_ready(self):
+        """The launcher must never move an untriageable task out of Ready."""
+        _, refused = self._run([_make_task([], [])])
+        self.assertFalse(
+            any("--state" in call for call in refused),
+            "refusing a task must not change its state",
+        )
+
+    def test_unmapped_type_is_refused(self):
+        spawned, refused = self._run([_make_task(["chore"], ["Chore"])])
+        self.assertEqual(spawned, [])
+        self.assertEqual(len(refused), 1)
+
+    def test_refusal_comment_is_deduped(self):
+        """The ready-scan repeats every poll; the comment must only be posted once."""
+        task = _make_task([], [])
+        _, first = self._run([task])
+        _, second = self._run([task])
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [], "second scan must not re-comment")
+
+    def test_mixed_batch_spawns_matched_and_refuses_rest(self):
         tasks = [
             _make_task(["bug"], ["Bug"], slug_short="WORK-a"),
             _make_task(["chore"], ["Investigation"], slug_short="WORK-b"),
-            _make_task([], [], slug_short="WORK-c"),  # no type → spokesman
+            _make_task([], [], slug_short="WORK-c"),
         ]
-        spawned, forwarded, sig = self._run_triage(tasks)
-        self.assertIn(("WORK-a", "implementer"), spawned)
-        self.assertIn(("WORK-b", "investigator"), spawned)
-        self.assertIn("WORK-c", forwarded)
-        self.assertTrue(sig)
+        spawned, refused = self._run(tasks)
+        self.assertEqual(
+            sorted(spawned), [("WORK-a", "implementer"), ("WORK-b", "investigator")]
+        )
+        self.assertEqual(len(refused), 1)
+        self.assertIn("WORK-c", refused[0])
+
+    def test_launching_flag_blocks_respawn(self):
+        """
+        The launcher no longer sets Doing, so a task stays Ready while Claude
+        boots. The .launching flag is what stops the next scan spawning a second
+        worker for it.
+        """
+        task = _make_task(["bug"], ["Bug"])
+        (Path(self._tmp.name) / "WORK-abc.launching").touch()
+        spawned, _ = self._run([task])
+        self.assertEqual(spawned, [], "a launching task must not be spawned again")
+
+    def test_expired_launching_flag_allows_respawn(self):
+        """A worker that died during boot must not wedge the task forever."""
+        import os, time
+        task = _make_task(["bug"], ["Bug"])
+        flag = Path(self._tmp.name) / "WORK-abc.launching"
+        flag.touch()
+        stale = time.time() - (lnch.LAUNCHING_TIMEOUT_SECS + 60)
+        os.utime(flag, (stale, stale))
+        spawned, _ = self._run([task])
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+
+
+class TestAgentAuthorMap(unittest.TestCase):
+    """Every agent TYPE_MAP can spawn must have a comment-author entry.
+
+    The sidecar filters an agent's own comments by author name, so a missing
+    entry makes that agent wake itself on every comment it writes.
+    """
+
+    def test_every_mapped_agent_has_an_author(self):
+        for agent in set(lnch.TYPE_MAP.values()):
+            with self.subTest(agent=agent):
+                self.assertIn(agent, lnch.AGENT_AUTHOR)
 
 
 if __name__ == "__main__":

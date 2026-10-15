@@ -1,37 +1,45 @@
 #!/usr/bin/env bash
-# task-done.sh <slug> <PROJECT> [<resume-sig>]
+# task-done.sh <slug> <PROJECT> [<nudge-sig>]
 #
-# Unblock dependents, clean up worker windows, unregister from the worker
-# registry, and remove the seq file. Called by the orchestrator whenever a
-# task reaches a terminal state (Done, Won't Do, etc.).
+# Unblock dependents, kill the task's worker/sidecar/pr-monitor windows,
+# unregister from the worker registry, and remove per-task signal files.
+# Run whenever a task reaches a terminal state (Done, Won't Do, etc.).
 #
-# If <resume-sig> is provided, fires that tmux signal first so the blocked
-# worker unblocks before its windows are killed. Omit it when the worker is
-# already gone (crash path, abort after external state change).
+# If <nudge-sig> is provided, fires that tmux signal first so a blocked worker
+# unblocks before its windows are killed. Omit it when the worker is already
+# gone (crash path, abort after an external state change).
 
 set -euo pipefail
 
-SLUG="${1:?Usage: task-done.sh <slug> <PROJECT> [<resume-sig>]}"
-PROJECT="${2:?Usage: task-done.sh <slug> <PROJECT> [<resume-sig>]}"
+SLUG="${1:?Usage: task-done.sh <slug> <PROJECT> [<nudge-sig>]}"
+PROJECT="${2:?Usage: task-done.sh <slug> <PROJECT> [<nudge-sig>]}"
 RESUME_SIG="${3:-}"
-AGENTMESH=/Users/firas.gara/agentmesh
+AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
-# 1. Fire resume signal if the worker is blocked waiting
+# 1. Fire the nudge signal if the worker is blocked waiting
 if [ -n "$RESUME_SIG" ]; then
   tmux wait-for -S "$RESUME_SIG"
 fi
 
-# 2. Kill worker tmux windows
+# 2. Kill the task's windows.
+#    side-* and pr-mon-* are NOT in signals/workers (they are not workers), so
+#    nothing else would ever reap them — they must be killed explicitly here.
 tmux kill-window -t "workers:${SLUG}" 2>/dev/null || true
-tmux kill-window -t "workers:plan-rev-${SLUG}" 2>/dev/null || true
-tmux kill-window -t "workers:pr-rev-${SLUG}" 2>/dev/null || true
+tmux kill-window -t "orchestrator:side-${SLUG}" 2>/dev/null || true
+tmux kill-window -t "orchestrator:pr-mon-${SLUG}" 2>/dev/null || true
 
 # 3. Unregister from the worker registry
 sed -i '' "/^${SLUG} /d" "$AGENTMESH/signals/workers" 2>/dev/null || true
 
-# 4. Remove seq file
-rm -f "$AGENTMESH/signals/${SLUG}.seq"
+# 4. Remove per-task signal files
+rm -f "$AGENTMESH/signals/${SLUG}.seq" \
+      "$AGENTMESH/signals/${SLUG}.inbox" \
+      "$AGENTMESH/signals/${SLUG}.launching" \
+      "$AGENTMESH/signals/${SLUG}.untyped" \
+      "$AGENTMESH/signals/${SLUG}.seen-comments" \
+      "$AGENTMESH/signals/${SLUG}.seen-state" \
+      "$AGENTMESH/signals/${SLUG}.merged"
 
 # 5. Unblock any tasks whose only remaining blocker was this slug.
 #    Retry up to 3 times with a 2s delay to handle API propagation lag after

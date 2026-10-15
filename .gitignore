@@ -2,3 +2,4 @@
 signals/
 agentmesh-WORK-*/
 .beads/
+__pycache__/

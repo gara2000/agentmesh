@@ -1,142 +1,137 @@
 # AgentMesh — Agentic Workflow
 
-AgentMesh is a synchronous multi-agent orchestration system built on tmux and NoteCove. It picks up tasks from NoteCove, assigns them to autonomous worker agents, and routes any user interaction through a single orchestrator — the user never interacts with workers directly.
+AgentMesh is a multi-agent orchestration system built on tmux and NoteCove. It picks up tasks from NoteCove and assigns them to autonomous worker agents.
+
+**NoteCove is the only interaction surface between the user and the agents.** There is no chat interface, no relay process, and no interface layer. Each agent talks to the user directly through its task: comments carry the conversation, notes carry artifacts, task state carries intent.
 
 ---
 
 ## How It Works
 
-### Coordination Primitives
+### The interaction cycle
 
-All coordination is synchronous — no polling, no idle token consumption.
+An agent that needs the user does three things:
+
+1. **Posts a brief comment** summarising what it just did and what it needs.
+2. **Sets the task to `Attention`** and blocks, consuming no tokens.
+3. **Wakes when its sidecar nudges it**, reads what changed, and continues.
+
+The user replies by commenting on the task in NoteCove — nothing else is required of them.
+
+```
+agent → comment + Attention → user reads and replies in NoteCove → sidecar → <slug>-nudge-<seq> → agent
+```
+
+### Coordination Primitives
 
 - **`tmux wait-for -S <signal>`** — fires a named signal (non-blocking)
 - **`tmux wait-for <signal>`** — blocks until the signal is fired
-- **`signals/queue`** — append-only file; workers write `<slug>:<event-type>` entries before signaling; orchestrator.py drains it after unblocking
-- **`signals/spokesman-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`); Spokesman drains it after unblocking
-- **`signals/slackbridge-queue`** — append-only file; orchestrator.py writes forwarded user-attention events (`<slug>:<event-type>`) and `slack-socket-relay.py` writes relay-pushed inbound Slack messages (`slack-message:<channel_id>:<thread_ts>:<user_id>:<text_escaped>`); SlackBridge drains it after unblocking
-- **`signals/active-interfaces`** — one line per active interface name (`spokesman`, `slackbridge`); read by orchestrator.py to fan out events; empty or missing = falls back to `spokesman` only
-- **`signals/orchestrator-cmds`** — append-only file; Spokesman writes commands (`<slug>|<cmd>[|<args>]`); orchestrator.py drains it after unblocking
-- **`scripts/dispatcher.sh`** — relay process running in a background tmux pane; listens on `worker-any-event` and forwards to `orchestrator-event`, enabling fan-in from multiple workers
+- **`signals/<slug>.inbox`** — append-only, line-delimited JSON; the sidecar (or pr-monitor) writes what changed, the agent reads and clears it
+- **`signals/<slug>.seq`** — per-task nudge sequence counter; written by the agent before it blocks, read by the sidecar to know which signal to fire
+- **`scripts/sidecar.sh`** — one per worker; watches the task in NoteCove and nudges its agent on any change
 
 ### Signal Protocol
 
 | Signal | Direction | Trigger |
 |---|---|---|
-| `worker-any-event` | Worker → Dispatcher | Worker needs to notify orchestrator.py |
-| `orchestrator-event` | Dispatcher → orchestrator.py | Relayed fan-in signal |
-| `spokesman-event` | orchestrator.py → Spokesman | User-attention event forwarded to Spokesman |
-| `slackbridge-event` | orchestrator.py → SlackBridge | User-attention event forwarded to SlackBridge (when registered in `active-interfaces`) |
-| `slackbridge-event` | slack-socket-relay.py → SlackBridge | Push signal fired when Slack delivers a message over the WebSocket connection |
-| `orchestrator-cmd-event` | Spokesman → orchestrator.py | Command from Spokesman (resume, spawn, etc.) |
-| `<task-slug>-resume-<seq>` | orchestrator.py → Worker | Resume blocked worker (sequenced) |
+| `<task-slug>-nudge-<seq>` | Sidecar → Agent | A new comment (not the agent's own) or a task state change |
+| `<task-slug>-nudge-<seq>` | PR Monitor → Agent | The agent's PR was merged |
 
 Task slugs (e.g. `WORK-pm4`) are used as signal names — globally unique, safe for tmux (alphanumeric + hyphens).
 
-### Queue Format
+The sequence number makes every nudge unique across rounds, so a stale signal from round N cannot unblock round N+1.
 
-Workers write `<slug>:<event-type>` to `signals/queue`. The event type is the same tag as the `event:*` comment written to NoteCove — the queue is the source of truth so orchestrator.py never needs to parse task comments for routing.
+### Inbox Format
 
-Examples:
-- `WORK-abc:event:plan-ready`
-- `WORK-abc:event:pr-ready:https://github.com/foo/bar/pull/1`
-- `WORK-abc:event:questions`
-- `WORK-abc:event:crash-detected` (written by watchdog.sh — with exponential backoff)
-- `WORK-abc:event:crash-limit-reached` (written by watchdog.sh after 3 consecutive crashes)
-- `WORK-abc:event:pr-merged` (written by pr-monitor.sh)
+The sidecar appends one JSON object per line to `signals/<slug>.inbox`:
 
-### Task State as Event Type
+```json
+{"kind":"comment","id":"CDpiRX…","author":"gara","content":"looks good, ship it","created":1792062799252}
+{"kind":"state-change","from":"doing","to":"…","to_name":"Won't Do"}
+{"kind":"pr-merged","url":"https://github.com/foo/bar/pull/1","note":"PR was merged. Set the task to Done."}
+```
 
-The orchestrator does not use separate status files. After unblocking, it reads the NoteCove task state directly to determine what happened:
+The agent reads the inbox rather than re-fetching and re-diffing the task itself.
 
-| NoteCove Task State | Meaning |
-|---|---|
-| `Attention` | Worker/planner needs user input — questions, plan ready, or PR ready |
-| `In Review` | A reviewer agent is currently running (set by orchestrator only) |
-| `Done` | Set by orchestrator after user approves — triggers worker exit |
+### Why the inbox and not just the signal
 
-### Event Tag Dispatch
+`await_user` breaks on **the inbox being non-empty**, not on receiving the signal. This closes the race where the sidecar nudges while the agent is mid-turn: tmux drops the signal, but the inbox is already written, so the agent's next `await_user` returns immediately instead of blocking on a signal that will never fire again.
 
-When a task reaches `Attention`, the orchestrator reads the **last comment** to determine the precise event type. Every agent adds a machine-readable `event:<type>` comment as the final comment before signaling `Attention`. The orchestrator extracts the tag and dispatches via a clean `case` statement — no string-content heuristics.
+It also makes `await_user` safe to re-call. Claude Code's Bash tool caps at 10 minutes, so any real wait gets interrupted; because the announce (comment + state) and the wait (loop) are separate, and the loop writes nothing and fires nothing, re-invoking it simply re-enters the wait.
 
-<!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
-| Event Tag | Fired by | Meaning |
+### Task State
+
+Task state is owned by **the worker agent and the user — nothing else.**
+
+| NoteCove Task State | Set by | Meaning |
 |---|---|---|
-| `event:questions` | Implementer / Planner / Brainstormer / Investigator / Ticketer | Agent has questions for the user |
-| `event:plan-ready` | Implementer | Plan note written (first submission), awaiting review |
-| `event:plan-revised` | Implementer | Plan revised after reviewer feedback; re-review requested |
-| `event:pr-ready:<url>` | Implementer | PR created at `<url>` (first submission), signaling readiness to orchestrator |
-| `event:pr-revised:<url>` | Implementer | PR revised after reviewer feedback; re-review requested |
-| `event:pr-ready-final:<url>` | Implementer | PR is ready for user approval — no further automated review needed |
-| `event:confluence-ready:<url>` | Documenter / RFC Creator | Confluence page created/updated at `<url>` in personal space, awaiting user review — no PR created |
-| `event:ideas-ready` | Brainstormer | New IDEAS note ready for user feedback |
-| `event:selection-ready` | Brainstormer | SELECTION note ready for user to check ideas |
-| `event:design-ready` | Designer | DESIGN note written (first submission), awaiting user review |
-| `event:design-revised` | Designer | Design revised after user feedback; re-review requested |
-| `event:research-ready` | Investigator | Context notes written — awaiting user review and approval |
-| `event:tickets-draft` | Ticketer | Ticket draft written — awaiting user confirmation before creating in Atlassian |
-| `event:tickets-created` | Ticketer | Tickets created in Jira — task auto-completed by orchestrator |
-| `event:completion` | Brainstormer / Planner / Designer | Subtasks created (or skipped), parent marked Done |
-| `event:plan-review-complete` | Plan Reviewer | Plan review note written, summary in comment |
-| `event:pr-review-complete` | PR Reviewer | PR review posted to GitHub, summary in comment |
-| `event:anomaly-detected:<key>` | Orchestrator | Invariant violation detected (forwarded to Spokesman for user notification) |
-| `event:review-limit-reached:plan` | orchestrator.py | Auto-review cycle limit reached for plan reviews — escalated to Spokesman |
-| `event:review-limit-reached:pr:<url>` | orchestrator.py | Auto-review cycle limit reached for PR reviews — escalated to Spokesman |
-| `event:crash-limit-reached` | watchdog.sh | Worker crashed 3 consecutive times — task set to Blocked, escalated to Spokesman |
+| `Ready` | User | Available for pickup. The launcher reads it but never writes it. |
+| `Doing` | Worker | The worker has claimed the task; its first action after booting. |
+| `Attention` | Worker | The worker needs the user and is blocked. |
+| `Done` | Worker (after the user approves) or User | Work accepted. |
+| `Won't Do` | Worker (on `abort`) or User | Work abandoned. |
+| `Blocked` | Watchdog (crash limit) or User | Needs investigation. |
 
-The orchestrator translates worker events into Spokesman events:
+The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashed worker cannot set its own state, and the alternative is a task stuck in `Doing` with nothing running.
 
-<!-- Source of truth: plugins/agentic-workflows/shared/protocol.yaml — update there first, then sync here -->
-| Worker Event | Spokesman Event | When | Meaning |
-|---|---|---|---|
-| `event:pr-ready:<url>` | `event:pr-submitted:<url>` | Standard mode | PR needs user decision (approve / review / feedback / abort) |
-| `event:pr-revised:<url>` | `event:pr-submitted:<url>` | Standard mode | Revised PR needs user decision |
-| `event:pr-ready-final:<url>` | `event:pr-ready:<url>` | Auto-review mode, post-review | PR validated; ready for final user approval |
-| `event:confluence-ready:<url>` | `event:confluence-submitted:<url>` | Always | Confluence docs ready; needs user decision (approve / feedback / abort) |
+### Comment Conventions
+
+- **Comments are summaries, not documents.** A few sentences at most — a comment tells the user what happened and where to look. Anything longer goes in a NoteCove note that the comment names.
+- **Agents post under their role name** (`--user "Implementer"`, `--user "Investigator"`, …). The sidecar filters an agent's own comments by author name, so this value must match the skill's `agent-user` frontmatter and the `AGENT_AUTHOR` map in `launcher.py` — a mismatch makes an agent wake itself on every comment it writes.
+- **The user writes free text**, interpreted with judgement. Two words are reserved commands honoured literally: `approve` (accept the work; the agent sets `Done`) and `abort` (stop; the agent sets `Won't Do`).
+- **Agents echo their reading back** ("Read as: approve → marking Done") so a misinterpretation is visible rather than silent.
 
 ---
 
 ## Roles
 
-### Orchestrator Daemon (orchestrator.py)
+### Launcher (launcher.py)
 
-**One instance.** Runs in the `orchestrator` tmux session, window `orchestrator`. Pure Python, always running — never blocked by user interaction.
+**One instance.** Runs in the `orchestrator` tmux session, window `launcher`. Pure Python.
 
-Responsibilities:
-- Pick up `Ready` tasks from NoteCove (up to `max-workers` in parallel), mark as `Doing`, and triage by typeId then typeName against TYPE_MAP: matched types → spawn worker directly; unmatched types → forward to Spokesman for LLM triage via `spokesman-queue`
-- Block on `orchestrator-event` (from dispatcher); drain `signals/queue` on each unblock
-- Block on `orchestrator-cmd-event` (from Spokesman); drain `signals/orchestrator-cmds` on each unblock
-- Auto-handle events that don't require user input:
-  - `auto-review` mode: spawn reviewers automatically, pass results back to workers
-  - Planner/brainstormer completion: auto-ack, set Done, clean up
-  - PR merged: auto-approve, clean up
-  - Worker crash: re-queue task, spawn new worker
-- Forward user-attention events to all registered interfaces (reads `signals/active-interfaces`; falls back to `spokesman` only when empty)
-- Execute commands from Spokesman: fire resume signals, spawn agents, clean up
-
-### Legacy Orchestrator
-
-**Kept for compatibility.** The original `/orchestrator` Claude Code skill (`plugins/agentic-workflows/skills/orchestrator/SKILL.md`) remains unchanged. Use `/spokesman` as the new entry point for the Spokesman + orchestrator.py architecture.
-
-### Dispatcher
-
-**One instance.** Runs in the `orchestrator` session, window `dispatcher`. Pure bash, no Claude.
+Its entire job is picking up work and starting workers. It does not route events, does not talk to running agents, and does not change task state.
 
 Responsibilities:
-- Loop on `tmux wait-for worker-any-event`
-- Forward each event to the orchestrator via `tmux wait-for -S orchestrator-event`
-- Enables fan-in: multiple workers can signal concurrently without the orchestrator missing events
+- Scan NoteCove every `--poll-interval` seconds (default 30) for `Ready` tasks, up to `max-workers` in parallel
+- Triage each by `typeIds` then `typeNames` against `TYPE_MAP`
+- Spawn the worker agent and its sidecar for each matched task
+- Refuse tasks whose type does not resolve (see below)
+- Write `signals/launcher.heartbeat` every 30s for `agentmesh status`
+
+**Untyped tasks are refused, not guessed.** A task is only picked up when its type maps through `TYPE_MAP`. Anything else — no type at all, or a type like `chore` that maps to nothing — is left in `Ready` with no default agent. The refusal posts exactly one comment, deduped via `signals/<slug>.untyped`, and is logged on every scan. Setting a supported type makes the task eligible again on the next scan.
+
+**The launcher does not set `Doing`.** The worker does, as its first action. That leaves the task in `Ready` while Claude boots (10–60s), so the launcher writes `signals/<slug>.launching` before spawning and skips any slug holding a live flag; the worker clears it on claiming the task. The flag expires after 5 minutes so a worker that dies during boot does not wedge the task permanently.
+
+The launcher window runs inside a restart loop (`while true; do python3 launcher.py …; sleep 5; done`) — nothing supervises it, and it has no Claude dependency, so respawning in place is the simplest form of supervision.
+
+### Sidecar
+
+**One instance per active worker.** Runs in the `orchestrator` session, window `side-<slug>`. Pure bash, no Claude.
+
+The sidecar is **completely generic** — it carries no task-type knowledge. It never interprets comment content, never changes task state, and never decides what a change means. It reports "this changed" and wakes the agent; the agent, which already knows its own type because it is running a type-specific skill, decides what to do. Its only parameter beyond the slug is `--agent-handle`, the comment author name it treats as "mine".
+
+Responsibilities:
+- Establish a baseline of comment IDs and task state at startup (pre-existing comments are history, not replayed at the agent)
+- Detect changes two ways, both funnelling into one diff step:
+  - **SSE push** — subscribe to `notecove events --types "task.*"` and run the diff on any frame naming this slug
+  - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60)
+- On a change, append to `signals/<slug>.inbox` and fire `<slug>-nudge-<seq>`
+
+The poll runs **always**, not only when SSE is unavailable. The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference; the poll makes correctness independent of it. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
+
+SSE requires the `events:subscribe` permission, requested by `bootstrap.sh` via `notecove init --events`. Until it is granted the sidecar logs `sse-unavailable:no-permission` and relies on the poll; `agentmesh status` reports which mode is in effect.
+
+The `side-<slug>` window is **not** registered in `signals/workers` — it is not a worker, and registering it would make the watchdog treat its exit as a task crash. It is killed explicitly by the watchdog on crash cleanup and by `agentmesh stop`.
 
 ### PR Monitor
 
-**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude. Spawned automatically by `orchestrator.py` (in `_handle_queue_entry`) whenever it receives `event:pr-ready`, `event:pr-revised`, or `event:pr-ready-final` — before calling the corresponding event handler script. The spawn is idempotent. The Spokesman has no knowledge of the pr-monitor.
+**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude.
 
 Responsibilities:
 - Poll `gh pr view <pr-url>` every 60 seconds
-- When the PR state is `MERGED`: write a `signals/<slug>.merged` flag file, append `<slug>:event:pr-merged` to the queue, fire `worker-any-event`, and exit
-- orchestrator.py detects the merge event and auto-approves (sets Done, fires resume, cleans up)
+- When the PR state is `MERGED`: write `signals/<slug>.merged`, append a `pr-merged` entry to the worker's inbox, fire the nudge, and exit
 
-The pr-monitor window is killed by orchestrator.py when the task closes (approve or abort). It is NOT killed during review cycles (reviewer feedback, re-review requests).
+It does **not** set task state — the worker wakes, sees the merge, and sets `Done` itself. Merge detection lives here rather than in the sidecar so the sidecar stays generic, with no notion of PRs.
 
 ### Watchdog
 
@@ -144,21 +139,21 @@ The pr-monitor window is killed by orchestrator.py when the task closes (approve
 
 Responsibilities:
 - Poll the worker registry (`signals/workers`) every 30 seconds
-- For each registered worker, check if its tmux window still exists
+- For each registered worker, check whether its tmux window still exists
 - If a window is gone and the task state is still `doing` → crash detected:
   - Read `signals/<slug>.crash-count` (default 0); increment
-  - If crash count < 3: write count to file, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), append `<slug>:event:crash-detected` to queue, fire `worker-any-event`
-  - If crash count ≥ 3: delete count file, set task to Blocked in NoteCove, append `<slug>:event:crash-limit-reached` to queue, fire `worker-any-event`
+  - If crash count < 3: write the count, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), clean up the task's side processes, and set the task back to `Ready` — the launcher spawns a fresh worker on its next scan
+  - If crash count ≥ 3: delete the count file, set the task to `Blocked`, and comment on the task explaining why. `Blocked` plus the comment *is* the user-visible escalation; no process relays notifications any more.
 - Remove the entry from the registry regardless (window gone = worker dead)
-- If the task state is anything other than `doing` (e.g. `done`, `attention`) → worker finished cleanly; reset crash count (`rm signals/<slug>.crash-count`)
+- If the state is anything other than `doing` → the worker finished cleanly; reset the crash count and clean up
 
-orchestrator.py handles the crash case: when it drains a `crash-detected` event, it re-queues the task to `Ready` and spawns a new worker. When it drains `crash-limit-reached`, it cleans up and escalates to the Spokesman for user notification.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.seq`, `.launching`, `.seen-comments`, and `.seen-state` files.
 
-The worker registry (`signals/workers`) is a line-oriented file maintained by the orchestrator:
+The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
-# format: <task-slug> <tmux-window-name>
-WORK-pm4 WORK-pm4
-WORK-xyz WORK-xyz
+# format: <task-slug> <tmux-window-name> <agent-type>
+WORK-pm4 WORK-pm4 implementer
+WORK-xyz WORK-xyz investigator
 ```
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
@@ -169,53 +164,33 @@ WORK-xyz WORK-xyz
 
 Responsibilities:
 - Poll every 60 seconds for tasks in any terminal state (Done, Won't Do)
-- For each such task, move its named subfolder from the task's parent folder into the adjacent `Done` folder
+- For each, move its named subfolder from the task's parent folder into the adjacent `Done` folder
 - Skip folders already under a `Done` folder (idempotent)
-- Handles all terminal states automatically — the orchestrator no longer needs to call a `move_task_folder_to_done` helper inline
-
-The folder-cleanup window is killed by the orchestrator at shutdown.
-
-### Ready Poller
-
-**One instance.** Runs in the `orchestrator` session, window `ready-poller`. Pure bash, no Claude.
-
-Responsibilities:
-- Poll NoteCove every 30 seconds for tasks in `Ready` state
-- When any `Ready` tasks are found, write `-|scan` to `signals/orchestrator-cmds` and fire `orchestrator-cmd-event`
-- The orchestrator wakes up and calls `pick_up_ready_tasks()` to pick up and spawn workers for the ready tasks
-- Ensures tasks that become `Ready` while the orchestrator is idle (no worker events) are picked up promptly
-
-The ready-poller window is killed by `agentmesh stop` at shutdown.
 
 ---
 
 ## tmux Layout
 
 ```
-Session: orchestrator       ← user attaches here only
-  window 0: main            ← /spokesman skill (Claude Code) — user-interaction layer
-  window 1: dispatcher      ← scripts/dispatcher.sh (bash loop)
-  window 2: watchdog        ← scripts/watchdog.sh (bash loop)
-  window 3: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
-  window 4: ready-poller    ← scripts/ready-poller.sh (bash loop)
-  window 5: orchestrator    ← scripts/orchestrator.py (Python daemon)
+Session: orchestrator       ← daemons only; no user-interaction process
+  window 0: watchdog        ← scripts/watchdog.sh (bash loop)
+  window 1: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
+  window 2: launcher        ← scripts/launcher.py (Python daemon, restart loop)
+  window N: side-WORK-xyz   ← scripts/sidecar.sh (bash loop, one per active worker)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
-  window N: slack-socket    ← scripts/slack-socket-relay.py (Python daemon, when --interface includes slack)
-  window N: slack-bridge    ← /slack-bridge skill (Claude Code, when using Slack interface)
 
-Session: workers
+Session: workers            ← Claude agents only
   window 0: WORK-pm4         ← /implementer skill (Claude Code, yolo mode)
-  window 1: WORK-xyz         ← /implementer skill (Claude Code, yolo mode)
-  window N: WORK-abc         ← /designer skill (Claude Code, yolo mode) — for frontend/UI design tasks
-  window N: WORK-def         ← /investigator skill (Claude Code, yolo mode) — for research/context-gathering tasks
-  window N: WORK-ghi         ← /documenter skill (Claude Code, yolo mode) — for documentation tasks
-  window N: WORK-jkl         ← /ticketer skill (Claude Code, yolo mode) — for Jira ticket creation tasks
-  window N: WORK-mno         ← /skill-creator skill (Claude Code, yolo mode) — for creating/improving agentmesh skills
-  window N: WORK-pqr         ← /rfc-creator skill (Claude Code, yolo mode) — for RFC/architecture proposal creation tasks
-  window N: plan-rev-WORK-xyz ← /plan-reviewer skill (Claude Code, one per plan under review)
-  window N: pr-rev-WORK-xyz   ← /pr-reviewer skill (Claude Code, one per PR under review)
+  window N: WORK-abc         ← /designer skill — frontend/UI design tasks
+  window N: WORK-def         ← /investigator skill — research/context-gathering tasks
+  window N: WORK-ghi         ← /documenter skill — documentation tasks
+  window N: WORK-jkl         ← /ticketer skill — Jira ticket creation tasks
+  window N: WORK-mno         ← /skill-creator skill — creating/improving agentmesh skills
+  window N: WORK-pqr         ← /rfc-creator skill — RFC/architecture proposal tasks
   ...
 ```
+
+Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window-liveness check and `agentmesh status` both read it that way.
 
 ---
 
@@ -226,16 +201,15 @@ Skills live in `plugins/agentic-workflows/skills/` in this repo. Agents can read
 Skills inherit from a two-level base hierarchy:
 
 ```
-shared/base-agent.md          ← pure signal protocol (arg parsing, paths, signaling)
-  ├── shared/base-implementer.md  ← + folder management, exploration, questions, triage
-  │     └── implementer, planner, brainstormer, investigator, documenter, skill-creator
-  └── shared/base-reviewer.md    ← + fire-and-done role, folder lookup, review conventions
-        └── plan-reviewer, pr-reviewer
+shared/base-agent.md              ← NoteCove comment protocol (arg parsing, paths, post/await/read)
+  └── shared/base-implementer.md  ← + folder management, exploration, questions, triage
+        └── implementer, planner, brainstormer, designer, investigator,
+            documenter, ticketer, skill-creator, rfc-creator
 ```
 
 After editing a skill, bump the plugin version and reload it:
 
-1. **Bump the version** in `plugins/agentic-workflows/.claude-plugin/plugin.json` (increment the patch version, e.g. `2.11.0` → `2.11.1`).
+1. **Bump the version** in `plugins/agentic-workflows/.claude-plugin/plugin.json`.
 2. **Rebuild** (only if the skill extends a shared base file):
    ```bash
    ./plugins/agentic-workflows/build.sh
@@ -254,6 +228,13 @@ If you edit `shared/base-agent.md`, first propagate the changes into the family 
 
 > Every plugin change — skill edits, new skills, script updates — must include a version bump so the installed plugin stays in sync with the repo.
 
+**Adding a new agent type** requires three registrations, not one:
+1. `TYPE_MAP` in `scripts/launcher.py` — NoteCove type → agent handle
+2. `AGENT_AUTHOR` in `scripts/launcher.py` — agent handle → comment author name
+3. `agent-user` in the skill's frontmatter — must equal the `AGENT_AUTHOR` value
+
+A missing or mismatched `AGENT_AUTHOR` entry makes the agent wake itself on every comment it writes, which presents as a wakeup loop.
+
 ---
 
 ## Project Structure
@@ -262,69 +243,57 @@ If you edit `shared/base-agent.md`, first propagate the changes into the family 
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
-│   ├── bootstrap.sh        # orchestrator startup: notecove init, signals dir, dispatcher + watchdog + folder-cleanup + orchestrator.py
-│   ├── orchestrator.py     # orchestrator daemon: event routing, worker spawning, lifecycle management
-│   ├── anomaly_checks.py   # AnomalyChecker: 4 structural invariant checks, dedup, Spokesman escalation
-│   ├── signal-agent.sh     # sourced bash helper for agents: signal_init, signal_attention, signal_fire
-│   ├── dispatcher.sh       # fan-in relay (worker-any-event → orchestrator-event)
+│   ├── bootstrap.sh        # runtime startup: notecove init, signals dir, watchdog + folder-cleanup + launcher
+│   ├── launcher.py         # launcher daemon: Ready-task pickup, triage, worker + sidecar spawning
+│   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
+│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, post_summary, await_user, read_inbox
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
-│   ├── pr-monitor.sh       # PR merge detector; auto-approves merged PRs
-│   ├── ready-poller.sh     # Ready task poller; fires scan command when Ready tasks are found
-│   ├── slack-socket-relay.py # Socket Mode WebSocket relay: forwards inbound Slack messages to slackbridge-queue and fires slackbridge-event
-│   ├── agentmesh.sh        # lifecycle CLI: start / stop / status / attach
-│   ├── spokesman-heartbeat-check.sh  # verifies orchestrator.py heartbeat; auto-restarts if stale (called by spokesman skill)
-│   └── spokesman-exit.sh   # shutdown cleanup: kills tmux windows, removes signal files (called by spokesman skill)
-└── signals/                # runtime directory, created on orchestrator bootstrap
-    ├── queue               # append-only; workers write <slug>:<event-type> entries before signaling
-    ├── spokesman-queue     # append-only; orchestrator.py writes <slug>:<event-type> for Spokesman to drain
-    ├── slackbridge-queue   # append-only; orchestrator.py writes <slug>:<event-type> for SlackBridge to drain
-    ├── active-interfaces   # one line per active interface name (e.g. spokesman, slackbridge); empty = spokesman-only fallback
-    ├── orchestrator-cmds   # append-only; Spokesman writes <slug>|<cmd>[|<args>] commands for orchestrator.py
-    ├── workers             # worker registry; line per active worker: "<slug> <window-name>"
-    ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by orchestrator
-    ├── slack-channel       # Slack channel ID written by bootstrap.sh (empty string when interface is spokesman-only); read by SlackBridge
-    ├── mode                # running mode written by Spokesman on bootstrap (standard|auto-review); re-read on each wakeup cycle
-    ├── <slug>.seq                  # per-task signal sequence counter; written by worker, read by orchestrator to compute resume signal name
-    ├── <slug>.merged               # flag file written by pr-monitor when PR is merged
-    ├── <slug>.review-start         # flag file touched by orchestrator when a reviewer is spawned; cleared when review completes or is killed; used by anomaly check 1
-    ├── <slug>.plan-review-count    # auto-review cycle counter for plan reviews; incremented before each plan-reviewer spawn; cleared at terminal state
-    ├── <slug>.pr-review-count      # auto-review cycle counter for PR reviews; incremented before each pr-reviewer spawn; cleared at terminal state
-    ├── <slug>.crash-count          # consecutive crash counter; written by watchdog on each crash, reset on clean exit or at bootstrap
-    ├── slack-verbosity             # verbosity level written by SlackBridge at startup (low|medium|high); re-read each wakeup cycle
-    ├── slack-channel-last-ts       # timestamp of last processed top-level channel message; used by SlackBridge to avoid reprocessing
-    ├── <slug>.slack-thread         # Slack thread timestamp written by SlackBridge when it starts a thread for the task
-    ├── <slug>.slack-last-ts        # timestamp of last processed reply in the task's Slack thread; used by SlackBridge to avoid reprocessing
-    ├── slack-idle-pause-minutes    # idle-pause threshold in minutes written by bootstrap.sh; absent = feature disabled
-    ├── slack-bridge-last-user-msg-ts # unix timestamp of last user message; written by SlackBridge on each user interaction; used for idle-pause
-    ├── slack-poller-auto-paused    # sentinel flag written by SlackBridge alongside slack-poller-paused when auto-pause triggers; absent = manual pause
-    ├── slack-poller-processing     # flag set by SlackBridge while it is processing events (not listening); poller skips firing when this flag is present
-    ├── orchestrator.heartbeat      # UTC timestamp written by orchestrator.py every 30s; Spokesman checks mtime on each wakeup
-    ├── orchestrator-restart-cmd    # orchestrator.py launch command written by bootstrap.sh; used by Spokesman to restart on stale heartbeat
-    └── events.log                  # append-only TSV: timestamp, component, event_type, slug
+│   ├── pr-monitor.sh       # PR merge detector; writes the merge to the worker's inbox
+│   ├── spawn-agent.sh      # launches a Claude agent in a new tmux window
+│   ├── task-done.sh        # terminal-state cleanup: kills windows, unregisters, unblocks dependents
+│   ├── agentmesh.sh        # lifecycle CLI: start / stop / switch / status / attach / task
+│   └── test_triage.py      # unit tests for launcher triage and the .launching guard
+└── signals/                # runtime directory, created on bootstrap
+    ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
+    ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
+    ├── launcher.heartbeat  # UTC timestamp written by launcher.py every 30s; read by `agentmesh status`
+    ├── events.log          # append-only TSV: timestamp, component, event_type, slug
+    ├── <slug>.inbox            # line-delimited JSON; sidecar/pr-monitor write, agent reads and clears
+    ├── <slug>.seq              # nudge sequence counter; written by the agent, read by the sidecar
+    ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
+    ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
+    ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
+    ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
+    ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged
+    └── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
 ```
 
-The `signals/` directory and its contents are runtime artifacts — created fresh each time the orchestrator bootstraps.
+The `signals/` directory and its contents are runtime artifacts — created fresh on each bootstrap.
 
 ### Event log format
 
 `events.log` is a tab-separated file with four fields per line:
 
 ```
-timestamp       component       event_type                  slug
-2026-04-26T...  dispatcher      worker-any-event-received   -
-2026-04-26T...  orchestrator    task-picked-up              WORK-xyz
-2026-04-26T...  orchestrator    worker-spawned              WORK-xyz
-2026-04-26T...  orchestrator    event-received:attention    WORK-xyz
-2026-04-26T...  spokesman       attention-resumed           WORK-xyz
-2026-04-26T...  watchdog        crash-detected              WORK-xyz
-2026-04-26T...  pr-monitor      pr-merged-detected          WORK-xyz
-2026-04-26T...  ready-poller    scan-triggered              -
-2026-04-26T...  slack-bridge    thread-created              WORK-xyz
-2026-04-26T...  implementer     started                     WORK-xyz
-2026-04-26T...  plan-reviewer   plan-review-complete        WORK-xyz
-2026-04-26T...  pr-reviewer     pr-review-complete          WORK-xyz
-2026-04-26T...  folder-cleanup  folder-moved                WORK-xyz
+timestamp       component       event_type                      slug
+2026-04-26T...  launcher        bootstrap-complete              -
+2026-04-26T...  launcher        task-picked-up                  WORK-xyz
+2026-04-26T...  launcher        implementer-spawned             WORK-xyz
+2026-04-26T...  launcher        sidecar-spawned                 WORK-xyz
+2026-04-26T...  launcher        task-refused-untyped            WORK-abc
+2026-04-26T...  launcher        launching-flag-expired          WORK-xyz
+2026-04-26T...  sidecar         started                         WORK-xyz
+2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
+2026-04-26T...  sidecar         sse-unavailable:no-permission   WORK-xyz
+2026-04-26T...  sidecar         change-detected:comments=1:state=0  WORK-xyz
+2026-04-26T...  sidecar         nudge-fired:seq=3               WORK-xyz
+2026-04-26T...  implementer     started                         WORK-xyz
+2026-04-26T...  implementer     awaiting-user                   WORK-xyz
+2026-04-26T...  implementer     resumed                         WORK-xyz
+2026-04-26T...  watchdog        crash-detected                  WORK-xyz
+2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
+2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
 ```
 
 For the full list of event types per component, see each component's skill or script source.
@@ -356,32 +325,28 @@ This is idempotent — safe to run again if anything changes.
 
 ## Starting the System
 
-### Recommended: `agentmesh start`
-
 ```bash
 agentmesh start --project WORK
 ```
 
-This bootstraps all daemons, then launches the Spokesman with `--no-bootstrap`. The Spokesman skips its own bootstrap phase, registers in `signals/active-interfaces`, and starts the event loop.
+This bootstraps the daemons and returns. There is no user-interaction process to start — open NoteCove and comment on a task to talk to its agent.
 
 **Full options:**
 
 ```
 agentmesh start --project <key>
-                [--mode standard|auto-review]          # default: standard
-                [--review-limit <n>]                   # default: 3
-                [--interface spokesman|slack|both]      # default: spokesman
-                [--channel <slack-channel-id>]          # required if --interface includes slack
-                [--verbosity low|medium|high]           # default: medium (SlackBridge only)
-                [--slack-idle-pause <minutes>]          # default: 0 (disabled); auto-pause polling after N min of Slack inactivity
+                [--profile <id>]
+                [--max-workers <n>]        # default: 30
+                [--poll-interval <secs>]   # default: 30 — Ready-task scan interval
 ```
 
 **Other commands:**
 
 ```bash
 agentmesh stop                    # graceful shutdown: kills all windows and the workers session
-agentmesh status                  # health report: components, heartbeat, active workers, mode
-agentmesh attach                  # attach to the orchestrator tmux session (terminal fallback)
+agentmesh status                  # health report: launcher heartbeat, daemons, workers, sidecars, SSE availability
+agentmesh switch --project <key>  # switch projects, preserving running workers and their sidecars
+agentmesh attach                  # attach to the orchestrator tmux session
 agentmesh task create <title> \   # create a new task in NoteCove
   --project <key> \
   [--folder <name-or-id>] \
@@ -392,14 +357,4 @@ agentmesh task create <title> \   # create a new task in NoteCove
 
 `agentmesh task create` wraps `notecove task create` with folder name resolution: pass a folder name (e.g. `Triage`) or folder ID directly to `--folder`.
 
-### Manual / Legacy
-
-**Spokesman** (terminal interface): `tmux new-session -s orchestrator && claude && /spokesman --project WORK`
-
-**SlackBridge** (Slack interface): `tmux new-session -s orchestrator && claude && /slack-bridge --project WORK --channel C01234567`
-
-> `--no-bootstrap` is for use by `agentmesh start` only. Manual invocations use the standard flow above.
-
-### Legacy Entry Point
-
-The original `/orchestrator` skill is kept for compatibility but is no longer the recommended entry point. Use `/spokesman` for the new Spokesman + orchestrator.py architecture.
+> Set a **type** on every task. A task whose type does not map to an agent stays in `Ready` and the launcher comments once to say so — see the Launcher section above for the supported types.

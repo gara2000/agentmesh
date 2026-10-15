@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# bootstrap.sh — initialize orchestrator runtime: notecove init, signals dir, dispatcher, watchdog, orchestrator.py
-# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--mode standard|auto-review] [--max-workers <n>] [--review-limit <n>]
-#                     [--interface spokesman|slack|both] [--slack-channel <channel-id>]
-#                     [--fast-interval <seconds>] [--slow-interval <seconds>]
-#                     [--slack-idle-pause <minutes>]
+# bootstrap.sh — initialize the AgentMesh runtime: notecove init, signals dir, daemons
+# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--max-workers <n>]
+#                     [--poll-interval <seconds>]
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -16,27 +14,15 @@ NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 # Parse arguments
 PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
-MODE="standard"
 MAX_WORKERS="30"
-REVIEW_LIMIT="3"
-INTERFACE="spokesman"
-SLACK_CHANNEL=""
-FAST_INTERVAL="60"
-SLOW_INTERVAL="120"
-SLACK_IDLE_PAUSE="0"
+POLL_INTERVAL="30"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --project) PROJECT="$2"; shift 2 ;;
-    --profile) PROFILE="$2"; shift 2 ;;
-    --mode) MODE="$2"; shift 2 ;;
-    --max-workers) MAX_WORKERS="$2"; shift 2 ;;
-    --review-limit) REVIEW_LIMIT="$2"; shift 2 ;;
-    --interface) INTERFACE="$2"; shift 2 ;;
-    --slack-channel) SLACK_CHANNEL="$2"; shift 2 ;;
-    --fast-interval) FAST_INTERVAL="$2"; shift 2 ;;
-    --slow-interval) SLOW_INTERVAL="$2"; shift 2 ;;
-    --slack-idle-pause) SLACK_IDLE_PAUSE="$2"; shift 2 ;;
+    --project)       PROJECT="$2";       shift 2 ;;
+    --profile)       PROFILE="$2";       shift 2 ;;
+    --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
+    --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -46,45 +32,27 @@ if [[ -z "$PROJECT" ]]; then
   exit 1
 fi
 
-if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]] && [[ -z "$SLACK_CHANNEL" ]]; then
-  echo "Error: --slack-channel is required when --interface includes slack" >&2
-  exit 1
-fi
-
-# 0a. Init NoteCove
+# 0a. Init NoteCove.
+#     --events requests the events:subscribe permission the sidecars use for push
+#     change detection. The first run after adding it may need approval in the
+#     NoteCove desktop app; until granted, sidecars fall back to their poll
+#     interval and log sse-unavailable:no-permission.
 cd "$AGENTMESH"
-$NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes
+$NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes --events
 
-# 0b. Create signals directory, empty queue, registry, and log; clear stale runtime flags
+# 0b. Create signals directory and log; clear stale runtime flags
 mkdir -p "$SIGNALS"
-: > "$SIGNALS/queue"
 : > "$SIGNALS/workers"
 : > "$SIGNALS/events.log"
-: > "$SIGNALS/spokesman-queue"
-: > "$SIGNALS/slackbridge-queue"
-: > "$SIGNALS/active-interfaces"
-: > "$SIGNALS/orchestrator-cmds"
-# Write slack-channel file (empty when slack interface is not in use)
-echo "${SLACK_CHANNEL}" > "$SIGNALS/slack-channel"
 rm -f "$SIGNALS/"*.merged
-date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/orchestrator.heartbeat"
-rm -f "$SIGNALS/"*.review-start
-rm -f "$SIGNALS/"*.plan-review-count
-rm -f "$SIGNALS/"*.pr-review-count
 rm -f "$SIGNALS/"*.crash-count
-rm -f "$SIGNALS/slack-poller-paused"
-rm -f "$SIGNALS/slack-poller-auto-paused"
-rm -f "$SIGNALS/slack-poller-processing"
-rm -f "$SIGNALS/slack-bridge-last-user-msg-ts"
-# Write idle-pause config (0 = disabled)
-if [[ "$SLACK_IDLE_PAUSE" -gt 0 ]] 2>/dev/null; then
-  echo "$SLACK_IDLE_PAUSE" > "$SIGNALS/slack-idle-pause-minutes"
-else
-  rm -f "$SIGNALS/slack-idle-pause-minutes"
-fi
-
-# Persist orchestrator launch command so Spokesman can restart it on stale heartbeat
-echo "python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" > "$SIGNALS/orchestrator-restart-cmd"
+rm -f "$SIGNALS/"*.launching
+rm -f "$SIGNALS/"*.untyped
+rm -f "$SIGNALS/"*.inbox
+rm -f "$SIGNALS/"*.seq
+rm -f "$SIGNALS/"*.seen-comments
+rm -f "$SIGNALS/"*.seen-state
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/launcher.heartbeat"
 
 LOG="$SIGNALS/events.log"
 
@@ -95,59 +63,35 @@ folders = json.load(sys.stdin)
 print(next(f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'] is None))")
 echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
-printf '%s\torchestrator \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+printf '%s\tlauncher     \tbootstrap-complete\t-\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 
 # 0c. Create orchestrator and workers tmux sessions (if not already running)
 tmux new-session -d -s orchestrator 2>/dev/null || true
 tmux new-session -d -s workers 2>/dev/null || true
 
-# 0d. Launch dispatcher in a background window
-tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "dispatcher" || {
-  tmux new-window -t orchestrator -n dispatcher
-  tmux send-keys -t orchestrator:dispatcher "bash $SCRIPTS/dispatcher.sh" Enter
-}
-
-# 0e. Launch watchdog in a background window
+# 0d. Launch watchdog in a background window
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "watchdog" || {
   tmux new-window -t orchestrator -n watchdog
   tmux send-keys -t orchestrator:watchdog "bash $SCRIPTS/watchdog.sh" Enter
 }
 
-# 0f. Launch folder-cleanup daemon in a background window
+# 0e. Launch folder-cleanup daemon in a background window
 tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "folder-cleanup" || {
   tmux new-window -t orchestrator -n folder-cleanup
   tmux send-keys -t orchestrator:folder-cleanup "bash $SCRIPTS/folder-cleanup.sh" Enter
 }
 
-# 0g. Launch ready-poller daemon in a background window
-tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "ready-poller" || {
-  tmux new-window -t orchestrator -n ready-poller
-  tmux send-keys -t orchestrator:ready-poller "bash $SCRIPTS/ready-poller.sh --project $PROJECT" Enter
-}
-
-# 0i. Launch orchestrator.py daemon (handles all event routing and worker spawning)
-# Always kill and restart — ensures stale/old-version orchestrators are replaced on every bootstrap.
-tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "orchestrator" && \
-  tmux kill-window -t orchestrator:orchestrator 2>/dev/null || true
-tmux new-window -t orchestrator -n orchestrator
-tmux send-keys -t orchestrator:orchestrator \
-  "cd $AGENTMESH && python3 $SCRIPTS/orchestrator.py --project $PROJECT --profile $PROFILE --mode $MODE --max-workers $MAX_WORKERS --review-limit $REVIEW_LIMIT" \
+# 0f. Launch the launcher daemon.
+#     Always kill and restart so a stale/old-version launcher is replaced on every
+#     bootstrap. Wrapped in a restart loop: nothing supervises the launcher, and
+#     it is pure Python with no Claude dependency, so respawning in place is the
+#     simplest form of supervision.
+tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "launcher" && \
+  tmux kill-window -t orchestrator:launcher 2>/dev/null || true
+tmux new-window -t orchestrator -n launcher
+tmux send-keys -t orchestrator:launcher \
+  "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; echo '[launcher] exited — restarting in 5s'; sleep 5; done" \
   Enter
 
-# 0j. Launch slack-poller when interface includes slack
-if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
-  # Set processing flag before starting the poller so it doesn't fire until SlackBridge is ready
-  touch "$SIGNALS/slack-poller-processing"
-  tmux list-windows -t orchestrator -F "#{window_name}" | grep -qx "slack-poller" && \
-    tmux kill-window -t orchestrator:slack-poller 2>/dev/null || true
-  tmux new-window -t orchestrator -n slack-poller
-  tmux send-keys -t orchestrator:slack-poller \
-    "bash $SCRIPTS/slack-poller.sh --fast-interval $FAST_INTERVAL --slow-interval $SLOW_INTERVAL" \
-    Enter
-fi
-
-if [[ "$INTERFACE" == "slack" || "$INTERFACE" == "both" ]]; then
-  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, ready-poller, orchestrator.py, and slack-poller running"
-else
-  echo "[bootstrap] complete — dispatcher, watchdog, folder-cleanup, ready-poller, and orchestrator.py running"
-fi
+echo "[bootstrap] complete — watchdog, folder-cleanup, and launcher running"
+echo "[bootstrap] interact with agents through NoteCove task comments"

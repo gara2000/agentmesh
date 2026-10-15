@@ -1,5 +1,5 @@
 Parse arguments:
-- `--task <slug>` — required, task slug assigned by the orchestrator (e.g. `WORK-42`)
+- `--task <slug>` — required, task slug assigned by the launcher (e.g. `WORK-42`)
 - `--project <key>` — required, NoteCove project key
 
 If either argument is missing, stop immediately.
@@ -9,72 +9,90 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE={{AGENTMESH}}/signals/queue
+INBOX={{AGENTMESH}}/signals/<slug>.inbox
 SEQ_FILE={{AGENTMESH}}/signals/<slug>.seq
 LOG={{AGENTMESH}}/signals/events.log
-SIGNAL_HELPER={{AGENTMESH}}/scripts/signal-agent.sh
+HELPER={{AGENTMESH}}/scripts/agent-notecove.sh
 ```
 
 ---
 
-## Signal Sequence Counter
+## How You Talk To The User
 
-The agent maintains a per-session counter `SIGNAL_SEQ` (starts at 0, managed by `signal-agent.sh`). It is incremented before every signal and written to `signals/<slug>.seq`. The orchestrator reads this file to know the exact resume signal name to fire: `<slug>-resume-<SIGNAL_SEQ>`.
+**NoteCove is the only interaction surface.** There is no orchestrator relaying messages and no chat interface — you and the user communicate directly through the task itself:
 
-This guarantees every resume signal is unique across all rounds — a stale stored signal from round N cannot accidentally unblock round N+1.
+- **Comments** carry the conversation, in both directions. You post; the user replies; you read the reply.
+- **Notes** carry artifacts. Plans, findings, question sets, designs — anything longer than a short paragraph.
+- **Task state** carries intent. Only you and the user change it.
 
-The helper `signal-agent.sh` initializes `SIGNAL_SEQ=0` and provides two functions:
-- `signal_attention <event-type> <break-state> [<alt-break-state>]` — increments the counter, writes the seq file, appends to queue, fires `worker-any-event`, and blocks until state matches
-- `signal_fire <event-type>` — appends to queue and fires `worker-any-event` without blocking (fire-and-done reviewers only)
+Each agent runs with a **sidecar** — a generic watcher process (`scripts/sidecar.sh`) that monitors your task and wakes you when the user comments or changes the state. You block for free while waiting; the sidecar does not consume tokens either.
 
----
-
-## Signaling the Orchestrator
-
-The agent signals the orchestrator by calling `signal_attention` (or `signal_fire` for reviewers). The orchestrator reads task state from NoteCove — **task state is the only message**.
-
-**Before calling `signal_attention`, the caller must:**
-1. Add the `event:<type>` comment to the task (the `--user` value differs per agent type)
-2. Set task state to `Attention`: `notecove task change <slug> --state Attention`
-
-### Signal procedure
+### The interaction cycle
 
 ```bash
-# 1. Add event comment (caller's responsibility — user value differs per agent):
-notecove task comments add <slug> --user "<AgentUser>" "event:<type>"
-# 2. Set task state to Attention:
-notecove task change <slug> --state Attention
-# 3. Call signal_attention — it handles seq, queue, tmux signaling, and blocking:
-#    IMPORTANT: the Bash call containing signal_attention must use timeout=600000
-signal_attention "event:<type>" "<expected-state>"
+post_summary "<brief summary of what you just did>"
+await_user "Attention"     # blocks — call with timeout=600000
+read_inbox                 # what woke you
 ```
 
-Where `<expected-state>` is `doing` after signaling `Attention` for questions or plan review, or `done`/`doing` (two-arg form) after signaling `Attention` for PR-ready.
+`await_user` sets the task state, publishes the sequence number the sidecar fires, and blocks until something arrives. `read_inbox` prints line-delimited JSON and clears the inbox:
 
-### Why a loop inside signal_attention: Bash tool timeout
+```
+{"kind":"comment","id":"...","author":"gara","content":"looks good, ship it","created":...}
+{"kind":"state-change","from":"doing","to":"...","to_name":"Won't Do"}
+```
 
-`tmux wait-for` is called via Claude Code's Bash tool, which has a **default timeout of 120 seconds**. Without the loop, the Bash call times out every 2 minutes and returns control to Claude Code even without a signal — causing spurious wakeups that waste tokens. `signal_attention` contains an internal loop that re-calls `tmux wait-for` until the expected state is confirmed (or after the 10-minute Bash tool maximum timeout, at which point the outer block is re-called).
+### Comments are summaries, not documents
+
+Keep every comment to **a few sentences at most**. A comment is a notification: it tells the user what happened and where to look. Anything longer — reasoning, findings, option analysis, code, tables — goes in a NoteCove note, and the comment names that note.
+
+Write "Wrote PLAN: 8 phases, one PR. Two open risks noted in the Delivery section." — not three paragraphs restating the plan.
+
+### Reading the user's reply
+
+Interpret free text with judgement; the user writes naturally ("the linter is failing", "there are conflicts, resolve them").
+
+Two words are **reserved commands** and must be honoured literally rather than read as feedback:
+
+- `approve` — the work is accepted. Move the task to its terminal state (`Done`) yourself.
+- `abort` — stop. Set the task to `Won't Do` and exit.
+
+Echo your reading back in your next comment ("Read as: approve → marking Done") so a misinterpretation is visible to the user instead of silent.
+
+### You own your task's state
+
+You and the user are the only ones who change task state. Nothing else will do it for you:
+
+- Set `Doing` as your first action when you start work.
+- Set `Attention` when you need the user (via `await_user`).
+- Set `Done` once the user approves, or `Won't Do` on abort.
+
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit cleanly rather than continuing.
 
 ---
 
 ## Step 1: Initialize
 
-Initialize the signal helper:
 ```bash
 LOG={{AGENTMESH}}/signals/events.log
-source {{AGENTMESH}}/scripts/signal-agent.sh
-signal_init "<slug>"
+source {{AGENTMESH}}/scripts/agent-notecove.sh
+agent_init "<slug>" "{{AGENT_USER}}"
+notecove task change <slug> --state Doing
 printf '%s\t{{LOG_PREFIX}}\tstarted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
+
+`agent_init` also clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting. Claiming the task by setting `Doing` is what releases it.
+
+The handle passed to `agent_init` **must** match the `--user` value your comments carry (`{{AGENT_USER}}`) — the sidecar filters your own comments by author name, so a mismatch makes you wake yourself on every comment you write.
 
 ---
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source {{AGENTMESH}}/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s\t{{LOG_PREFIX}}\t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
-- **Never interact with the user directly.**
-- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
-- **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
-- **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
-- **Never mark task Done** — only the orchestrator does that, after user approval.
-- **Signal before exiting** — even on error, signal so the orchestrator can clean up.
+- **Always `source {{AGENTMESH}}/scripts/agent-notecove.sh` + `agent_init <slug> "{{AGENT_USER}}"`** at startup, and define `LOG=`. Write `printf '%s\t{{LOG_PREFIX}}\t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, awaiting-user, resumed, implementing, pr-created, approved/feedback-received).
+- **Never interact with the user outside NoteCove.** No terminal output intended for them, no other channel.
+- **Always post a summary comment before `await_user`** — otherwise the user is woken by a state change with no explanation of what you want.
+- **Keep comments brief.** A few sentences. Artifacts belong in notes.
+- **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
+- **Set your own terminal state** — `Done` on approval, `Won't Do` on abort. Nothing else does it for you.
+- **Exit cleanly on a state change you did not make** — the user has taken the task elsewhere.
