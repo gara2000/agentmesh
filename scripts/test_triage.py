@@ -86,7 +86,7 @@ class TestPickUpReadyTasks(unittest.TestCase):
         self.addCleanup(self._signals_patch.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, tasks: list):
+    def _run(self, tasks: list, live_windows=()):
         """Returns (spawned, refused) where refused is the list of commented slugs."""
         spawned, refused = [], []
         l = lnch.Launcher(project="WORK", max_workers=5,
@@ -96,6 +96,7 @@ class TestPickUpReadyTasks(unittest.TestCase):
             patch.object(lnch, "run_bash") as mock_rb,
             patch.object(lnch, "notecove") as mock_nc,
             patch.object(l, "_spawn_worker") as mock_sw,
+            patch.object(l, "_live_worker_windows", return_value=set(live_windows)),
             patch.object(l, "_write_heartbeat"),
             patch.object(lnch, "log"),
             patch.object(lnch, "_print"),
@@ -274,6 +275,127 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             l.adopt_orphaned_tasks()
 
         self.assertEqual(len(adopted), 1, "must not exceed max-workers")
+
+
+class TestAdoptionGuards(unittest.TestCase):
+    """Guards added after the recovery audit found them missing."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _launcher(self):
+        return lnch.Launcher(project="WORK", max_workers=5,
+                             profile="test-profile", poll_interval=30)
+
+    def test_backoff_sentinel_blocks_adoption(self):
+        """
+        The watchdog sleeps out a crash backoff with the task still Doing and its
+        window gone — adoption's exact trigger. Adopting there makes the watchdog
+        tear down the new worker and pickup spawn a second one.
+        """
+        adopted = []
+        l = self._launcher()
+        (Path(self._tmp.name) / "WORK-abc.backoff").touch()
+        with (
+            patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
+            patch.object(l, "_live_worker_windows", return_value=set()),
+            patch.object(l, "_spawn_worker", side_effect=lambda s_, t: adopted.append(s_)),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l.adopt_orphaned_tasks()
+        self.assertEqual(adopted, [], "must not adopt a task the watchdog is backing off")
+
+    def test_tmux_failure_skips_adoption_entirely(self):
+        """
+        A failed `tmux list-windows` must not read as "no windows" — that would
+        respawn a worker for every in-flight task at once.
+        """
+        adopted = []
+        l = self._launcher()
+        with (
+            patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
+            patch.object(l, "_live_worker_windows", return_value=None),
+            patch.object(l, "_spawn_worker", side_effect=lambda s_, t: adopted.append(s_)),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l.adopt_orphaned_tasks()
+        self.assertEqual(adopted, [], "must skip the cycle rather than mass-adopt")
+
+    def test_failed_spawn_is_not_registered(self):
+        """
+        spawn-agent.sh refuses duplicate window names and aborts if the window
+        dies before the REPL. Registering such a worker burns a slot forever and
+        makes the watchdog think an agent is running.
+        """
+        l = self._launcher()
+        with (
+            patch.object(lnch.subprocess, "run",
+                         return_value=MagicMock(returncode=1, stderr="duplicate window")),
+            patch.object(l, "_spawn_sidecar") as mock_side,
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l._spawn_worker("WORK-abc", "implementer")
+        self.assertFalse((Path(self._tmp.name) / "workers").exists()
+                         and "WORK-abc" in (Path(self._tmp.name) / "workers").read_text(),
+                         "a failed spawn must not be registered")
+        self.assertFalse((Path(self._tmp.name) / "WORK-abc.launching").exists(),
+                         "a failed spawn must release its launching flag")
+        mock_side.assert_not_called()
+
+
+class TestReconcileSidecars(unittest.TestCase):
+    """A worker whose sidecar died blocks forever; adoption skips it by design."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._signals_patch = patch.object(lnch, "SIGNALS", Path(self._tmp.name))
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, registry_lines, worker_windows, orchestrator_windows):
+        spawned = []
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        if registry_lines:
+            (Path(self._tmp.name) / "workers").write_text("\n".join(registry_lines) + "\n")
+
+        def fake_run_bash(cmd):
+            if "list-windows -t orchestrator" in cmd:
+                return MagicMock(returncode=0, stdout="\n".join(orchestrator_windows))
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch.object(l, "_live_worker_windows", return_value=set(worker_windows)),
+            patch.object(lnch, "run_bash", side_effect=fake_run_bash),
+            patch.object(l, "_spawn_sidecar", side_effect=lambda s_, h: spawned.append(s_)),
+            patch.object(l, "_agent_type_for", return_value="implementer"),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l.reconcile_sidecars()
+        return spawned, l
+
+    def test_respawns_a_missing_sidecar(self):
+        spawned, _ = self._run(
+            ["WORK-abc WORK-abc implementer"], ["WORK-abc"], ["launcher", "watchdog"]
+        )
+        self.assertEqual(spawned, ["WORK-abc"])
+
+    def test_leaves_a_healthy_pair_alone(self):
+        spawned, _ = self._run(
+            ["WORK-abc WORK-abc implementer"], ["WORK-abc"], ["side-WORK-abc"]
+        )
+        self.assertEqual(spawned, [])
+
+    def test_reregisters_a_live_worker_missing_from_the_registry(self):
+        """bootstrap.sh truncates the registry; surviving workers go invisible."""
+        spawned, l = self._run([], ["WORK-abc"], ["side-WORK-abc"])
+        self.assertIn("WORK-abc", (Path(self._tmp.name) / "workers").read_text())
+        self.assertEqual(spawned, [], "its sidecar is alive — only the registry needed fixing")
 
 
 class TestRegisterWorker(unittest.TestCase):

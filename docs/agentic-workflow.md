@@ -64,7 +64,13 @@ The inline approach keeps the conversation in one place and is the more common o
 
 The launcher's entire job is picking up work and starting workers. After spawning, it never communicates with an agent again.
 
-Each scan does two passes: **adopt** orphaned work, then **pick up** new work. Adoption runs first because finishing work already in flight beats starting more of it, and both draw from the same slot budget.
+Each scan does three passes: **reconcile** sidecars, **adopt** orphaned work, then **pick up** new work. The order matters — a live-but-deaf worker gets repaired before anything else, and adoption beats pickup because finishing work already in flight beats starting more of it. Adoption and pickup draw from the same slot budget.
+
+### Reconciliation — keeping live workers supervised
+
+A sidecar is the only thing that can wake a blocked agent, so a worker whose sidecar died waits on `await_user` forever — silently, since its own window is still alive and nothing reports it. **Adoption cannot cover this**: it skips any slug with a live worker window, which is precisely this case.
+
+For each live worker window the launcher spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it. The second repair matters after any bootstrap that runs while workers survive: `bootstrap.sh` truncates the registry, leaving those workers invisible to the watchdog and uncounted against `max-workers`, so the launcher over-subscribes.
 
 ### Adoption — recovering orphaned work
 
@@ -77,7 +83,9 @@ flowchart TD
     Live -->|yes| Skip1["Skip — still working"]
     Live -->|no| Launching{"\.launching flag live?"}
     Launching -->|yes| Skip2["Skip — worker mid-boot"]
-    Launching -->|no| Type{"Type still maps<br/>to an agent?"}
+    Launching -->|no| Backoff{"\.backoff sentinel?"}
+    Backoff -->|yes| Skip4["Skip — watchdog is<br/>backing off, will re-queue"]
+    Backoff -->|no| Type{"Type still maps<br/>to an agent?"}
     Type -->|no| Skip3["Skip + log<br/>adoption-skipped-untyped"]
     Type -->|yes| Adopt["Spawn worker + sidecar<br/>(state untouched)"]
     Adopt --> Resume["Worker sets Doing,<br/>re-reads notes + comments"]
@@ -86,6 +94,8 @@ flowchart TD
 **State is deliberately untouched** — the launcher only spawns. The respawned worker sets its own `Doing` and restores context from its task folder notes, so the user never has to re-queue anything by hand.
 
 The pass runs every scan, not just at startup, because a worker can be reaped while its task sits in `Attention` at any time — not only across a restart.
+
+Two guards exist because adoption and the watchdog overlap. The watchdog's crash backoff sleeps 30–60s with the task still `Doing` and its window already gone — adoption's exact trigger — so it writes a `.backoff` sentinel that adoption honours, and re-checks window liveness after waking so it never tears down a worker adoption created. And if `tmux list-windows` cannot be queried at all, adoption skips the whole cycle rather than reading an empty result as "every worker is dead".
 
 > The pre-refactor Spokesman did this in its "Phase 0.5: Startup Recovery". This is that logic moved into the launcher and extended to cover `Doing` as well as `Attention` — the old version only recovered `Attention`, so a task killed mid-implementation was stranded even before the refactor.
 
@@ -186,8 +196,12 @@ Agents source `scripts/agent-notecove.sh`, which provides four functions:
 | `await_user <state>` | Set state, publish the nudge seq, block until the inbox is non-empty |
 | `read_inbox` | Print the inbox as line-delimited JSON and clear it |
 | `finish_task <state> <project>` | Set the terminal state **and** run the cleanup that must go with it |
+| `finish_cleanup <project>` | The cleanup alone, for when the *user* set the terminal state |
+| `watch_pr <pr-url>` | Start the merge monitor for this task |
 
 `finish_task` is not optional sugar over `notecove task change --state Done`. It is the only thing that releases tasks blocked on this one and stops this task's sidecar and pr-monitor — before the refactor the orchestrator's event handlers did that, and they are gone. A bare state change leaves dependents blocked forever and leaks two processes.
+
+`finish_cleanup` exists for the case where the **user** sets a terminal state in NoteCove. The agent must not overwrite their state, but the cleanup is still owed — so it runs the same teardown without the `task change`.
 
 ### Inbox format
 
@@ -379,6 +393,8 @@ sequenceDiagram
 
 It does **not** set task state — the worker wakes, sees the merge, and sets `Done` itself. Merge detection lives here rather than in the sidecar so the sidecar stays generic, with no notion of PRs.
 
+**The agent starts it**, via `watch_pr "$PR_URL"` immediately after creating the PR. Nothing else spawns it: the orchestrator used to, and that code is gone. Without the call a merge on GitHub is invisible and the task sits in `Attention` indefinitely, which is only correct if the user always responds by commenting `approve`.
+
 ---
 
 ## Agent Spawner
@@ -479,6 +495,9 @@ Notes keep detailed context out of the task record, and out of comments. If a wo
 | `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
 | Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (backoff, 3 attempts) |
 | Worker reaped while `Attention` | Launcher adoption, next scan |
+| Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
+| Launcher restarts while workers survive | Reconciliation re-registers them |
+| PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Three consecutive crashes | **Not recovered** — set `Blocked` with a comment, deliberately |
 

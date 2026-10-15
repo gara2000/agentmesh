@@ -93,7 +93,27 @@ while true; do
         # Backoff: 30s × 2^(new_count - 1) → 30s, 60s
         backoff_secs=$((30 * (2 ** (new_count - 1))))
         echo "[watchdog] sleeping ${backoff_secs}s before re-queuing $slug"
+        # During this sleep the task still reads `doing` and its window is gone,
+        # which is precisely the launcher's adoption trigger. Both run on a 30s
+        # cadence and the first backoff is 30s, so the overlap is near-certain
+        # rather than a narrow race. Without the sentinel the launcher adopts the
+        # task mid-sleep and this branch then tears the new worker down:
+        # cleanup_task kills its freshly-inherited sidecar, leaving it unable to
+        # ever be nudged, and the re-queue to Ready makes pickup spawn a second
+        # worker for the same task.
+        touch "${SIGNALS}/${slug}.backoff"
         sleep "$backoff_secs"
+        rm -f "${SIGNALS}/${slug}.backoff"
+
+        # Belt and braces: if a worker reappeared anyway (sentinel missed, or the
+        # launcher adopted before it was written), adoption has taken over — leave
+        # it alone rather than killing a live worker.
+        if tmux list-windows -t workers -F '#{window_name}' 2>/dev/null | grep -qxF "$window"; then
+          echo "[watchdog] $slug was adopted during backoff — standing down"
+          log_event "backoff-aborted-adopted" "$slug"
+          continue
+        fi
+
         # Back to Ready — the launcher spawns a fresh worker on its next scan.
         cleanup_task "$slug"
         $NOTECOVE task change "$slug" --state Ready 2>/dev/null || true
@@ -115,8 +135,13 @@ while true; do
       cleanup_task "$slug"
     fi
 
-    # Remove this entry from the registry regardless of state
-    grep -vxF "$entry" "$REGISTRY" > "${REGISTRY}.tmp" && mv "${REGISTRY}.tmp" "$REGISTRY" || true
+    # Remove this entry from the registry regardless of state.
+    # Do NOT gate the mv on grep's exit status: grep -v exits 1 when it produces
+    # no output, which is exactly the case where this was the only entry. Gating
+    # on it leaves that last line in place forever, permanently burning one of
+    # max-workers slots and re-processing the phantom worker every 30s.
+    grep -vxF "$entry" "$REGISTRY" > "${REGISTRY}.tmp" 2>/dev/null || true
+    mv "${REGISTRY}.tmp" "$REGISTRY" 2>/dev/null || true
 
   done <<< "$registry_snapshot"
 done

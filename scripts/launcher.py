@@ -120,10 +120,13 @@ class Launcher:
         # Single loop: re-adopt orphaned work, pick up new work, sleep. There is
         # no event loop any more because nothing reports back to the launcher.
         #
-        # Adoption runs first: finishing work already in flight takes priority
-        # over starting more of it, and both draw from the same slot budget.
+        # Order matters. Reconcile first so a live-but-deaf worker is repaired
+        # rather than left waiting; then adopt, because finishing work already in
+        # flight takes priority over starting more of it; then pick up new work.
+        # Adoption and pickup draw from the same slot budget.
         while not self._stop.is_set():
             with self._lock:
+                self.reconcile_sidecars()
                 self.adopt_orphaned_tasks()
                 self.pick_up_ready_tasks()
             self._stop.wait(self.poll_interval)
@@ -179,10 +182,22 @@ class Launcher:
         """Launch the worker agent and its sidecar, and register the worker."""
         self._launching_flag(slug).touch()
 
-        subprocess.run([
+        result = subprocess.run([
             "bash", str(SCRIPTS / "spawn-agent.sh"),
             "workers", slug, f"/{agent_type}", slug, self.project,
-        ])
+        ], capture_output=True, text=True)
+
+        # Check the return code: spawn-agent.sh refuses duplicate window names and
+        # aborts if the window dies before the REPL appears. Registering a worker
+        # that was never started would consume a slot forever and make the
+        # watchdog believe an agent is running.
+        if result.returncode != 0:
+            self._launching_flag(slug).unlink(missing_ok=True)
+            log("launcher     ", f"{agent_type}-spawn-failed", slug)
+            _print(f"ERROR: failed to spawn {agent_type} for {slug}: "
+                   f"{result.stderr.strip()[:200]}")
+            return
+
         self._register_worker(slug, agent_type)
         log("launcher     ", f"{agent_type}-spawned", slug)
         _print(f"spawned {agent_type} for {slug}")
@@ -271,8 +286,21 @@ class Launcher:
 
         return self.max_workers - active_count - launching
 
-    def _live_worker_windows(self) -> set[str]:
-        result = run_bash("tmux list-windows -t workers -F '#{window_name}' 2>/dev/null || true")
+    def _live_worker_windows(self) -> set[str] | None:
+        """Window names in the workers session, or None if tmux could not be asked.
+
+        None and empty-set mean very different things to adoption: an empty set
+        says every worker is dead, so adoption would respawn all of them at once.
+        A failed `tmux list-windows` must therefore not be flattened into an empty
+        set — the caller skips the cycle instead.
+        """
+        result = run_bash("tmux list-windows -t workers -F '#{window_name}' 2>/dev/null")
+        if result.returncode != 0:
+            # No workers session at all is a legitimate empty, not a failure.
+            exists = run_bash("tmux has-session -t workers 2>/dev/null")
+            if exists.returncode != 0:
+                return set()
+            return None
         return {w.strip() for w in result.stdout.splitlines() if w.strip()}
 
     def _list_tasks(self, state: str) -> list:
@@ -284,6 +312,92 @@ class Launcher:
         except (json.JSONDecodeError, ValueError):
             return []
         return tasks if isinstance(tasks, list) else []
+
+    def _registry(self) -> dict:
+        """slug -> agent_type from signals/workers."""
+        workers_file = SIGNALS / "workers"
+        out = {}
+        if not workers_file.exists():
+            return out
+        for line in workers_file.read_text().splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 3:
+                out[parts[0]] = parts[2]
+            elif len(parts) >= 1:
+                out[parts[0]] = ""
+        return out
+
+    def _agent_type_for(self, slug: str) -> str | None:
+        """Re-derive a running worker's agent type from its task."""
+        result = run_bash(f"{NOTECOVE_BIN} task show {slug} --json")
+        try:
+            return self._triage(json.loads(result.stdout))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    # -----------------------------------------------------------------------
+    # Reconciliation — keep live workers supervised
+    # -----------------------------------------------------------------------
+
+    def reconcile_sidecars(self) -> None:
+        """Re-pair live workers with a sidecar, and re-register ones gone missing.
+
+        A sidecar is the only thing that can wake a blocked agent, so a worker
+        whose sidecar died waits on `await_user` forever — silently, since its own
+        window is still alive and nothing reports it. Adoption cannot cover this:
+        it skips any slug with a live worker window, which is exactly this case.
+
+        Two repairs, both keyed off the live worker windows:
+
+          - **Missing sidecar** → spawn one. Covers a crashed sidecar, a failed
+            `_spawn_sidecar` (which only logs and returns), and the window being
+            killed by cleanup while the worker survived.
+          - **Missing registry entry** → re-register. `bootstrap.sh` truncates the
+            registry, so a launcher restart while workers survive leaves them
+            invisible to the watchdog and uncounted against max-workers, causing
+            the launcher to over-subscribe.
+        """
+        live_windows = self._live_worker_windows()
+        if live_windows is None:
+            return
+
+        sidecars_result = run_bash(
+            "tmux list-windows -t orchestrator -F '#{window_name}' 2>/dev/null"
+        )
+        if sidecars_result.returncode != 0:
+            return
+        live_sidecars = {
+            w.strip()[len("side-"):]
+            for w in sidecars_result.stdout.splitlines()
+            if w.strip().startswith("side-")
+        }
+
+        registry = self._registry()
+
+        for slug in sorted(live_windows):
+            agent_type = registry.get(slug)
+
+            if agent_type is None:
+                # Live worker absent from the registry (truncated by bootstrap).
+                agent_type = self._agent_type_for(slug)
+                if agent_type is None:
+                    log("launcher     ", "reconcile-skipped-untyped", slug)
+                    continue
+                self._register_worker(slug, agent_type)
+                log("launcher     ", "worker-reregistered", slug)
+                _print(f"re-registered live worker {slug} ({agent_type})")
+
+            if slug not in live_sidecars:
+                if not agent_type:
+                    agent_type = self._agent_type_for(slug) or ""
+                if not agent_type:
+                    log("launcher     ", "sidecar-reconcile-skipped-untyped", slug)
+                    continue
+                log("launcher     ", "sidecar-reconciled", slug)
+                _print(f"{slug} has no sidecar — spawning one")
+                self._spawn_sidecar(slug, agent_type)
 
     # -----------------------------------------------------------------------
     # Adoption — re-attach workers to mid-flight tasks that lost theirs
@@ -316,6 +430,12 @@ class Launcher:
         re-reading its task folder notes and the task's comments.
         """
         live_windows = self._live_worker_windows()
+        if live_windows is None:
+            # tmux could not be queried. Treating that as "no windows" would
+            # respawn a worker for every in-flight task at once.
+            log("launcher     ", "adoption-skipped-tmux-unavailable")
+            _print("skipping adoption: cannot list worker windows")
+            return
 
         for state in ("Doing", "Attention"):
             for task in self._list_tasks(state):
@@ -335,6 +455,14 @@ class Launcher:
                 # A worker spawned moments ago has no window yet; the flag is the
                 # only evidence it exists. Adopting now would double-spawn it.
                 if self._is_launching(slug):
+                    continue
+
+                # The watchdog is sleeping out a crash backoff for this task. It
+                # still reads Doing with no window — adoption's exact trigger —
+                # but the watchdog is about to re-queue it to Ready itself.
+                # Adopting here would have the watchdog tear down the worker we
+                # just made, and pickup then spawn a second one.
+                if (SIGNALS / f"{slug}.backoff").exists():
                     continue
 
                 agent_type = self._triage(task)
@@ -362,6 +490,15 @@ class Launcher:
         if slots <= 0:
             return
 
+        # Adoption guards on this; pickup must too. A Ready task can still have a
+        # live worker window — the watchdog re-queues to Ready without killing the
+        # window, and task-done.sh deliberately leaves the worker's own window
+        # alone. Spawning into an existing window name makes every name-addressed
+        # tmux call fail, so the agent never starts.
+        live_windows = self._live_worker_windows()
+        if live_windows is None:
+            return
+
         result = run_bash(
             f"{NOTECOVE_BIN} task list --state Ready --project {self.project} --limit 50 --json"
         )
@@ -387,6 +524,9 @@ class Launcher:
             # Use the full slug (short prefix + unique id) for mutations, so two
             # tasks sharing a short prefix cannot produce an ambiguous-slug error.
             full_slug = slug_obj.get("full", slug) if isinstance(slug_obj, dict) else slug
+
+            if slug in live_windows:
+                continue
 
             if self._is_launching(slug):
                 continue

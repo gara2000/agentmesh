@@ -102,6 +102,13 @@ cmd_stop() {
   # 3. Kill workers session
   tmux kill-session -t workers 2>/dev/null || true
 
+  # 4. Invalidate the heartbeat.
+  #    cmd_start skips bootstrap entirely when the heartbeat is under 60s old,
+  #    and launcher.py refreshes it every 30s — so without this, a stop followed
+  #    by a start inside a minute brings up nothing at all and reports
+  #    "launcher already running". Nothing would then adopt the stopped tasks.
+  rm -f "$SIGNALS/launcher.heartbeat"
+
   echo "agentmesh stopped."
 }
 
@@ -129,7 +136,7 @@ cmd_status() {
   local workers=0 worker_names=""
   if [ -f "$SIGNALS/workers" ]; then
     worker_names=$(grep -v '^#' "$SIGNALS/workers" 2>/dev/null | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
-    workers=$(grep -v '^#' "$SIGNALS/workers" 2>/dev/null | grep -c . || echo 0)
+    workers=$(awk '!/^#/ && NF {n++} END {print n+0}' "$SIGNALS/workers" 2>/dev/null)
   fi
   if [ -n "$worker_names" ]; then
     printf "%-22s %s  (%s)\n" "active workers" "$workers" "$worker_names"
@@ -139,7 +146,11 @@ cmd_status() {
 
   # sidecars — one per live worker; a worker without one is deaf to the user
   local sidecars
-  sidecars=$(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -c "^side-" || echo 0)
+  # Count with awk, not `grep -c`: grep prints 0 *and* exits 1 when nothing
+  # matches, so `grep -c ... || echo 0` yields the two-line string "0\n0" and
+  # every subsequent -lt test errors out — suppressing the warning in exactly
+  # the case it exists for (zero sidecars, every worker deaf).
+  sidecars=$(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | awk '/^side-/ {n++} END {print n+0}')
   printf "%-22s %s\n" "sidecars" "$sidecars"
   if [ "$sidecars" -lt "$workers" ]; then
     printf "%-22s ⚠ fewer sidecars than workers — those workers cannot be nudged\n" ""

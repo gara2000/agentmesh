@@ -92,6 +92,7 @@ The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashe
 Its entire job is picking up work and starting workers. It does not route events, does not talk to running agents, and does not change task state.
 
 Responsibilities, in order, every `--poll-interval` seconds (default 30):
+- **Reconcile sidecars** — spawn a sidecar for any live worker missing one, and re-register live workers absent from `signals/workers`
 - **Adopt orphaned tasks** — spawn a worker for any `Doing`/`Attention` task with no live worker window (see below)
 - **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
@@ -103,7 +104,14 @@ Adoption runs first: finishing work already in flight takes priority over starti
 
 **Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `bootstrap.sh` truncates `signals/workers`, so after a restart the watchdog has no record of it either.
 
-Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker + sidecar for any whose window is missing. It skips tasks whose worker is alive (which is what makes the pass safe to run repeatedly and across launcher restarts), tasks holding a live `.launching` flag (a worker mid-boot has no window yet), and tasks whose type no longer maps to an agent (without it there is no way to know which agent owned the work).
+Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker + sidecar for any whose window is missing. It skips:
+
+- tasks whose worker is alive — what makes the pass safe to run repeatedly and across launcher restarts
+- tasks holding a live `.launching` flag — a worker mid-boot has no window yet
+- tasks holding a `.backoff` sentinel — the watchdog is sleeping out a crash backoff and will re-queue the task itself; adopting here would have it tear down the worker we just made
+- tasks whose type no longer maps to an agent — there is no way to know which agent owned the work
+
+If `tmux list-windows` cannot be queried at all, the whole pass is skipped rather than treating an empty result as "every worker is dead".
 
 **State is deliberately untouched** — the launcher only spawns. The respawned worker sets its own `Doing` and restores context by re-reading its task folder notes and the task's comments. Every skill is told at startup that it may be a restarted worker and must read existing notes before redoing work.
 
@@ -112,6 +120,12 @@ Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker 
 **The launcher does not set `Doing`.** The worker does, as its first action. That leaves the task in `Ready` while Claude boots (10–60s), so the launcher writes `signals/<slug>.launching` before spawning and skips any slug holding a live flag; the worker clears it on claiming the task. The flag expires after 5 minutes so a worker that dies during boot does not wedge the task permanently.
 
 The launcher window runs inside a restart loop (`while true; do python3 launcher.py …; sleep 5; done`) — nothing supervises it, and it has no Claude dependency, so respawning in place is the simplest form of supervision.
+
+### Sidecar reconciliation
+
+A sidecar is the only thing that can wake a blocked agent, so a worker whose sidecar died waits on `await_user` forever — silently, because its own window is still alive. Adoption cannot cover this: it skips any slug with a live worker window, which is exactly this case.
+
+The launcher therefore reconciles before adopting. For each live worker window it spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it (which happens whenever `bootstrap.sh` truncates the registry while workers survive — otherwise they stay invisible to the watchdog and uncounted against `max-workers`).
 
 ### Sidecar
 
@@ -202,6 +216,8 @@ Session: workers            ← Claude agents only
 
 Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window-liveness check and `agentmesh status` both read it that way.
 
+`spawn-agent.sh` launches Claude **as the window's command** rather than typing it into a shell, so the window dies with the process. Window liveness is therefore a sound proxy for "the agent is running" — which both the watchdog and the launcher's adoption pass depend on. A shell-hosted window would outlive a dead Claude and make every task it held permanently unrecoverable.
+
 ---
 
 ## Skills
@@ -273,6 +289,7 @@ agentmesh/
     ├── <slug>.seq              # nudge sequence counter; written by the agent, read by the sidecar
     ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
     ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
+    ├── <slug>.backoff          # sentinel while the watchdog sleeps out a crash backoff; adoption skips these
     ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
     ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
     ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged
@@ -294,6 +311,10 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        task-refused-untyped            WORK-abc
 2026-04-26T...  launcher        task-adopted:attention           WORK-xyz
 2026-04-26T...  launcher        adoption-skipped-untyped         WORK-abc
+2026-04-26T...  launcher        adoption-skipped-tmux-unavailable -
+2026-04-26T...  launcher        sidecar-reconciled               WORK-xyz
+2026-04-26T...  launcher        worker-reregistered              WORK-xyz
+2026-04-26T...  launcher        implementer-spawn-failed         WORK-xyz
 2026-04-26T...  launcher        launching-flag-expired          WORK-xyz
 2026-04-26T...  sidecar         started                         WORK-xyz
 2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
@@ -305,6 +326,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  implementer     resumed                         WORK-xyz
 2026-04-26T...  watchdog        crash-detected                  WORK-xyz
 2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
+2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz
 2026-04-26T...  task-done       cleanup-complete                 WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
 2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
@@ -413,6 +435,9 @@ This covers every way a worker can disappear, not just a deliberate restart:
 | `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
 | Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (with backoff, 3 attempts) |
 | Worker reaped while `Attention` | Launcher adoption, next scan |
+| Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
+| Launcher restarts while workers survive | Reconciliation re-registers them |
+| PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Three consecutive crashes | Not recovered — the task is set `Blocked` with an explanatory comment, deliberately |
 

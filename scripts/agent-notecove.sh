@@ -121,3 +121,34 @@ finish_task() {
     notecove task change "$SLUG" --state "$state"
     bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
 }
+
+# finish_cleanup <project>
+#
+# The cleanup half of finish_task, without setting state. Call this when the
+# *user* moved the task to a terminal state themselves — you must not overwrite
+# their state, but dependents still need releasing and your sidecar still needs
+# stopping, and nothing else does either.
+#
+#   finish_cleanup "$PROJECT"   # user set Done / Won't Do in NoteCove
+finish_cleanup() {
+    local project="${1:?finish_cleanup: project required}"
+    bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
+}
+
+# watch_pr <pr-url>
+#
+# Start a pr-monitor for this task. It polls the PR and, when it is merged,
+# writes a `pr-merged` entry to your inbox and nudges you — so a user who merges
+# on GitHub instead of commenting `approve` still gets a response.
+#
+# Call this right after creating the PR, before await_user. Idempotent: a second
+# call while one is already running is a no-op.
+watch_pr() {
+    local pr_url="${1:?watch_pr: pr-url required}"
+    local window="pr-mon-${SLUG}"
+    if tmux list-windows -t orchestrator -F '#{window_name}' 2>/dev/null | grep -qxF "$window"; then
+        return 0
+    fi
+    tmux new-window -d -t 'orchestrator:' -n "$window" \
+        "bash ~/agentmesh/scripts/pr-monitor.sh '$SLUG' '$pr_url'" 2>/dev/null || true
+}

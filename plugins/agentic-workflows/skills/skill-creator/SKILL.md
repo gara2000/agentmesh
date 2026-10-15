@@ -100,7 +100,23 @@ finish_task "Won't Do" "<project>"    # the user aborted
 
 `finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
 
-If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit cleanly rather than continuing. Do not call `finish_task`: the user has already set the state.
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
+
+```bash
+finish_cleanup "<project>"    # the user set the terminal state; still release dependents
+```
+
+The cleanup is still required even though you did not set the state: nothing else releases tasks blocked on this one or stops your sidecar.
+
+### If you create a PR
+
+Call `watch_pr "$PR_URL"` right after creating it, before `await_user`:
+
+```bash
+watch_pr "$PR_URL"
+```
+
+That starts a monitor which nudges you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
 ### If you were restarted mid-task
 
@@ -134,7 +150,8 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
 - **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
-- **Exit cleanly on a state change you did not make** — the user has taken the task elsewhere. Do not call `finish_task`.
+- **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
+- **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
 - **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 
 ---
@@ -527,7 +544,23 @@ finish_task "Won't Do" "<project>"    # the user aborted
 
 `finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
 
-If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit cleanly rather than continuing. Do not call `finish_task`: the user has already set the state.
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
+
+```bash
+finish_cleanup "<project>"    # the user set the terminal state; still release dependents
+```
+
+The cleanup is still required even though you did not set the state: nothing else releases tasks blocked on this one or stops your sidecar.
+
+### If you create a PR
+
+Call `watch_pr "$PR_URL"` right after creating it, before `await_user`:
+
+```bash
+watch_pr "$PR_URL"
+```
+
+That starts a monitor which nudges you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
 ### If you were restarted mid-task
 
@@ -561,7 +594,8 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
 - **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
-- **Exit cleanly on a state change you did not make** — the user has taken the task elsewhere. Do not call `finish_task`.
+- **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
+- **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
 - **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 
 ---
@@ -877,6 +911,9 @@ PR_URL=$(gh pr create \
 EOF
 )")
 echo "PR created: $PR_URL"
+# Start the merge monitor so a merge on GitHub reaches you even if the user
+# never comments `approve`.
+watch_pr "$PR_URL"
 ```
 
 ### 5c. Signal Attention (PR ready)
