@@ -77,7 +77,11 @@ rm -f "$AGENTMESH/signals/${SLUG}.seq" \
       "$AGENTMESH/signals/${SLUG}.seen-state" \
       "$AGENTMESH/signals/${SLUG}.merged" \
       "$AGENTMESH/signals/${SLUG}.sidecar-handle" \
-      "$AGENTMESH/signals/${SLUG}.backoff"
+      "$AGENTMESH/signals/${SLUG}.backoff" \
+      "$AGENTMESH/signals/${SLUG}.terminal-since"
+# Clearing .terminal-since restarts the reaper's grace clock, which is what we
+# want: this script is the cleanup the grace period exists to protect, so the
+# worker gets a fresh window rather than whatever was left of the first one.
 
 printf '%s\ttask-done    \tcleanup-complete\t%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SLUG" >> "$AGENTMESH/signals/events.log"

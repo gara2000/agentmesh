@@ -193,6 +193,36 @@ Responsibilities:
 - For each, move its named subfolder from the task's parent folder into the adjacent `Done` folder
 - Skip folders already under a `Done` folder (idempotent)
 
+### Reaper
+
+**One instance.** Runs in the `orchestrator` session, window `reaper`. Pure bash, no Claude.
+
+Its job is the one thing nothing else in the system does: **kill a worker whose task has finished.**
+
+A worker does not exit on its own. `spawn-agent.sh` launches the interactive Claude REPL, so when the skill's final turn ends Claude returns to its prompt and idles there indefinitely. `task-done.sh` deliberately leaves the worker window alone — the worker is the process running that script, so killing it there would abort the cleanup mid-run — and the watchdog only ever looks at windows that are *already* gone. Until the reaper existed, the only thing that collected a finished worker was `agentmesh stop`.
+
+That had two costs. Every completed task leaked a Claude process against `max-workers`, and a task reopened from `Done` could never be picked up again: its window name was still taken, so `spawn-agent.sh` refused the respawn and the launcher skipped the slug as "already live".
+
+Responsibilities, every `--poll-interval` seconds (default 30):
+- Build the **candidate set**: live `workers` windows, the slugs behind any `side-*`/`pr-mon-*` window, and every slug still in `signals/workers`
+- Ask NoteCove for each candidate's state and branch on **`isTerminal`**
+- On the first terminal sighting, write `signals/<slug>.terminal-since` and defer
+- Once that file is `--grace` seconds old (default 60), kill `workers:<slug>`, `side-<slug>` and `pr-mon-<slug>`, drop the registry line, and remove the task's signal files
+
+It never changes task state and never comments. It only tears down.
+
+**Why a grace period.** A worker sets `Done` and *then* runs `task-done.sh`, which retries dependent-unblocking up to three times with sleeps in between. Reaping on sight would kill it mid-cleanup and leave the dependents blocked forever. The delay also covers the user who closes a task and immediately reopens it: a candidate that is no longer terminal has its `.terminal-since` deleted and is logged as `reap-cancelled-reopened`.
+
+**Why candidate-driven rather than task-driven.** Listing every terminal task in the project would hit the NoteCove CLI's default page size and silently miss anything past it. The only slugs that can possibly need reaping are those with something still running or registered — at most `max-workers` of them.
+
+**It never reaps on absence of evidence.** A NoteCove call that fails or times out is skipped, not read as terminal. If `tmux` cannot be queried at all the entire pass is abandoned and logged as `reap-skipped-tmux-unavailable` — treating an unanswerable tmux as "no windows exist" would reap every tracked task at once. Telling "that session does not exist" apart from "tmux is not answering" needs `tmux list-sessions` to succeed; `has-session` alone fails in both cases.
+
+Being a separate process is the whole point: the reaper is not the thing being killed, so it works whether or not the worker cooperated, noticed its own state change, or is wedged.
+
+```bash
+bash scripts/reaper.sh --once --dry-run   # report what would be reaped, kill nothing
+```
+
 ---
 
 ## tmux Layout
@@ -201,7 +231,8 @@ Responsibilities:
 Session: orchestrator       ← daemons only; no user-interaction process
   window 0: watchdog        ← scripts/watchdog.sh (bash loop)
   window 1: folder-cleanup  ← scripts/folder-cleanup.sh (bash loop)
-  window 2: launcher        ← scripts/launcher.py (Python daemon, restart loop)
+  window 2: reaper          ← scripts/reaper.sh (bash loop)
+  window 3: launcher        ← scripts/launcher.py (Python daemon, restart loop)
   window N: side-WORK-xyz   ← scripts/sidecar.sh (bash loop, one per active worker)
   window N: pr-mon-WORK-xyz ← scripts/pr-monitor.sh (bash loop, one per PR-ready task)
 
@@ -219,6 +250,8 @@ Session: workers            ← Claude agents only
 Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window-liveness check and `agentmesh status` both read it that way.
 
 `spawn-agent.sh` launches Claude **as the window's command** rather than typing it into a shell, so the window dies with the process. Window liveness is therefore a sound proxy for "the agent is running" — which both the watchdog and the launcher's adoption pass depend on. A shell-hosted window would outlive a dead Claude and make every task it held permanently unrecoverable.
+
+**The same rule applies to the daemons.** `bootstrap.sh` and `agentmesh switch` pass each daemon's command to `tmux new-window` instead of `send-keys`-ing it into a shell, for exactly the reason above: the window must die with the process. Under the old `send-keys` form a crashed watchdog left a live `watchdog` window running zsh, so `agentmesh status` reported it healthy and no re-run of `bootstrap.sh` could ever notice it was gone.
 
 ---
 
@@ -271,17 +304,20 @@ A missing or mismatched `AGENT_AUTHOR` entry makes the agent wake itself on ever
 agentmesh/
 ├── CLAUDE.md               # this file
 ├── scripts/
-│   ├── bootstrap.sh        # runtime startup: notecove init, signals dir, watchdog + folder-cleanup + launcher
+│   ├── bootstrap.sh        # idempotent runtime startup: notecove init, signals dir, watchdog + folder-cleanup + reaper + launcher
 │   ├── launcher.py         # launcher daemon: Ready-task pickup, triage, worker + sidecar spawning
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
 │   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, post_summary, await_user, read_inbox
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
+│   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state
 │   ├── pr-monitor.sh       # PR merge detector; writes the merge to the worker's inbox
 │   ├── spawn-agent.sh      # launches a Claude agent in a new tmux window
 │   ├── task-done.sh        # terminal-state cleanup, called by the worker via finish_task: unblocks dependents, stops sidecar/pr-monitor
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / switch / status / attach / task
-│   └── test_triage.py      # unit tests for launcher triage and the .launching guard
+│   ├── test_triage.py      # unit tests for launcher triage and the .launching guard
+│   ├── test_reaper.py      # unit tests for reaper.sh, driven with --once against stub tmux/notecove
+│   └── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
@@ -296,10 +332,11 @@ agentmesh/
     ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
     ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
     ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged
-    └── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
+    ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
+    └── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
 ```
 
-The `signals/` directory and its contents are runtime artifacts — created fresh on each bootstrap.
+The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a blocked worker is waiting on. `agentmesh start --clean` forces the wipe.
 
 ### Event log format
 
@@ -308,6 +345,10 @@ The `signals/` directory and its contents are runtime artifacts — created fres
 ```
 timestamp       component       event_type                      slug
 2026-04-26T...  launcher        bootstrap-complete              -
+2026-04-26T...  launcher        cold-start-reset                 -
+2026-04-26T...  launcher        warm-start-ensure                -
+2026-04-26T...  launcher        daemon-started:reaper            -
+2026-04-26T...  launcher        launcher-wedged-restarting       -
 2026-04-26T...  launcher        task-picked-up                  WORK-xyz
 2026-04-26T...  launcher        implementer-spawned             WORK-xyz
 2026-04-26T...  launcher        sidecar-spawned                 WORK-xyz
@@ -333,6 +374,12 @@ timestamp       component       event_type                      slug
 2026-04-26T...  task-done       cleanup-complete                 WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
 2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
+2026-04-26T...  reaper          started                          -
+2026-04-26T...  reaper          reap-deferred-grace              WORK-xyz
+2026-04-26T...  reaper          reap-cancelled-reopened          WORK-xyz
+2026-04-26T...  reaper          worker-reaped                    WORK-xyz
+2026-04-26T...  reaper          reap-dry-run                     WORK-xyz
+2026-04-26T...  reaper          reap-skipped-tmux-unavailable    -
 ```
 
 For the full list of event types per component, see each component's skill or script source.
@@ -377,7 +424,28 @@ agentmesh start --project <key>
                 [--profile <id>]
                 [--max-workers <n>]        # default: 30
                 [--poll-interval <secs>]   # default: 30 — Ready-task scan interval
+                [--clean]                  # force the full runtime reset
 ```
+
+### `start` is also `repair`
+
+**`agentmesh start` is idempotent and safe to run against a live system.** It creates whatever is missing and touches nothing that is already there — no worker is killed, no sidecar restarted, no inbox cleared. Run it to bring back a daemon that died, or to pick up a newly added one:
+
+```bash
+agentmesh start --project WORK      # reaper window gone? it comes back. Workers keep running.
+```
+
+This is the only way to do that. `agentmesh stop && agentmesh start` would work too, but it destroys every running worker — and while adoption respawns them, each one starts over from its notes and comments.
+
+What "idempotent" means concretely:
+
+- **The destructive init runs only on a cold start** — one where nothing is running. On a warm start, truncating `signals/workers` would hide live workers from the watchdog, and deleting `*.inbox` would throw away the reply a blocked worker is about to read. A sidecar that outlived such a wipe is worse still: with its baseline files gone, its next diff computes `first_run=true`, absorbs the pending reply into history, and never writes it to the inbox.
+- **The liveness test errs towards "live".** A non-empty registry, *or* a surviving `side-*`/`pr-mon-*` window, *or* a `claude` pane in the `workers` session is enough. Wrongly skipping the wipe costs a few stale files; wrongly running it loses work.
+- **Daemons are spawned only if their window is absent**, and as the window's command — see the tmux Layout note above for why that makes the check trustworthy.
+- **The launcher is the exception**, because its window can be up while it is wedged. Its heartbeat measures exactly that (it is stamped after each *completed scan*), so a launcher window with a heartbeat older than 90s is replaced; a healthy one is left strictly alone.
+- **The heartbeat is never pre-stamped**, not by `bootstrap.sh` and not by `switch`. Stamping on spawn makes a launcher that dies on startup — a bad `--project`, say — report healthy for a full minute.
+
+`--clean` forces the reset on a live system. Use it when you actually want a blank slate.
 
 **Other commands:**
 
@@ -408,10 +476,13 @@ agentmesh status
 launcher               ✓ running  (heartbeat: 4s ago)
 watchdog               ✓ running
 folder-cleanup         ✓ running
+reaper                 ✓ running
 active workers         2  (WORK-abc,WORK-def)
 sidecars               2
 notecove events        ✓ available (push)
 ```
+
+- **Any `✗ not running` daemon is fixed by `agentmesh start`** — no stop required.
 
 - **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — it will block on `await_user` forever. `status` warns explicitly when they diverge.
 - **`notecove events`** shows whether sidecars are waking on SSE push (sub-second) or on the 60-second safety-net poll. Both work; this tells you which.
@@ -437,11 +508,15 @@ This covers every way a worker can disappear, not just a deliberate restart:
 |---|---|
 | `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
 | Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (with backoff, 3 attempts) |
-| Worker reaped while `Attention` | Launcher adoption, next scan |
+| Worker killed while `Attention` | Launcher adoption, next scan |
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
+| Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |
+| A daemon window killed or never started | `agentmesh start` respawns it, workers untouched |
+| Worker idling after its task finished | Reaper, within `--grace` + one poll |
+| Task reopened from `Done`, old window still holding the name | Reaper frees the name, then normal pickup |
 | Three consecutive crashes | Not recovered — the task is set `Blocked` with an explanatory comment, deliberately |
 
 The one thing adoption cannot recover is a task whose type no longer maps to an agent; it logs `adoption-skipped-untyped` and leaves the task alone, because there is no way to know which agent owned the work. Restore the type and the next scan picks it up.
