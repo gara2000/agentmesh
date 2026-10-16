@@ -3,9 +3,14 @@
 #
 # Usage: sidecar.sh --task <slug> --agent-handle <handle> [--poll-interval <seconds>]
 #
-# Watches one NoteCove task and nudges its agent whenever something changes that
-# the agent needs to see: a new comment written by anyone other than the agent
-# itself, or a task state change.
+# Watches one NoteCove task and delivers a message to its agent whenever
+# something changes that the agent needs to see: a new comment written by anyone
+# other than the agent itself, or a task state change the agent did not make.
+#
+# Delivery is `tmux send-keys` into the worker's Claude REPL (see
+# notify-worker.sh), not `tmux wait-for -S`. A signal could only ever reach an
+# agent already blocked in `tmux wait-for`, so anything the user said while the
+# agent was working went unseen until the agent next chose to wait.
 #
 # The sidecar is deliberately GENERIC — it carries no task-type knowledge at all.
 # It never interprets comment content, never changes task state, and never decides
@@ -36,6 +41,9 @@ SIGNALS="$AGENTMESH/signals"
 LOG="$SIGNALS/events.log"
 NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
+# shellcheck source=notify-worker.sh
+source "$AGENTMESH/scripts/notify-worker.sh"
+
 SLUG=""
 AGENT_HANDLE=""
 POLL_INTERVAL="60"
@@ -60,6 +68,7 @@ fi
 INBOX="$SIGNALS/${SLUG}.inbox"
 SEEN_COMMENTS="$SIGNALS/${SLUG}.seen-comments"
 SEEN_STATE="$SIGNALS/${SLUG}.seen-state"
+SELF_STATE="$SIGNALS/${SLUG}.self-state"
 
 log_event() {
   printf '%s\tsidecar      \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-$SLUG}" >> "$LOG"
@@ -72,8 +81,9 @@ log_event() {
 #   - comment IDs  (signals/<slug>.seen-comments)
 #   - state ID     (signals/<slug>.seen-state)
 #
-# Appends any new comments not authored by this agent, plus any state change,
-# to signals/<slug>.inbox as line-delimited JSON, then fires the nudge signal.
+# Appends any new comments not authored by this agent, plus any state change the
+# agent did not make itself, to signals/<slug>.inbox as line-delimited JSON, then
+# delivers a nudge to the agent's REPL.
 #
 # Baselines are updated only after the inbox write succeeds, so a crash mid-write
 # re-reports rather than silently swallowing a change.
@@ -98,6 +108,7 @@ check_for_changes() {
   local result
   result=$(printf '%s' "$task_json" | AGENT_HANDLE="$AGENT_HANDLE" \
     SEEN_COMMENTS="$SEEN_COMMENTS" SEEN_STATE="$SEEN_STATE" INBOX="$INBOX" \
+    SELF_STATE="$SELF_STATE" \
     python3 -c '
 import json, os, sys
 
@@ -109,6 +120,7 @@ except (json.JSONDecodeError, ValueError):
 handle = os.environ["AGENT_HANDLE"].strip().lower()
 seen_comments_path = os.environ["SEEN_COMMENTS"]
 seen_state_path = os.environ["SEEN_STATE"]
+self_state_path = os.environ["SELF_STATE"]
 inbox_path = os.environ["INBOX"]
 
 
@@ -161,12 +173,27 @@ for c in walk(task.get("comments")):
         "created": c.get("created"),
     })
 
-if prev_state and cur_state and prev_state != cur_state:
+# The agent writes the state name it is about to set to .self-state before
+# calling the CLI (set_state in agent-notecove.sh). A match against the task
+# current state name means the agent moved the task itself, so reporting it back
+# would interrupt the agent with its own write - the state-change equivalent of
+# the author filter applied to comments above.
+#
+# Matched against the current state rather than only against an observed
+# transition: the transition may never be observed at all (a fresh sidecar
+# baselines straight onto it, or the agent moves twice between two polls), and a
+# marker left behind could otherwise swallow a genuine user move to that same
+# state much later.
+cur_name = (task.get("stateName") or "").strip()
+expected = read_text(self_state_path)
+self_induced = bool(expected) and bool(cur_name) and expected.lower() == cur_name.lower()
+
+if prev_state and cur_state and prev_state != cur_state and not self_induced:
     entries.append({
         "kind": "state-change",
         "from": prev_state,
         "to": cur_state,
-        "to_name": task.get("stateName") or "",
+        "to_name": cur_name,
     })
 
 # First run establishes the baseline without nudging: everything that exists
@@ -184,6 +211,14 @@ with open(seen_comments_path, "w") as f:
 with open(seen_state_path, "w") as f:
     f.write(cur_state)
 
+# Consume the marker only after the baseline has absorbed the state it covered,
+# so a crash in between re-suppresses rather than reporting a self-inflicted move.
+if self_induced:
+    try:
+        os.unlink(self_state_path)
+    except OSError:
+        pass
+
 if entries and not first_run:
     n_comments = sum(1 for e in entries if e["kind"] == "comment")
     n_state = sum(1 for e in entries if e["kind"] == "state-change")
@@ -197,27 +232,22 @@ if entries and not first_run:
   n_state=$(echo "$result" | awk '{print $2}')
 
   log_event "change-detected:comments=${n_comments}:state=${n_state}"
-  echo "[sidecar] $SLUG: ${n_comments} new comment(s), ${n_state} state change(s) — nudging"
-  fire_nudge
+  echo "[sidecar] $SLUG: ${n_comments} new comment(s), ${n_state} state change(s) — delivering"
+  notify_worker "$SLUG"
 }
 
 # ---------------------------------------------------------------------------
-# Fire the agent's nudge signal.
+# Delivery lives in notify-worker.sh, shared with pr-monitor.sh:
 #
-# The sequence number comes from signals/<slug>.seq, which the agent writes in
-# await_user before it blocks. Firing the current seq is what unblocks exactly
-# the wait the agent is sitting in.
+#   notify_worker <slug>       mark pending, then try to deliver
+#   retry_pending_nudge <slug> re-try an outstanding delivery, no-op otherwise
 #
-# If the agent is mid-turn rather than blocked, tmux drops the signal — but the
-# inbox has already been written, so the agent's next await_user returns
-# immediately on its non-empty check. No event is lost.
+# A delivery can legitimately fail — the worker window may be mid-boot, or
+# .ready may not be set yet — so notify_worker leaves a .pending-delivery
+# sentinel and the poll loop below retries while it exists. Nothing else would:
+# the diff only fires on *new* changes, and by the time a delivery fails the
+# change it was reporting is already absorbed into the baseline.
 # ---------------------------------------------------------------------------
-fire_nudge() {
-  local seq
-  seq=$(cat "$SIGNALS/${SLUG}.seq" 2>/dev/null || echo "0")
-  tmux wait-for -S "${SLUG}-nudge-${seq}" 2>/dev/null || true
-  log_event "nudge-fired:seq=${seq}"
-}
 
 # ---------------------------------------------------------------------------
 # SSE subscription loop.
@@ -274,4 +304,5 @@ trap 'kill $SSE_PID 2>/dev/null || true' EXIT
 while true; do
   sleep "$POLL_INTERVAL"
   check_for_changes
+  retry_pending_nudge "$SLUG"
 done

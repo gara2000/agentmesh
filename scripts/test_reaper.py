@@ -299,7 +299,9 @@ class TestReaperReaps(ReaperHarness):
         self.register("WORK-other", "investigator")
         (self.signals / "WORK-abc.terminal-since").touch()
         (self.signals / "WORK-abc.inbox").write_text('{"kind":"comment"}\n')
-        (self.signals / "WORK-abc.seq").write_text("3\n")
+        (self.signals / "WORK-abc.ready").touch()
+        (self.signals / "WORK-abc.pending-delivery").touch()
+        (self.signals / "WORK-abc.self-state").write_text("Done")
 
         r = self.run_reaper("--grace", "0")
 
@@ -310,7 +312,11 @@ class TestReaperReaps(ReaperHarness):
              "orchestrator:pr-mon-WORK-abc"])
         # The slot is freed here rather than one watchdog poll later.
         self.assertEqual(self.registry(), ["WORK-other WORK-other investigator"])
-        for suffix in ("inbox", "seq", "terminal-since"):
+        # .ready in particular: leaving it behind would let a sidecar for a task
+        # reopened under the same slug type into the REPL before the new worker
+        # has reached its skill.
+        for suffix in ("inbox", "ready", "pending-delivery", "self-state",
+                       "terminal-since"):
             self.assertFalse((self.signals / f"WORK-abc.{suffix}").exists(), suffix)
         self.assertIn("worker-reaped", self.events())
 

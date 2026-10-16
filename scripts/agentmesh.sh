@@ -172,7 +172,7 @@ cmd_status() {
   sidecars=$(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | awk '/^side-/ {n++} END {print n+0}')
   printf "%-22s %s\n" "sidecars" "$sidecars"
   if [ "$sidecars" -lt "$workers" ]; then
-    printf "%-22s ⚠ fewer sidecars than workers — those workers cannot be nudged\n" ""
+    printf "%-22s ⚠ fewer sidecars than workers — those workers get no user replies\n" ""
   fi
 
   # SSE availability — sidecars fall back to polling without it

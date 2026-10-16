@@ -36,9 +36,12 @@ cleanup_task() {
   local slug="$1"
   tmux kill-window -t "orchestrator:side-${slug}" 2>/dev/null || true
   tmux kill-window -t "orchestrator:pr-mon-${slug}" 2>/dev/null || true
-  rm -f "${SIGNALS}/${slug}.inbox" "${SIGNALS}/${slug}.seq" \
+  rm -f "${SIGNALS}/${slug}.inbox" \
         "${SIGNALS}/${slug}.launching" "${SIGNALS}/${slug}.seen-comments" \
         "${SIGNALS}/${slug}.seen-state" \
+        "${SIGNALS}/${slug}.self-state" \
+        "${SIGNALS}/${slug}.ready" \
+        "${SIGNALS}/${slug}.pending-delivery" \
         "${SIGNALS}/${slug}.sidecar-handle" \
         "${SIGNALS}/${slug}.terminal-since"
 }

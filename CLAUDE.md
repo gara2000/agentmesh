@@ -13,33 +13,41 @@ AgentMesh is a multi-agent orchestration system built on tmux and NoteCove. It p
 An agent that needs the user does three things:
 
 1. **Posts a brief comment** summarising what it just did and what it needs.
-2. **Sets the task to `Attention`** and blocks, consuming no tokens.
-3. **Wakes when its sidecar nudges it**, reads what changed, and continues.
+2. **Sets the task to `Attention`** via `request_attention`.
+3. **Ends its turn**, consuming no tokens until something arrives.
 
 The user replies by commenting on the task in NoteCove — nothing else is required of them.
 
 ```
-agent → comment + Attention → user reads and replies in NoteCove → sidecar → <slug>-nudge-<seq> → agent
+agent → comment + Attention → end of turn → user replies in NoteCove → sidecar → send-keys into the agent's REPL → agent
 ```
+
+When the message lands the agent calls `resume_work` (back to `Doing`), reads its inbox, and carries on.
 
 ### Coordination Primitives
 
-- **`tmux wait-for -S <signal>`** — fires a named signal (non-blocking)
-- **`tmux wait-for <signal>`** — blocks until the signal is fired
+- **`tmux send-keys -t workers:<slug>`** — types a one-line nudge into the worker's Claude REPL and submits it
 - **`signals/<slug>.inbox`** — append-only, line-delimited JSON; the sidecar (or pr-monitor) writes what changed, the agent reads and clears it
-- **`signals/<slug>.seq`** — per-task nudge sequence counter; written by the agent before it blocks, read by the sidecar to know which signal to fire
+- **`signals/<slug>.ready`** — delivery gate; written by the agent's `agent_init`, so nothing is typed before the skill is running
+- **`signals/<slug>.pending-delivery`** — retry sentinel; cleared only by a delivered nudge
+- **`signals/<slug>.self-state`** — the state name the agent is about to set, so the sidecar can tell its own writes from the user's
+- **`scripts/notify-worker.sh`** — the one place that knows how to deliver; sourced by the sidecar and the pr-monitor
 - **`scripts/sidecar.sh`** — one per worker; watches the task in NoteCove and nudges its agent on any change
 
-### Signal Protocol
+### Delivery Protocol
 
-| Signal | Direction | Trigger |
+| Mechanism | Direction | Trigger |
 |---|---|---|
-| `<task-slug>-nudge-<seq>` | Sidecar → Agent | A new comment (not the agent's own) or a task state change |
-| `<task-slug>-nudge-<seq>` | PR Monitor → Agent | The agent's PR was merged |
+| `tmux send-keys` into `workers:<slug>` | Sidecar → Agent | A new comment (not the agent's own) or a state change the agent did not make |
+| `tmux send-keys` into `workers:<slug>` | PR Monitor → Agent | The agent's PR was merged |
 
-Task slugs (e.g. `WORK-pm4`) are used as signal names — globally unique, safe for tmux (alphanumeric + hyphens).
+**Why messages and not `tmux wait-for`.** The old protocol fired `<slug>-nudge-<seq>` at an agent blocked inside `tmux wait-for`. That could only ever reach an agent *already waiting*: anything the user said while the agent was working went unseen until the agent next chose to wait — which, mid-implementation, could be many minutes or never. Typing into the REPL reaches the agent in both states. Idle at its prompt it starts a new turn; mid-turn, Claude Code queues the input and picks it up when the current turn ends.
 
-The sequence number makes every nudge unique across rounds, so a stale signal from round N cannot unblock round N+1.
+The agent therefore **does not block at all**. `request_attention` announces and returns; the turn ends there. The reply arrives as a fresh turn, which also removes the 10-minute Bash-tool cap that used to interrupt every real wait.
+
+**What is delivered is a bare one-line nudge**, not the user's text. The payload stays in the inbox — comment bodies are multi-line human free text and must never be typed into a REPL. The nudge names the helper to source, because an agent woken after a long gap may have lost all shell state.
+
+Delivery can fail in ways a fire-and-forget signal could not, so `notify-worker.sh` writes `.pending-delivery` before every attempt and clears it only on success. The sidecar retries any outstanding delivery once per poll. It never types blind: both the worker window and `.ready` must be present, and a `tmux` that cannot be queried at all is read as "not ready" rather than "the window is there".
 
 ### Inbox Format
 
@@ -53,11 +61,11 @@ The sidecar appends one JSON object per line to `signals/<slug>.inbox`:
 
 The agent reads the inbox rather than re-fetching and re-diffing the task itself.
 
-### Why the inbox and not just the signal
+### Why the inbox and not just the message
 
-`await_user` breaks on **the inbox being non-empty**, not on receiving the signal. This closes the race where the sidecar nudges while the agent is mid-turn: tmux drops the signal, but the inbox is already written, so the agent's next `await_user` returns immediately instead of blocking on a signal that will never fire again.
+The nudge carries no payload, so the inbox is the whole message. Separating them is what keeps the sidecar generic and the REPL safe: the sidecar writes arbitrary user text to a file and types a fixed line, rather than typing user text into a shell.
 
-It also makes `await_user` safe to re-call. Claude Code's Bash tool caps at 10 minutes, so any real wait gets interrupted; because the announce (comment + state) and the wait (loop) are separate, and the loop writes nothing and fires nothing, re-invoking it simply re-enters the wait.
+It also makes the nudge **idempotent and safe to duplicate**. A second nudge for a change the agent has already drained finds an empty inbox, and an empty `read_inbox` is defined as "nothing new, carry on" rather than an error. That is what lets the retry loop and the SSE/poll overlap both fire freely without coordination.
 
 ### Task State
 
@@ -66,13 +74,17 @@ Task state is owned by **the worker agent and the user — nothing else.**
 | NoteCove Task State | Set by | Meaning |
 |---|---|---|
 | `Ready` | User | Available for pickup. The launcher reads it but never writes it. |
-| `Doing` | Worker | The worker has claimed the task; its first action after booting. |
-| `Attention` | Worker | The worker needs the user and is blocked. |
+| `Doing` | Worker | A worker is working on this right now. Set on booting, and again at the top of every turn that resumes work. |
+| `Attention` | Worker | The worker is finished for now and the user has the task. |
 | `Done` | Worker via `finish_task` (after the user approves) or User | Work accepted. |
 | `Won't Do` | Worker via `finish_task` (on `abort`) or User | Work abandoned. |
 | `Blocked` | Watchdog (crash limit) or User | Needs investigation. |
 
 The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashed worker cannot set its own state, and the alternative is a task stuck in `Doing` with nothing running.
+
+**`Doing` and `Attention` alternate for the life of the task.** The agent is not in `Attention` while it works — a task left there misreports both what the agent is doing and whether the user is expected to act. Every working turn opens with `resume_work` and every hand-back closes with `request_attention`, however many rounds that takes.
+
+**Agents change state only through `resume_work` / `request_attention` / `finish_task`, never a bare `notecove task change --state`.** All three go through `set_state`, which writes the state name to `signals/<slug>.self-state` *before* calling the CLI. That marker is how the sidecar tells "I moved this" from "the user moved this" — it compares the task's `stateName` against the marker and suppresses a match. Writing it first closes the race: there is no window in which the sidecar can observe the new state without also seeing the marker. Without it, an agent's own `Doing`/`Attention` writes come straight back as a message and interrupt it mid-work — harmless under the old blocking protocol, a self-inflicted interruption under this one. The marker is consumed once the sidecar's baseline has absorbed the state it names, so it cannot later swallow a genuine user move to that same state.
 
 ### Comment Conventions
 
@@ -125,7 +137,7 @@ The launcher window runs inside a restart loop (`while true; do python3 launcher
 
 ### Sidecar reconciliation
 
-A sidecar is the only thing that can wake a blocked agent, so a worker whose sidecar died waits on `await_user` forever — silently, because its own window is still alive. Adoption cannot cover this: it skips any slug with a live worker window, which is exactly this case.
+A sidecar is the only thing that delivers the user's replies into a worker's REPL, so a worker whose sidecar died sits in `Attention` forever — silently, because its own window is still alive and its last turn ended normally. Adoption cannot cover this: it skips any slug with a live worker window, which is exactly this case.
 
 The launcher therefore reconciles before adopting. For each live worker window it spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it (which happens whenever `bootstrap.sh` truncates the registry while workers survive — otherwise they stay invisible to the watchdog and uncounted against `max-workers`).
 
@@ -140,7 +152,10 @@ Responsibilities:
 - Detect changes two ways, both funnelling into one diff step:
   - **SSE push** — subscribe to `notecove events --types "task.*"` and run the diff on any frame naming this slug
   - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60)
-- On a change, append to `signals/<slug>.inbox` and fire `<slug>-nudge-<seq>`
+- On a change, append to `signals/<slug>.inbox` and deliver a nudge via `notify-worker.sh`
+- Retry any outstanding `.pending-delivery` on every poll
+
+**Two filters keep an agent from waking itself.** New comments authored by `--agent-handle` are ignored, and a state change matching `signals/<slug>.self-state` is suppressed — see the Task State section above. Both are the same rule: the sidecar reports what *others* did to the task.
 
 The poll runs **always**, not only when SSE is unavailable. The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference; the poll makes correctness independent of it. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
@@ -154,7 +169,9 @@ The `side-<slug>` window is **not** registered in `signals/workers` — it is no
 
 Responsibilities:
 - Poll `gh pr view <pr-url>` every 60 seconds
-- When the PR state is `MERGED`: write `signals/<slug>.merged`, append a `pr-merged` entry to the worker's inbox, fire the nudge, and exit
+- When the PR state is `MERGED`: write `signals/<slug>.merged`, append a `pr-merged` entry to the worker's inbox, deliver the nudge, and exit
+
+It will not exit on an undelivered nudge: unlike the sidecar it has no further poll to retry from, so it retries for up to ten cycles itself and logs `merge-nudge-undelivered` if the worker never became reachable.
 
 It does **not** set task state — the worker wakes, sees the merge, and sets `Done` itself. Merge detection lives here rather than in the sidecar so the sidecar stays generic, with no notion of PRs.
 
@@ -169,11 +186,11 @@ Responsibilities:
   - Read `signals/<slug>.crash-count` (default 0); increment
   - If crash count < 3: write the count, sleep with exponential backoff (30s × 2^(n-1): 30s, 60s), clean up the task's side processes, and set the task back to `Ready` — the launcher spawns a fresh worker on its next scan
   - If crash count ≥ 3: delete the count file, set the task to `Blocked`, and comment on the task explaining why. `Blocked` plus the comment *is* the user-visible escalation; no process relays notifications any more.
-- If the window is gone and the task is in `attention` → **stranded, not finished**: the task is mid-conversation with the user and its worker is gone. Deregister it (so it is not re-reported every poll) but leave its sidecar, inbox, and seq intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it. **This path still counts crashes**: adoption respawns every 30s, so a worker that reproducibly dies right after `await_user` would otherwise loop forever with nothing said to the user. At the limit the task is set `Blocked` with a comment noting the reply may never have been read.
+- If the window is gone and the task is in `attention` → **stranded, not finished**: the task is mid-conversation with the user and its worker is gone. Deregister it (so it is not re-reported every poll) but leave its sidecar and inbox intact — the launcher's adoption pass will spawn a fresh worker, and a pending user reply sitting in the inbox has to survive until that worker reads it. **This path still counts crashes**: adoption respawns every 30s, so a worker that reproducibly dies right after `request_attention` would otherwise loop forever with nothing said to the user. At the limit the task is set `Blocked` with a comment noting the reply may never have been read.
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.seq`, `.launching`, `.seen-comments`, and `.seen-state` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, and `.seen-state` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
@@ -307,7 +324,8 @@ agentmesh/
 │   ├── bootstrap.sh        # idempotent runtime startup: notecove init, signals dir, watchdog + folder-cleanup + reaper + launcher
 │   ├── launcher.py         # launcher daemon: Ready-task pickup, triage, worker + sidecar spawning
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
-│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, post_summary, await_user, read_inbox
+│   ├── notify-worker.sh    # delivery: types a one-line nudge into a worker's Claude REPL; sourced by sidecar + pr-monitor
+│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state
@@ -317,14 +335,18 @@ agentmesh/
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop / switch / status / attach / task
 │   ├── test_triage.py      # unit tests for launcher triage and the .launching guard
 │   ├── test_reaper.py      # unit tests for reaper.sh, driven with --once against stub tmux/notecove
-│   └── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
+│   ├── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
+│   ├── test_notify_worker.py # unit tests for nudge delivery: the .ready gate, retry sentinel, what gets typed
+│   └── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author and self-state filtering
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
     ├── launcher.heartbeat  # UTC timestamp written by launcher.py after each completed scan; read by `agentmesh status`
     ├── events.log          # append-only TSV: timestamp, component, event_type, slug
     ├── <slug>.inbox            # line-delimited JSON; sidecar/pr-monitor write, agent reads and clears
-    ├── <slug>.seq              # nudge sequence counter; written by the agent, read by the sidecar
+    ├── <slug>.ready            # delivery gate; touched by the worker's agent_init once its skill is running
+    ├── <slug>.pending-delivery # retry sentinel; written before every nudge, cleared only by a delivered one
+    ├── <slug>.self-state       # state name the agent is about to set, so the sidecar suppresses its own write
     ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
     ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
     ├── <slug>.backoff          # sentinel while the watchdog sleeps out a crash backoff; adoption skips these
@@ -336,7 +358,7 @@ agentmesh/
     └── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
 ```
 
-The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a blocked worker is waiting on. `agentmesh start --clean` forces the wipe.
+The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a waiting worker has yet to read. `agentmesh start --clean` forces the wipe.
 
 ### Event log format
 
@@ -364,7 +386,11 @@ timestamp       component       event_type                      slug
 2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
 2026-04-26T...  sidecar         sse-unavailable:no-permission   WORK-xyz
 2026-04-26T...  sidecar         change-detected:comments=1:state=0  WORK-xyz
-2026-04-26T...  sidecar         nudge-fired:seq=3               WORK-xyz
+2026-04-26T...  sidecar         notecove-call-timed-out          WORK-xyz
+2026-04-26T...  notify-worker   nudge-delivered                 WORK-xyz
+2026-04-26T...  notify-worker   delivery-deferred-not-ready      WORK-xyz
+2026-04-26T...  notify-worker   delivery-failed-send             WORK-xyz
+2026-04-26T...  notify-worker   delivery-failed-submit           WORK-xyz
 2026-04-26T...  implementer     started                         WORK-xyz
 2026-04-26T...  implementer     awaiting-user                   WORK-xyz
 2026-04-26T...  implementer     resumed                         WORK-xyz
@@ -373,6 +399,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz
 2026-04-26T...  task-done       cleanup-complete                 WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
+2026-04-26T...  pr-monitor      merge-nudge-undelivered          WORK-xyz
 2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
 2026-04-26T...  reaper          started                          -
 2026-04-26T...  reaper          reap-deferred-grace              WORK-xyz
@@ -439,7 +466,7 @@ This is the only way to do that. `agentmesh stop && agentmesh start` would work 
 
 What "idempotent" means concretely:
 
-- **The destructive init runs only on a cold start** — one where nothing is running. On a warm start, truncating `signals/workers` would hide live workers from the watchdog, and deleting `*.inbox` would throw away the reply a blocked worker is about to read. A sidecar that outlived such a wipe is worse still: with its baseline files gone, its next diff computes `first_run=true`, absorbs the pending reply into history, and never writes it to the inbox.
+- **The destructive init runs only on a cold start** — one where nothing is running. On a warm start, truncating `signals/workers` would hide live workers from the watchdog, and deleting `*.inbox` would throw away the reply a worker in `Attention` has yet to read — and deleting `*.ready` would shut the delivery gate on a worker whose skill is already running, so the next reply is recorded but never typed to it. A sidecar that outlived such a wipe is worse still: with its baseline files gone, its next diff computes `first_run=true`, absorbs the pending reply into history, and never writes it to the inbox.
 - **The liveness test errs towards "live".** A non-empty registry, *or* a surviving `side-*`/`pr-mon-*` window, *or* a `claude` pane in the `workers` session is enough. Wrongly skipping the wipe costs a few stale files; wrongly running it loses work.
 - **Daemons are spawned only if their window is absent**, and as the window's command — see the tmux Layout note above for why that makes the check trustworthy.
 - **The launcher is the exception**, because its window can be up while it is wedged. Its heartbeat measures exactly that (it is stamped after each *completed scan*), so a launcher window with a heartbeat older than 90s is replaced; a healthy one is left strictly alone.
@@ -484,7 +511,7 @@ notecove events        ✓ available (push)
 
 - **Any `✗ not running` daemon is fixed by `agentmesh start`** — no stop required.
 
-- **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — it will block on `await_user` forever. `status` warns explicitly when they diverge.
+- **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — nothing will ever type the user's reply into its REPL, so it sits in `Attention` indefinitely. `status` warns explicitly when they diverge.
 - **`notecove events`** shows whether sidecars are waking on SSE push (sub-second) or on the 60-second safety-net poll. Both work; this tells you which.
 - **`untyped tasks`** appears only when tasks have been refused for a missing or unmapped type.
 
@@ -510,6 +537,7 @@ This covers every way a worker can disappear, not just a deliberate restart:
 | Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (with backoff, 3 attempts) |
 | Worker killed while `Attention` | Launcher adoption, next scan |
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
+| A nudge could not be delivered (worker mid-boot, tmux unreachable) | `.pending-delivery`, retried from the sidecar's poll loop |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
@@ -520,6 +548,23 @@ This covers every way a worker can disappear, not just a deliberate restart:
 | Three consecutive crashes | Not recovered — the task is set `Blocked` with an explanatory comment, deliberately |
 
 The one thing adoption cannot recover is a task whose type no longer maps to an agent; it logs `adoption-skipped-untyped` and leaves the task alone, because there is no way to know which agent owned the work. Restore the type and the next scan picks it up.
+
+---
+
+## Upgrading across the signal → message change (plugin 3.5.0)
+
+Daemons and skills have to cross this change together. A pre-3.5.0 worker blocks inside `tmux wait-for` for a signal no sidecar fires any more; a 3.5.0 worker ends its turn expecting a message an old sidecar never types. Either mismatch leaves the task silently stalled in `Attention`.
+
+So this one is a full restart, not a repair:
+
+```bash
+agentmesh stop                      # every worker; adoption brings their tasks back
+cd ~/agentmesh && git pull
+claude plugin update agentic-workflows@agentmesh
+agentmesh start --project WORK
+```
+
+Adoption respawns every in-flight task on the new skills within one scan. `await_user` survives as a deprecated alias of `request_attention` — it announces and returns rather than blocking — so a worker that somehow boots on old skill text degrades to "ends its turn early" instead of hanging forever.
 
 ---
 

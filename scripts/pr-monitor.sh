@@ -5,8 +5,8 @@
 # Exits automatically after reporting the merge.
 #
 # It does NOT change task state. Only the worker agent and the user do that, so
-# this writes the merge into the worker's inbox and nudges it; the worker wakes,
-# sees the merge, and sets Done itself.
+# this writes the merge into the worker's inbox and delivers a message to the
+# worker's Claude REPL; the worker wakes, sees the merge, and sets Done itself.
 #
 # Merge detection lives here rather than in the sidecar so the sidecar stays
 # generic — it watches NoteCove and nothing else, with no notion of PRs.
@@ -21,6 +21,9 @@ SIGNALS="$AGENTMESH/signals"
 LOG="$SIGNALS/events.log"
 INBOX="$SIGNALS/${SLUG}.inbox"
 MERGED_FLAG="$SIGNALS/${SLUG}.merged"
+
+# shellcheck source=notify-worker.sh
+source "$AGENTMESH/scripts/notify-worker.sh"
 
 log_event() {
   printf '%s\tpr-monitor   \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$SLUG" >> "$LOG"
@@ -46,9 +49,20 @@ sys.stdout.write(json.dumps({
 }) + "\n")
 ' >> "$INBOX"
 
-    seq=$(cat "$SIGNALS/${SLUG}.seq" 2>/dev/null || echo "0")
-    tmux wait-for -S "${SLUG}-nudge-${seq}" 2>/dev/null || true
-    log_event "nudge-fired:seq=${seq}"
+    # Unlike the sidecar this process exits after reporting, so there is no
+    # later poll to retry a failed delivery. Keep trying for a few minutes to
+    # cover a worker that is mid-boot or mid-respawn; .pending-delivery is left
+    # behind either way, so a sidecar that is still running picks up the retry.
+    notify_worker "$SLUG"
+    _tries=0
+    while [ -f "$SIGNALS/${SLUG}.pending-delivery" ] && [ $_tries -lt 10 ]; do
+      _tries=$((_tries + 1))
+      sleep 30
+      retry_pending_nudge "$SLUG"
+    done
+    if [ -f "$SIGNALS/${SLUG}.pending-delivery" ]; then
+      log_event "merge-nudge-undelivered"
+    fi
     exit 0
   fi
 

@@ -36,7 +36,6 @@ If either argument is missing, stop immediately.
 
 ```
 INBOX=~/agentmesh/signals/<slug>.inbox
-SEQ_FILE=~/agentmesh/signals/<slug>.seq
 LOG=~/agentmesh/signals/events.log
 HELPER=~/agentmesh/scripts/agent-notecove.sh
 ```
@@ -51,22 +50,43 @@ HELPER=~/agentmesh/scripts/agent-notecove.sh
 - **Notes** carry artifacts. Plans, findings, question sets, designs — anything longer than a short paragraph.
 - **Task state** carries intent. Only you and the user change it.
 
-Each agent runs with a **sidecar** — a generic watcher process (`scripts/sidecar.sh`) that monitors your task and wakes you when the user comments or changes the state. You block for free while waiting; the sidecar does not consume tokens either.
+Each agent runs with a **sidecar** — a generic watcher process (`scripts/sidecar.sh`) that monitors your task and, when the user comments or changes the state, **types a message into your Claude REPL**. You do not block and you do not poll: you hand the task back and end your turn, and the reply arrives as a new turn.
 
 ### The interaction cycle
 
 ```bash
 post_summary "<brief summary of what you just did>"
-await_user "Attention"     # blocks — call with timeout=600000
-read_inbox                 # what woke you
+request_attention "Attention"
 ```
 
-`await_user` sets the task state, publishes the sequence number the sidecar fires, and blocks until something arrives. `read_inbox` prints line-delimited JSON and clears the inbox:
+`request_attention` sets the task state and **returns immediately** — it does not wait. End your turn once it returns. Anything you write after it in the same turn will not be reached by the user's reply.
+
+### Resuming after a message
+
+A delivered message looks like `[agentmesh] New activity on <slug> — …`. Start that turn by getting back into working shape:
+
+```bash
+source ~/agentmesh/scripts/agent-notecove.sh
+agent_init "<slug>" "Documenter"
+resume_work                # back to Doing — you are working again
+read_inbox                 # what the sidecar had to tell you
+```
+
+`read_inbox` prints line-delimited JSON and clears the inbox:
 
 ```
 {"kind":"comment","id":"...","author":"gara","content":"looks good, ship it","created":...}
 {"kind":"state-change","from":"doing","to":"...","to_name":"Won't Do"}
+{"kind":"pr-merged","url":"https://github.com/foo/bar/pull/1","note":"PR was merged. Set the task to Done."}
 ```
+
+An **empty** `read_inbox` is normal, not an error: a message can arrive for a change you have already drained. Nothing new means carry on with what you were doing.
+
+### Messages can arrive while you are working
+
+That is the point of delivering them rather than signalling: a message typed into your REPL mid-turn is queued by Claude Code and handed to you when the current turn ends. So a reply is no longer stuck behind your next `request_attention`.
+
+When one arrives mid-work, read the inbox, fold what it says into what you are doing, and **stay in `Doing`** — you are still working. Only `request_attention` hands the task back.
 
 ### Comments are summaries, not documents
 
@@ -89,8 +109,9 @@ Echo your reading back in your next comment ("Read as: approve → marking Done"
 
 You and the user are the only ones who change task state. Nothing else will do it for you:
 
-- Set `Doing` as your first action when you start work.
-- Set `Attention` when you need the user (via `await_user`).
+- Call `resume_work` (→ `Doing`) as the first action of **every** working turn: on startup, and again each time a delivered message puts you back to work. `Doing` means "an agent is working on this right now".
+- Call `request_attention` (→ `Attention`) only when you are finished for now and the user has the task. A task left in `Attention` while you work misreports both.
+- Never run a bare `notecove task change --state ...`. `set_state` (which `resume_work`, `request_attention` and `finish_task` all go through) records the state in `signals/<slug>.self-state` first, so the sidecar can tell your own move from the user's. Without that marker your own writes come back to you as messages.
 - **Finish with `finish_task`**, never a bare state change:
 
 ```bash
@@ -110,19 +131,21 @@ The cleanup is still required even though you did not set the state: nothing els
 
 ### If you create a PR
 
-Call `watch_pr "$PR_URL"` right after creating it, before `await_user`:
+Call `watch_pr "$PR_URL"` right after creating it, before `request_attention`:
 
 ```bash
 watch_pr "$PR_URL"
 ```
 
-That starts a monitor which nudges you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
+That starts a monitor which delivers a message to you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
 ### If you were restarted mid-task
 
 You may be a replacement for a worker that died. The launcher spawns a fresh worker for any task left in `Doing` or `Attention` with no live worker window, so finding existing notes in your task folder is normal, not an error.
 
 Read them before doing anything: a `PLAN`, `QUESTIONS-<N>`, or `COMPLETION` note means that work is already done. Pick up from where it left off rather than repeating it, and check the task's comments for the conversation so far.
+
+Also drain your inbox at startup (`read_inbox`, Step 1 below). A reply the user left while the previous worker was dying is still sitting there, and nothing will deliver it again.
 
 ---
 
@@ -132,11 +155,12 @@ Read them before doing anything: a `PLAN`, `QUESTIONS-<N>`, or `COMPLETION` note
 LOG=~/agentmesh/signals/events.log
 source ~/agentmesh/scripts/agent-notecove.sh
 agent_init "<slug>" "Documenter"
-notecove task change <slug> --state Doing
+resume_work                # claim the task: Doing
+read_inbox                 # drain anything left by a previous worker
 printf '%s\tdocumenter   \tstarted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-`agent_init` also clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting. Claiming the task by setting `Doing` is what releases it.
+`agent_init` does two things besides setting your handle. It clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting — claiming the task by setting `Doing` is what releases it. And it writes `signals/<slug>.ready`, the sidecar's gate for typing into your REPL: until it exists the sidecar records changes in your inbox but delivers nothing, because `spawn-agent.sh` may still be typing your skill invocation and a message would land in the middle of that command line. That is why Step 1 drains the inbox.
 
 The handle passed to `agent_init` **must** match the `--user` value your comments carry (`Documenter`) — the sidecar filters your own comments by author name, so a mismatch makes you wake yourself on every comment you write.
 
@@ -146,9 +170,12 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 
 - **Always `source ~/agentmesh/scripts/agent-notecove.sh` + `agent_init <slug> "Documenter"`** at startup, and define `LOG=`. Write `printf '%s\tdocumenter   \t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, awaiting-user, resumed, implementing, pr-created, approved/feedback-received).
 - **Never interact with the user outside NoteCove.** No terminal output intended for them, no other channel.
-- **Always post a summary comment before `await_user`** — otherwise the user is woken by a state change with no explanation of what you want.
+- **Always post a summary comment before `request_attention`** — otherwise the user is handed a task with no explanation of what you want.
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
-- **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
+- **`request_attention` does not block — end your turn after it.** Do not poll the inbox, do not sleep, do not call it in a loop. The sidecar starts your next turn by typing a message into your REPL.
+- **Call `resume_work` at the top of every working turn.** `Doing` while you work, `Attention` only when the user has the task.
+- **Never change state with a bare `notecove task change --state ...`** — go through `resume_work` / `request_attention` / `finish_task`, which record the move so the sidecar does not report it back to you.
+- **An empty `read_inbox` is not an error.** It means nothing new; carry on.
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
 - **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
 - **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
@@ -276,11 +303,10 @@ Comment that the questions are waiting, then block:
 ```bash
 printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 post_summary "<brief summary — a few sentences; link any note you wrote>"
-# IMPORTANT: call this Bash block with timeout=600000
-await_user "Attention"
-read_inbox
-printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+request_attention "Attention"
 ```
+
+**Then end your turn.** Do not poll, do not sleep, do not run anything else. The sidecar delivers the user's reply into your REPL as a new turn; your next turn starts with `resume_work` and `read_inbox`.
 
 After waking:
 1. Read what `read_inbox` returned — the user may have answered directly in a comment.
@@ -489,11 +515,10 @@ notecove task comments add <slug> --user "Documenter" "Documentation complete: <
 ```bash
 printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 post_summary "Published Confluence page: $CONFLUENCE_URL — <one line>"
-# IMPORTANT: call this Bash block with timeout=600000
-await_user "Attention"
-read_inbox
-printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+request_attention "Attention"
 ```
+
+**Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
 After unblocking:
 - **`done`** — approved. Log `printf '%s\tdocumenter   \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Exit.
@@ -505,11 +530,10 @@ After unblocking:
   ```bash
   printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   post_summary "Published Confluence page: $CONFLUENCE_URL — <one line>"
-  # IMPORTANT: call this Bash block with timeout=600000
-  await_user "Attention"
-  read_inbox
-  printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  request_attention "Attention"
   ```
+
+  **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
   Repeat until state is `done`.
 
 ---
@@ -592,11 +616,10 @@ printf '%s\tdocumenter   \tpr-created\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ```bash
 printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 post_summary "PR ready: $PR_URL — <one line on what changed>"
-# IMPORTANT: call this Bash block with timeout=600000
-await_user "Attention"
-read_inbox
-printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+request_attention "Attention"
 ```
+
+**Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
 After unblocking:
 - **`done`** — approved. Log `printf '%s\tdocumenter   \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Exit.
@@ -606,25 +629,23 @@ After unblocking:
   ```
   Apply feedback (docs only — same restriction), then re-signal:
 
-  After pushing the changes, post a summary and `await_user` again:
+  After pushing the changes, post a summary and `request_attention` again:
   ```bash
   printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   post_summary "PR updated: $PR_URL — <one line on what changed>"
-  # IMPORTANT: call this Bash block with timeout=600000
-  await_user "Attention"
-  read_inbox
-  printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  request_attention "Attention"
   ```
+
+  **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
   When the PR is ready for the user's final call:
   ```bash
   printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   post_summary "PR ready for your call: $PR_URL — <one line on what changed>"
-  # IMPORTANT: call this Bash block with timeout=600000
-  await_user "Attention"
-  read_inbox
-  printf '%s\tdocumenter   \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  request_attention "Attention"
   ```
+
+  **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
   Repeat until state is `done`.
 

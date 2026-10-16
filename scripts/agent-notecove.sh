@@ -3,17 +3,24 @@
 #
 # Source this file at agent startup, then call:
 #   agent_init "<slug>" "<agent-handle>"
+#   resume_work                 # back to Doing — call this whenever you start working
 #   post_summary "<brief summary of what just happened>"
-#   await_user "<state>"        # blocks until the user (or a daemon) changes something
-#   read_inbox                  # prints and clears what woke us
+#   request_attention "<state>" # hand the task back to the user, then END YOUR TURN
+#   read_inbox                  # what the sidecar had to tell you
 #
 # NoteCove is the only interaction surface between the agent and the user:
 #   - Comments carry the conversation, in both directions.
 #   - Notes carry artifacts — plans, findings, questions, anything long.
 #   - Task state carries intent; only the agent and the user change it.
 #
-# There is no orchestrator round-trip and no interface layer. The agent posts a
-# comment, sets a state, and blocks; the sidecar wakes it when the user replies.
+# There is no orchestrator round-trip and no interface layer.
+#
+# The agent does NOT block waiting to be woken. It posts a comment, sets
+# Attention, and ends its turn; the sidecar types a message into its Claude REPL
+# when something changes. The predecessor to this blocked inside
+# `tmux wait-for <slug>-nudge-<seq>`, which could only ever reach an agent that
+# was already waiting — anything the user said while the agent was working went
+# unseen until the agent next chose to wait.
 
 SIGNALS=~/agentmesh/signals
 
@@ -26,11 +33,51 @@ SIGNALS=~/agentmesh/signals
 agent_init() {
     SLUG="$1"
     AGENT_HANDLE="$2"
-    NUDGE_SEQ=0
     INBOX="${SIGNALS}/${SLUG}.inbox"
     # The launcher sets .launching so its next scan does not spawn a second
     # worker while Claude boots. Claiming the task clears it.
     rm -f "${SIGNALS}/${SLUG}.launching"
+    # .ready is the sidecar's delivery gate. Until it exists the sidecar records
+    # changes in the inbox but types nothing into the REPL, because spawn-agent.sh
+    # may still be sending the skill invocation and a nudge would land in the
+    # middle of that command line. Reaching this line means the skill is running.
+    : > "${SIGNALS}/${SLUG}.ready"
+}
+
+# set_state <state>
+#
+# Every state change the agent makes goes through here. The state name is written
+# to signals/<slug>.self-state BEFORE the CLI call, which is what lets the sidecar
+# tell "I moved this" from "the user moved this": its diff compares the task's
+# stateName against that marker and suppresses a match rather than reporting it
+# back. Writing the marker first closes the race — there is no window in which
+# the sidecar can observe the new state without also seeing the marker.
+#
+# On failure the marker is removed again, so a change that never happened cannot
+# swallow a genuine user move to that same state.
+#
+# (The sidecar has always filtered the agent's own *comments* by author. State
+# changes had no such filter, so the agent's own Doing/Attention writes came
+# straight back into its own inbox — harmless while it blocked on a signal, but
+# a self-inflicted mid-work interruption once the sidecar types into the REPL.)
+set_state() {
+    local state="${1:?set_state: state required}"
+    printf '%s' "$state" > "${SIGNALS}/${SLUG}.self-state"
+    if ! notecove task change "$SLUG" --state "$state"; then
+        rm -f "${SIGNALS}/${SLUG}.self-state"
+        return 1
+    fi
+}
+
+# resume_work
+#
+# Put the task back in Doing. Call it as the first action of every working turn —
+# on startup, and again each time a message from the sidecar puts you back to
+# work. `Doing` means "an agent is working on this right now"; `Attention` means
+# "the agent is finished for now and the user has the task". A task left in
+# Attention while the agent works misreports both.
+resume_work() {
+    set_state "Doing"
 }
 
 # post_summary <text>
@@ -44,45 +91,43 @@ post_summary() {
     notecove task comments add "$SLUG" --user "$AGENT_HANDLE" "$text"
 }
 
-# await_user <state>
+# request_attention [<state>]
 #
-# Announce-then-wait. Sets the task to <state> (normally Attention), publishes
-# the sequence number the sidecar should fire, then blocks until the inbox has
-# something in it.
+# Hand the task back to the user: set <state> (normally Attention) and return.
 #
-# Two properties worth preserving if this is ever rewritten:
+# It does NOT block, and nothing after it in the same turn will be reached by a
+# reply — end your turn once it returns. The sidecar types a message into this
+# worker's REPL when the user responds, which starts a fresh turn.
 #
-#   1. Re-calling it is safe. The announce and the wait are separate, and the
-#      wait loop is pure — it writes nothing and fires nothing. Claude Code's
-#      Bash tool caps out at 10 minutes, so a long wait WILL be interrupted;
-#      re-invoking simply re-enters the loop. (The predecessor wrote to a queue
-#      and fired a signal before blocking, so every re-invocation re-signalled.)
-#
-#   2. The nudge-before-block race is closed by construction. If the sidecar
-#      fires while the agent is mid-turn, tmux drops the signal — but the inbox
-#      is already non-empty, so this returns immediately instead of blocking on
-#      a signal that will never come again.
+# Post the summary comment BEFORE calling this, or the user is handed a task with
+# no explanation of what is wanted.
+request_attention() {
+    set_state "${1:-Attention}"
+}
+
+# await_user [<state>] — DEPRECATED. Kept only so a worker still running
+# pre-3.5.0 skill text does not hang forever on a signal nobody fires any more.
+# It is request_attention: it announces and returns, it does not wait.
 await_user() {
-    local state="${1:-Attention}"
-
-    NUDGE_SEQ=$((NUDGE_SEQ + 1))
-    echo "$NUDGE_SEQ" > "${SIGNALS}/${SLUG}.seq"
-    notecove task change "$SLUG" --state "$state"
-
-    while [ ! -s "$INBOX" ]; do
-        tmux wait-for "${SLUG}-nudge-${NUDGE_SEQ}" 2>/dev/null || true
-    done
+    echo "[agent-notecove] await_user is deprecated: the sidecar now delivers" >&2
+    echo "[agent-notecove] messages into your REPL. Use request_attention and" >&2
+    echo "[agent-notecove] end your turn." >&2
+    request_attention "${1:-Attention}"
 }
 
 # read_inbox
 #
-# Prints what woke the agent as line-delimited JSON and clears the inbox.
+# Prints what the sidecar had to say as line-delimited JSON and clears the inbox.
 # Each line is one of:
 #   {"kind":"comment","id":...,"author":...,"content":...,"created":...}
 #   {"kind":"state-change","from":...,"to":...,"to_name":...}
+#   {"kind":"pr-merged","url":...,"note":...}
 #
 # Consume-and-clear: the agent is responsible for acting on what it reads, since
 # a second call returns nothing.
+#
+# Printing nothing is normal, not an error. A nudge can arrive for a change the
+# agent has already drained, so an empty result means "nothing new, carry on".
 read_inbox() {
     [ -s "$INBOX" ] || return 0
     cat "$INBOX"
@@ -113,12 +158,12 @@ task_state() {
 #
 # Safe to call from inside the worker: task-done.sh unblocks dependents first and
 # never kills the calling worker's own window, so the script cannot terminate
-# itself partway through. Exit normally afterwards; the watchdog reaps whatever
+# itself partway through. Exit normally afterwards; the reaper collects whatever
 # is left.
 finish_task() {
     local state="${1:?finish_task: state required}"
     local project="${2:?finish_task: project required}"
-    notecove task change "$SLUG" --state "$state"
+    set_state "$state"
     bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
 }
 
@@ -138,11 +183,12 @@ finish_cleanup() {
 # watch_pr <pr-url>
 #
 # Start a pr-monitor for this task. It polls the PR and, when it is merged,
-# writes a `pr-merged` entry to your inbox and nudges you — so a user who merges
-# on GitHub instead of commenting `approve` still gets a response.
+# writes a `pr-merged` entry to your inbox and delivers a message to your REPL —
+# so a user who merges on GitHub instead of commenting `approve` still gets a
+# response.
 #
-# Call this right after creating the PR, before await_user. Idempotent: a second
-# call while one is already running is a no-op.
+# Call this right after creating the PR, before request_attention. Idempotent: a
+# second call while one is already running is a no-op.
 watch_pr() {
     local pr_url="${1:?watch_pr: pr-url required}"
     local window="pr-mon-${SLUG}"

@@ -172,6 +172,9 @@ class TestColdStart(BootstrapHarness):
         (self.signals / "events.log").write_text("stale\tline\there\t-\n")
         (self.signals / "WORK-old.inbox").write_text('{"kind":"comment"}\n')
         (self.signals / "WORK-old.terminal-since").touch()
+        (self.signals / "WORK-old.ready").touch()
+        (self.signals / "WORK-old.pending-delivery").touch()
+        (self.signals / "WORK-old.self-state").write_text("Attention")
         self.set_heartbeat_age(10_000)
 
         r = self.run_bootstrap()
@@ -180,6 +183,11 @@ class TestColdStart(BootstrapHarness):
         self.assertIn("cold start", r.stdout)
         self.assertFalse((self.signals / "WORK-old.inbox").exists())
         self.assertFalse((self.signals / "WORK-old.terminal-since").exists())
+        # A surviving .ready would let a sidecar type into a window that no
+        # longer holds the worker it was gating on.
+        self.assertFalse((self.signals / "WORK-old.ready").exists())
+        self.assertFalse((self.signals / "WORK-old.pending-delivery").exists())
+        self.assertFalse((self.signals / "WORK-old.self-state").exists())
         self.assertNotIn("stale", (self.signals / "events.log").read_text())
         # The heartbeat is never pre-stamped: it means "a scan completed", and
         # stamping it here makes a launcher that dies on startup look healthy.
@@ -215,7 +223,8 @@ class TestWarmStart(BootstrapHarness):
             "WORK-abc WORK-abc implementer\n")
         (self.signals / "events.log").write_text("history\tline\there\t-\n")
         (self.signals / "WORK-abc.inbox").write_text('{"kind":"comment"}\n')
-        (self.signals / "WORK-abc.seq").write_text("4\n")
+        (self.signals / "WORK-abc.pending-delivery").touch()
+        (self.signals / "WORK-abc.ready").touch()
         (self.signals / "WORK-abc.seen-comments").write_text("abc123\n")
         self.set_windows("orchestrator", orchestrator_windows)
         self.set_windows("workers", ["WORK-abc"])
@@ -232,10 +241,13 @@ class TestWarmStart(BootstrapHarness):
         self.assertIn("warm start", r.stdout)
         self.assertEqual(self.created(), [])
         self.assertEqual(self.killed(), [])
-        # The reply the worker is blocked on must survive.
+        # The reply waiting for the worker must survive, and so must the two
+        # files that get it delivered: .ready is the sidecar's gate, and without
+        # .pending-delivery an undelivered nudge is never retried.
         self.assertEqual((self.signals / "WORK-abc.inbox").read_text(),
                          '{"kind":"comment"}\n')
-        self.assertEqual((self.signals / "WORK-abc.seq").read_text(), "4\n")
+        self.assertTrue((self.signals / "WORK-abc.ready").exists())
+        self.assertTrue((self.signals / "WORK-abc.pending-delivery").exists())
         self.assertTrue((self.signals / "WORK-abc.seen-comments").exists())
         self.assertIn("history", (self.signals / "events.log").read_text())
         self.assertIn("WORK-abc WORK-abc implementer",
