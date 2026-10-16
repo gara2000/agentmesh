@@ -39,7 +39,8 @@ cleanup_task() {
   rm -f "${SIGNALS}/${slug}.inbox" "${SIGNALS}/${slug}.seq" \
         "${SIGNALS}/${slug}.launching" "${SIGNALS}/${slug}.seen-comments" \
         "${SIGNALS}/${slug}.seen-state" \
-        "${SIGNALS}/${slug}.sidecar-handle"
+        "${SIGNALS}/${slug}.sidecar-handle" \
+        "${SIGNALS}/${slug}.terminal-since"
 }
 
 echo "[watchdog] started"

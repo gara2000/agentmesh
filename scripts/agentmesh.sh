@@ -20,6 +20,19 @@ _session_exists() {
   tmux has-session -t "$1" 2>/dev/null
 }
 
+# Spawn a daemon window only if it is not already there. Same contract as
+# bootstrap.sh's ensure_daemon: launched as the window's command so the window
+# dies with the process, and a no-op against a live one.
+_ensure_daemon() {
+  local name="$1" cmd="$2"
+  if _window_exists "$name"; then
+    echo "  · $name already running"
+    return 0
+  fi
+  tmux new-window -d -t "orchestrator:" -n "$name" "$cmd"
+  echo "  ✓ $name started"
+}
+
 _heartbeat_age() {
   local hb="$SIGNALS/launcher.heartbeat"
   [ -f "$hb" ] || { echo 9999; return; }
@@ -33,7 +46,7 @@ _heartbeat_age() {
 
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
-  local MAX_WORKERS="30" POLL_INTERVAL="30"
+  local MAX_WORKERS="30" POLL_INTERVAL="30" CLEAN=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,6 +54,7 @@ cmd_start() {
       --profile)       PROFILE="$2";       shift 2 ;;
       --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
       --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+      --clean)         CLEAN="--clean";    shift ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -65,18 +79,19 @@ cmd_start() {
     echo "  · workers session already running"
   fi
 
-  # 2. Bootstrap (initializes signals/, starts watchdog, folder-cleanup, launcher)
-  local age
-  age=$(_heartbeat_age)
-  if [ "$age" -lt 60 ]; then
-    echo "  · launcher already running (heartbeat: ${age}s ago)"
-  else
-    bash "$SCRIPTS/bootstrap.sh" \
-      --project "$PROJECT" \
-      --profile "$PROFILE" \
-      --max-workers "$MAX_WORKERS" \
-      --poll-interval "$POLL_INTERVAL"
-  fi
+  # 2. Bootstrap. Always run it: it is idempotent and self-repairing, so this is
+  #    also how a missing or crashed daemon is brought back without a stop.
+  #
+  #    This used to be skipped whenever the heartbeat was under 60s old, which
+  #    made repair impossible — a live launcher meant `start` did nothing at all,
+  #    so a newly added daemon (or a watchdog that had died) could only be
+  #    started by stopping the system, which destroys every running worker.
+  bash "$SCRIPTS/bootstrap.sh" \
+    --project "$PROJECT" \
+    --profile "$PROFILE" \
+    --max-workers "$MAX_WORKERS" \
+    --poll-interval "$POLL_INTERVAL" \
+    ${CLEAN:+$CLEAN}
 
   echo ""
   echo "agentmesh started. Project: ${PROJECT}."
@@ -87,7 +102,7 @@ cmd_start() {
 
 cmd_stop() {
   # 1. Kill known windows in the orchestrator session
-  for win in folder-cleanup watchdog launcher; do
+  for win in folder-cleanup watchdog reaper launcher; do
     tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
   done
 
@@ -124,11 +139,15 @@ cmd_status() {
     printf "%-22s ✗ not running\n" "launcher"
   fi
 
-  for win in watchdog folder-cleanup; do
+  # Daemons are launched as their window's command, so the window dies with the
+  # process and its existence is a sound liveness check. (Under the old
+  # send-keys form a crashed daemon left a live window running a shell, and this
+  # reported it healthy.)
+  for win in watchdog folder-cleanup reaper; do
     if _window_exists "$win"; then
       printf "%-22s ✓ running\n" "$win"
     else
-      printf "%-22s ✗ not running\n" "$win"
+      printf "%-22s ✗ not running  (agentmesh start brings it back)\n" "$win"
     fi
   done
 
@@ -316,15 +335,24 @@ match = next((f['id'] for f in folders if f['name'] == 'Triage' and f['parentId'
 print(match)")
   echo "$TRIAGE_FOLDER" > "$SIGNALS/triage_folder"
 
-  # 5. Start the launcher on the new project
-  tmux new-window -t "orchestrator:" -n launcher
-  tmux send-keys -t orchestrator:launcher \
-    "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; echo '[launcher] exited — restarting in 5s'; sleep 5; done" \
-    Enter
+  # 5. Start the launcher on the new project.
+  #    As the window's command, not send-keys'd into a shell: the window must die
+  #    with the restart loop, or a crashed launcher leaves a window that both
+  #    `agentmesh status` and bootstrap's ensure pass read as healthy.
+  tmux new-window -d -t "orchestrator:" -n launcher \
+    "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; printf '%s\tlauncher     \tprocess-exited-restarting\t-\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> '$SIGNALS/events.log'; echo '[launcher] exited — restarting in 5s'; sleep 5; done"
   echo "  ✓ launcher started (project: $PROJECT)"
 
-  # 6. Fresh heartbeat
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$SIGNALS/launcher.heartbeat"
+  # 6. Any daemon that died while the system was up comes back here too — switch
+  #    is a restart of the project-scoped half, and there is no reason to leave a
+  #    missing reaper or watchdog missing.
+  _ensure_daemon watchdog       "bash $SCRIPTS/watchdog.sh"
+  _ensure_daemon folder-cleanup "bash $SCRIPTS/folder-cleanup.sh"
+  _ensure_daemon reaper         "bash $SCRIPTS/reaper.sh"
+
+  # Deliberately no heartbeat stamp here. The heartbeat means "a scan
+  # completed"; writing it on spawn makes a launcher that dies on startup — a
+  # bad --project, say — report healthy for a full minute.
 
   echo ""
   echo "agentmesh switched to project: ${PROJECT}."
@@ -348,7 +376,9 @@ case "$COMMAND" in
     echo "Usage: agentmesh <start|stop|switch|status|attach|task> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
-    echo "  start          Start the agentmesh system" >&2
+    echo "  start          Start the agentmesh system, or repair a running one" >&2
+    echo "                 (idempotent: creates what is missing, touches nothing else;" >&2
+    echo "                  --clean forces a full runtime reset)" >&2
     echo "  stop           Stop the agentmesh system" >&2
     echo "  switch         Switch to a different project (preserves running workers)" >&2
     echo "  status         Show component health" >&2
