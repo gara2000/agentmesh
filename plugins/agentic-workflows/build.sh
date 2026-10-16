@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # build.sh — Resolves 'extends' in skill frontmatter, refreshes BASE-AGENT marker blocks,
-#            expands <!-- SIGNAL: <name> --> macros to full bash signal blocks,
+#            expands <!-- SIGNAL: <name> --> macros to full bash interaction blocks,
 #            substitutes per-skill variables ({{AGENT_USER}}, {{LOG_PREFIX}}, {{ROLE}}),
-#            generates per-skill EVENTS-TABLE sections from 'events:' frontmatter,
 #            and expands the {{AGENTMESH}} path variable in all skill files.
 #
 # Usage:
@@ -11,9 +10,8 @@
 #   ./build.sh --update-family-bases  # propagate base-agent.md changes into family base files
 #
 # Inheritance model:
-#   base-agent.md (pure signal protocol)
+#   base-agent.md (NoteCove comment protocol: arg parsing, paths, post/await/read)
 #     └── base-implementer.md  (+ folder management, exploration, questions, triage)
-#     └── base-reviewer.md     (+ fire-and-done role, folder lookup, review conventions)
 #           └── skills via 'extends:' frontmatter
 #
 # When a skill 'extends' a family base file (e.g. base-implementer.md), build.sh reads the
@@ -24,10 +22,10 @@
 # idempotent BASE-AGENT block in the skill that contains everything from the family file.
 #
 # --update-family-bases:
-#   Propagates base-agent.md content into base-implementer.md and base-reviewer.md.
-#   This is ONLY a marker-replacement step — it does NOT run SIGNAL macro expansion,
-#   variable substitution ({{AGENT_USER}} etc.), or EVENTS-TABLE generation. Those steps
-#   require per-skill frontmatter values and are only valid during skill builds.
+#   Propagates base-agent.md content into the family base files (base-implementer.md).
+#   This is ONLY a marker-replacement step — it does NOT run SIGNAL macro expansion or
+#   variable substitution ({{AGENT_USER}} etc.). Those steps require per-skill
+#   frontmatter values and are only valid during skill builds.
 #   Run --update-family-bases whenever base-agent.md changes, then run ./build.sh to
 #   rebuild all skills.
 #
@@ -36,23 +34,22 @@
 #   2. Resolves the path relative to the skill directory.
 #   3. Reads the base file; strips its inner BASE-AGENT delimiter lines (flattens nested markers).
 #   4. Replaces the skill's BASE-AGENT block with the flattened base content.
-#   5. Expands <!-- SIGNAL: <name> --> markers into full bash signal-block code snippets.
+#   5. Expands <!-- SIGNAL: <name> --> markers into full bash code snippets.
 #      Errors clearly if an unknown macro name is encountered.
 #   6. Substitutes {{AGENT_USER}}, {{LOG_PREFIX}}, and {{ROLE}} from frontmatter.
 #      Errors if any key is missing.
-#   7. Generates per-skill EVENTS-TABLE from 'events:' frontmatter list.
-#   8. Expands {{AGENTMESH}} in all skill files.
+#   7. Expands {{AGENTMESH}} in all skill files.
 #
 # To add a new role that inherits the shared base:
 #   1. Create skills/<role>/SKILL.md with 'extends: ../../shared/base-implementer.md'
-#      (or base-reviewer.md for reviewer roles) in frontmatter.
+#      in frontmatter.
 #      Declare 'agent-user', 'log-prefix', and 'role' keys — all three are required.
+#      'agent-user' MUST match the --user value the skill writes comments with: the
+#      sidecar filters the agent's own comments by author name.
 #   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where shared
 #      content should be injected.
-#   3. Add <!-- EVENTS-TABLE:START --> / <!-- EVENTS-TABLE:END --> markers and 'events:'
-#      frontmatter list.
-#   4. Use <!-- SIGNAL: <name> --> markers where signal blocks are needed.
-#   5. Run ./build.sh to populate the markers.
+#   3. Use <!-- SIGNAL: await --> markers at each point the agent waits for the user.
+#   4. Run ./build.sh to populate the markers.
 
 set -euo pipefail
 
@@ -208,138 +205,20 @@ skill_file = sys.argv[1]
 # step that runs immediately after this one.
 # ---------------------------------------------------------------------------
 SIGNAL_MACROS = {
-    # --- blocking macros (signal_attention) ---
-    'questions': '''\
+    # The comment protocol has exactly one interaction shape: say what happened,
+    # wait for the user, read what woke you. There are no per-event variants
+    # because the orchestrator that used to dispatch on event type is gone.
+    #
+    # <state> defaults to Attention. Pass a different state only when the agent
+    # is parking the task somewhere else on purpose.
+    'await': '''\
 ```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:questions"
-notecove task change <slug> --state Attention
+printf '%s\\t{{LOG_PREFIX}}\\tawaiting-user\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+post_summary "<brief summary — a few sentences; link any note you wrote>"
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:questions" "doing"
+await_user "Attention"
+read_inbox
 printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'plan-ready': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:plan-ready"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:plan-ready" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'plan-revised': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:plan-revised"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:plan-revised" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'ideas-ready': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:ideas-ready"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:ideas-ready" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'selection-ready': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:selection-ready"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:selection-ready" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'design-ready': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-design\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:design-ready"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:design-ready" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed-from-design\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'design-revised': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-design-revised\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:design-revised"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:design-revised" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed-from-design-revised\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'completion': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:completion"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:completion" "done"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    # --- PR blocking macros (signal_attention, break on done OR doing) ---
-    'pr-ready': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-ready:$PR_URL"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-# Break on either \'done\' (approved) or \'doing\' (feedback given)
-signal_attention "event:pr-ready:$PR_URL" "done" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'pr-revised': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-revised:$PR_URL"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-# Break on either \'done\' (approved) or \'doing\' (feedback given)
-signal_attention "event:pr-revised:$PR_URL" "done" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    'pr-ready-final': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tsignaling-attention\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "{{AGENT_USER}}" "event:pr-ready-final:$PR_URL"
-notecove task change <slug> --state Attention
-# IMPORTANT: call this Bash block with timeout=600000
-# Break on either \'done\' (approved) or \'doing\' (feedback given)
-signal_attention "event:pr-ready-final:$PR_URL" "done" "doing"
-printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-```''',
-
-    # --- fire-and-done macros (signal_fire, no blocking) ---
-    'plan-review-complete': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tplan-review-complete\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker\'s seq must remain intact
-#       so the orchestrator can resume the worker with the correct signal
-notecove task change <slug> --state Attention
-signal_fire "event:plan-review-complete"
-```''',
-
-    'pr-review-complete': '''\
-```bash
-printf '%s\\t{{LOG_PREFIX}}\\tpr-review-complete\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-# NOTE: signal_fire does NOT update signals/<slug>.seq — the worker\'s seq must remain intact
-#       so the orchestrator can resume the worker with the correct signal
-notecove task change <slug> --state Attention
-signal_fire "event:pr-review-complete"
 ```''',
 }
 
@@ -413,88 +292,6 @@ with open(skill_file, 'w') as f:
     f.write(new_content)
 
 print(f"  ✓ {skill_file.split('/')[-2]} — substituted {{AGENT_USER}}={agent_user!r}, {{LOG_PREFIX}}={log_prefix!r}, {{ROLE}}={role!r}")
-PYEOF
-
-    # Generate and inject EVENTS-TABLE from frontmatter 'events:' list
-    python3 - "$skill_md" "$PLUGIN_DIR/shared/protocol.yaml" << 'PYEOF'
-import sys, re
-
-skill_file    = sys.argv[1]
-protocol_file = sys.argv[2]
-
-# Load event meanings from protocol.yaml (single source of truth).
-# url_bearing events are keyed as '<name>:<url>' to match the skill frontmatter convention.
-try:
-    import yaml
-    with open(protocol_file) as f:
-        protocol = yaml.safe_load(f)
-    EVENT_MEANINGS = {}
-    for name, attrs in protocol.get("events", {}).items():
-        meaning     = attrs.get("meaning", "")
-        url_bearing = attrs.get("url_bearing", False)
-        key = f"{name}:<url>" if url_bearing else name
-        EVENT_MEANINGS[key] = meaning
-except FileNotFoundError:
-    print(f"ERROR: protocol.yaml not found at {protocol_file}", file=sys.stderr)
-    sys.exit(1)
-
-with open(skill_file) as f:
-    content = f.read()
-
-# Extract frontmatter
-fm_match = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL)
-if not fm_match:
-    sys.exit(0)  # no frontmatter — skip
-fm = fm_match.group(1)
-
-# Extract 'events:' YAML list
-events_block = re.search(r'^events:\n((?:  - .+\n?)+)', fm, re.MULTILINE)
-if not events_block:
-    sys.exit(0)  # no events: list — skip (not all skills have one)
-
-events = re.findall(r'  - (.+)', events_block.group(1))
-
-# Validate all event names against the static lookup
-unknown = [e for e in events if e not in EVENT_MEANINGS]
-if unknown:
-    print(f"ERROR: unknown event name(s) in {skill_file}: {unknown}", file=sys.stderr)
-    print(f"       Valid event names: {list(EVENT_MEANINGS.keys())}", file=sys.stderr)
-    sys.exit(1)
-
-# Check that EVENTS-TABLE markers exist
-start_marker = '<!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->'
-end_marker   = '<!-- EVENTS-TABLE:END -->'
-if start_marker not in content and '<!-- EVENTS-TABLE:START' not in content:
-    print(f"ERROR: 'events:' frontmatter found but no <!-- EVENTS-TABLE:START --> marker in {skill_file}", file=sys.stderr)
-    print(f"       Add <!-- EVENTS-TABLE:START --> and <!-- EVENTS-TABLE:END --> markers after the frontmatter block.", file=sys.stderr)
-    sys.exit(1)
-
-# Generate the events table
-rows = []
-for event in events:
-    tag = f'event:{event}'
-    queue_entry = f'`<slug>:{tag}`'
-    meaning = EVENT_MEANINGS[event]
-    rows.append(f'| `{tag}` | {queue_entry} | {meaning} |')
-
-table = '## Events This Agent Fires\n\n'
-table += '| Event tag | Queue entry | Meaning |\n'
-table += '|---|---|---|\n'
-table += '\n'.join(rows) + '\n'
-
-replacement = f'{start_marker}\n{table}{end_marker}'
-pattern = r'<!-- EVENTS-TABLE:START.*?-->.*?<!-- EVENTS-TABLE:END -->'
-if not re.search(pattern, content, re.DOTALL):
-    print(f"ERROR: EVENTS-TABLE markers not found in {skill_file}", file=sys.stderr)
-    sys.exit(1)
-
-new_content = re.sub(pattern, lambda m: replacement, content, flags=re.DOTALL)
-
-with open(skill_file, 'w') as f:
-    f.write(new_content)
-
-skill_name = skill_file.split('/')[-2]
-print(f"  ✓ {skill_name} — generated EVENTS-TABLE ({len(events)} event(s))")
 PYEOF
 
     echo "  ✓ $skill_name  ←  $(basename "$base_file")"

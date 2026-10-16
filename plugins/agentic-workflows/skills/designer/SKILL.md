@@ -8,23 +8,7 @@ hint: "Designer agent for frontend task decomposition. Required: --task <slug> -
 agent-user: "Designer"
 log-prefix: "designer     "
 role: designer
-events:
-  - questions
-  - design-ready
-  - design-revised
-  - completion
 ---
-
-<!-- EVENTS-TABLE:START (do not edit — run ./build.sh to refresh) -->
-## Events This Agent Fires
-
-| Event tag | Queue entry | Meaning |
-|---|---|---|
-| `event:questions` | `<slug>:event:questions` | Agent has questions for the user |
-| `event:design-ready` | `<slug>:event:design-ready` | DESIGN note written (first submission), awaiting user review |
-| `event:design-revised` | `<slug>:event:design-revised` | Design revised after user feedback; re-review requested |
-| `event:completion` | `<slug>:event:completion` | Subtasks created (or skipped), parent marked Done |
-<!-- EVENTS-TABLE:END -->
 
 # Designer — NoteCove Frontend Design & Task Decomposition Agent
 
@@ -41,7 +25,7 @@ events:
      The BASE-AGENT block is auto-managed — do not edit it manually. -->
 
 Parse arguments:
-- `--task <slug>` — required, task slug assigned by the orchestrator (e.g. `WORK-42`)
+- `--task <slug>` — required, task slug assigned by the launcher (e.g. `WORK-42`)
 - `--project <key>` — required, NoteCove project key
 
 If either argument is missing, stop immediately.
@@ -51,77 +35,124 @@ If either argument is missing, stop immediately.
 ## Paths (fixed)
 
 ```
-QUEUE=~/agentmesh/signals/queue
+INBOX=~/agentmesh/signals/<slug>.inbox
 SEQ_FILE=~/agentmesh/signals/<slug>.seq
 LOG=~/agentmesh/signals/events.log
-SIGNAL_HELPER=~/agentmesh/scripts/signal-agent.sh
+HELPER=~/agentmesh/scripts/agent-notecove.sh
 ```
 
 ---
 
-## Signal Sequence Counter
+## How You Talk To The User
 
-The agent maintains a per-session counter `SIGNAL_SEQ` (starts at 0, managed by `signal-agent.sh`). It is incremented before every signal and written to `signals/<slug>.seq`. The orchestrator reads this file to know the exact resume signal name to fire: `<slug>-resume-<SIGNAL_SEQ>`.
+**NoteCove is the only interaction surface.** There is no orchestrator relaying messages and no chat interface — you and the user communicate directly through the task itself:
 
-This guarantees every resume signal is unique across all rounds — a stale stored signal from round N cannot accidentally unblock round N+1.
+- **Comments** carry the conversation, in both directions. You post; the user replies; you read the reply.
+- **Notes** carry artifacts. Plans, findings, question sets, designs — anything longer than a short paragraph.
+- **Task state** carries intent. Only you and the user change it.
 
-The helper `signal-agent.sh` initializes `SIGNAL_SEQ=0` and provides two functions:
-- `signal_attention <event-type> <break-state> [<alt-break-state>]` — increments the counter, writes the seq file, appends to queue, fires `worker-any-event`, and blocks until state matches
-- `signal_fire <event-type>` — appends to queue and fires `worker-any-event` without blocking (fire-and-done reviewers only)
+Each agent runs with a **sidecar** — a generic watcher process (`scripts/sidecar.sh`) that monitors your task and wakes you when the user comments or changes the state. You block for free while waiting; the sidecar does not consume tokens either.
 
----
-
-## Signaling the Orchestrator
-
-The agent signals the orchestrator by calling `signal_attention` (or `signal_fire` for reviewers). The orchestrator reads task state from NoteCove — **task state is the only message**.
-
-**Before calling `signal_attention`, the caller must:**
-1. Add the `event:<type>` comment to the task (the `--user` value differs per agent type)
-2. Set task state to `Attention`: `notecove task change <slug> --state Attention`
-
-### Signal procedure
+### The interaction cycle
 
 ```bash
-# 1. Add event comment (caller's responsibility — user value differs per agent):
-notecove task comments add <slug> --user "<AgentUser>" "event:<type>"
-# 2. Set task state to Attention:
-notecove task change <slug> --state Attention
-# 3. Call signal_attention — it handles seq, queue, tmux signaling, and blocking:
-#    IMPORTANT: the Bash call containing signal_attention must use timeout=600000
-signal_attention "event:<type>" "<expected-state>"
+post_summary "<brief summary of what you just did>"
+await_user "Attention"     # blocks — call with timeout=600000
+read_inbox                 # what woke you
 ```
 
-Where `<expected-state>` is `doing` after signaling `Attention` for questions or plan review, or `done`/`doing` (two-arg form) after signaling `Attention` for PR-ready.
+`await_user` sets the task state, publishes the sequence number the sidecar fires, and blocks until something arrives. `read_inbox` prints line-delimited JSON and clears the inbox:
 
-### Why a loop inside signal_attention: Bash tool timeout
+```
+{"kind":"comment","id":"...","author":"gara","content":"looks good, ship it","created":...}
+{"kind":"state-change","from":"doing","to":"...","to_name":"Won't Do"}
+```
 
-`tmux wait-for` is called via Claude Code's Bash tool, which has a **default timeout of 120 seconds**. Without the loop, the Bash call times out every 2 minutes and returns control to Claude Code even without a signal — causing spurious wakeups that waste tokens. `signal_attention` contains an internal loop that re-calls `tmux wait-for` until the expected state is confirmed (or after the 10-minute Bash tool maximum timeout, at which point the outer block is re-called).
+### Comments are summaries, not documents
+
+Keep every comment to **a few sentences at most**. A comment is a notification: it tells the user what happened and where to look. Anything longer — reasoning, findings, option analysis, code, tables — goes in a NoteCove note, and the comment names that note.
+
+Write "Wrote PLAN: 8 phases, one PR. Two open risks noted in the Delivery section." — not three paragraphs restating the plan.
+
+### Reading the user's reply
+
+Interpret free text with judgement; the user writes naturally ("the linter is failing", "there are conflicts, resolve them").
+
+Two words are **reserved commands** and must be honoured literally rather than read as feedback:
+
+- `approve` — the work is accepted. Move the task to its terminal state (`Done`) yourself.
+- `abort` — stop. Set the task to `Won't Do` and exit.
+
+Echo your reading back in your next comment ("Read as: approve → marking Done") so a misinterpretation is visible to the user instead of silent.
+
+### You own your task's state
+
+You and the user are the only ones who change task state. Nothing else will do it for you:
+
+- Set `Doing` as your first action when you start work.
+- Set `Attention` when you need the user (via `await_user`).
+- **Finish with `finish_task`**, never a bare state change:
+
+```bash
+finish_task "Done" "<project>"        # the user approved
+finish_task "Won't Do" "<project>"    # the user aborted
+```
+
+`finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
+
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
+
+```bash
+finish_cleanup "<project>"    # the user set the terminal state; still release dependents
+```
+
+The cleanup is still required even though you did not set the state: nothing else releases tasks blocked on this one or stops your sidecar.
+
+### If you create a PR
+
+Call `watch_pr "$PR_URL"` right after creating it, before `await_user`:
+
+```bash
+watch_pr "$PR_URL"
+```
+
+That starts a monitor which nudges you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
+
+### If you were restarted mid-task
+
+You may be a replacement for a worker that died. The launcher spawns a fresh worker for any task left in `Doing` or `Attention` with no live worker window, so finding existing notes in your task folder is normal, not an error.
+
+Read them before doing anything: a `PLAN`, `QUESTIONS-<N>`, or `COMPLETION` note means that work is already done. Pick up from where it left off rather than repeating it, and check the task's comments for the conversation so far.
 
 ---
 
 ## Step 1: Initialize
 
-Initialize the signal helper:
 ```bash
 LOG=~/agentmesh/signals/events.log
-source ~/agentmesh/scripts/signal-agent.sh
-signal_init "<slug>"
-printf '%s	designer     	started	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+source ~/agentmesh/scripts/agent-notecove.sh
+agent_init "<slug>" "Designer"
+notecove task change <slug> --state Doing
+printf '%s\tdesigner     \tstarted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
+
+`agent_init` also clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting. Claiming the task by setting `Doing` is what releases it.
+
+The handle passed to `agent_init` **must** match the `--user` value your comments carry (`Designer`) — the sidecar filters your own comments by author name, so a mismatch makes you wake yourself on every comment you write.
 
 ---
 
 ## Shared Critical Rules
 
-- **Always define `LOG=` and `source ~/agentmesh/scripts/signal-agent.sh` + `signal_init <slug>`** at startup. Write `printf '%s	designer     	<event>	<slug>
-' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, signaling-attention, resumed, implementing, pr-created, signaling-attention-pr-ready, approved/feedback-received).
-- **Never interact with the user directly.**
-- **Always add an `event:<type>` comment and set task state to `Attention` before calling `signal_attention`** — the orchestrator reads the last comment to dispatch on event type. See the "Events This Agent Fires" table above for the complete list for this agent.
-- **Always use `signal_attention` (never inline signal blocks)** — `signal_attention` handles seq increment, queue write, `worker-any-event`, and the blocking loop internally.
-- **Always use `timeout=600000`** on Bash calls that contain `signal_attention` — this maximizes time between spurious wakeups.
-- **Never mark task Done** — only the orchestrator does that, after user approval.
-- **Signal before exiting** — even on error, signal so the orchestrator can clean up.
+- **Always `source ~/agentmesh/scripts/agent-notecove.sh` + `agent_init <slug> "Designer"`** at startup, and define `LOG=`. Write `printf '%s\tdesigner     \t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, awaiting-user, resumed, implementing, pr-created, approved/feedback-received).
+- **Never interact with the user outside NoteCove.** No terminal output intended for them, no other channel.
+- **Always post a summary comment before `await_user`** — otherwise the user is woken by a state change with no explanation of what you want.
+- **Keep comments brief.** A few sentences. Artifacts belong in notes.
+- **Always use `timeout=600000`** on Bash calls containing `await_user`. The Bash tool caps at 10 minutes, so long waits get interrupted; re-calling `await_user` is safe (the announce and the wait are separate, and the wait writes nothing).
+- **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
+- **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
+- **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
+- **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 
 ---
 
@@ -132,13 +163,13 @@ Resolve the Triage folder and fetch the assigned task:
 TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folders=json.load(sys.stdin); print(next(f['id'] for f in folders if f['name']=='Triage' and f['parentId'] is None))")
 ```
 
-The orchestrator has already initialized NoteCove and set the task to `Doing`. Fetch the task:
+The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
 notecove task show <slug> --format json
 ```
 
-Verify state is `doing`. If not, stop.
+Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
@@ -241,26 +272,28 @@ notecove note create "<slug>/QUESTIONS-<N>" --folder <task-folder-id> --content-
 EOF
 ```
 
-Set task to Attention and signal:
+Comment that the questions are waiting, then block:
 ```bash
-printf '%s\tdesigner     \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Designer" "event:questions"
-notecove task change <slug> --state Attention
+printf '%s\tdesigner     \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+post_summary "<brief summary — a few sentences; link any note you wrote>"
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:questions" "doing"
+await_user "Attention"
+read_inbox
 printf '%s\tdesigner     \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-After confirmed resume:
-1. Read the task's latest comments for any feedback the orchestrator may have left: `notecove task show <slug> --format markdown-with-comments`
-2. Re-read the latest `<slug>/QUESTIONS-<N>` note to check for **inline answers** the user may have written directly in the note:
+After waking:
+1. Read what `read_inbox` returned — the user may have answered directly in a comment.
+2. Re-read the latest `<slug>/QUESTIONS-<N>` note to check for **inline answers** written into the note itself:
    ```bash
    notecove note show <questions-note-id> --format markdown
    ```
-3. Also check for any `<slug>/ANSWER-<N>` notes the user may have written as a separate note.
-4. Combine all answers found (inline in the QUESTIONS note or in separate ANSWER notes).
-5. If more questions, create `QUESTIONS-<N+1>` and repeat.
+3. Also check for any `<slug>/ANSWER-<N>` notes the user may have written separately.
+4. Combine every answer found — inbox comments, inline note answers, and ANSWER notes.
+5. If questions remain, create `QUESTIONS-<N+1>` and repeat.
 6. Only proceed when fully confident.
+
+> Users often answer inline in the note rather than in a comment. The note edit may not wake you on its own, so **always re-read the QUESTIONS note after waking**, whatever the inbox says.
 
 Skip this phase entirely if the task is clear enough to proceed without ambiguity.
 
@@ -302,6 +335,7 @@ EOF
 ## Shared Critical Rules (Implementer Additions)
 
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
+- **Re-read your QUESTIONS note after every wake** — inline answers written into the note are the most common way users reply, and a note edit does not reliably wake you.
 <!-- BASE-AGENT:END -->
 
 ---
@@ -378,35 +412,35 @@ EOF
 
 Signal Attention (design ready):
 ```bash
-printf '%s\tdesigner     \tsignaling-design\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Designer" "event:design-ready"
-notecove task change <slug> --state Attention
+printf '%s\tdesigner     \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+post_summary "Wrote <slug>/DESIGN — <one line on the design>"
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:design-ready" "doing"
-printf '%s\tdesigner     \tresumed-from-design\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+await_user "Attention"
+read_inbox
+printf '%s\tdesigner     \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 After confirmed resume:
 1. Read task comments for feedback: `notecove task show <slug> --format markdown-with-comments`
-2. If feedback requests changes → update the DESIGN note, signal `event:design-revised`, block.
+2. If feedback requests changes → update the DESIGN note, post a summary of what changed, and `await_user` again.
 3. Repeat until no feedback on the design.
 
 ### Signaling design-revised
 
 ```bash
-printf '%s\tdesigner     \tsignaling-design-revised\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Designer" "event:design-revised"
-notecove task change <slug> --state Attention
+printf '%s\tdesigner     \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+post_summary "Revised <slug>/DESIGN — <one line on what changed>"
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:design-revised" "doing"
-printf '%s\tdesigner     \tresumed-from-design-revised\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+await_user "Attention"
+read_inbox
+printf '%s\tdesigner     \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
 ---
 
 ## Phase 4: Create Child Tasks
 
-Once the design is approved (orchestrator resumes with no objection), create child tasks in NoteCove.
+Once the user approves the design, create child tasks in NoteCove.
 
 Parse the DESIGN note to extract all proposed subtasks, their dependencies, and the merge conflict analysis. Create independent subtasks first, then blocked ones.
 
@@ -498,7 +532,7 @@ notecove task change <blocked-slug> --block <blocker-slug>
 notecove task change ${CHILD_SLUG} --state ${CHILD_STATE}
 ```
 
-Tasks start in `Triage` (Step A) so the orchestrator cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
+Tasks start in `Triage` (Step A) so the launcher cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
 
 After creating all tasks and links, add a summary comment:
 ```bash
@@ -510,15 +544,15 @@ notecove task comments add <slug> --user "Designer" "Design complete. Created <N
 ## Phase 5: Signal Completion
 
 ```bash
-printf '%s\tdesigner     \tsignaling-attention\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-notecove task comments add <slug> --user "Designer" "event:completion"
-notecove task change <slug> --state Attention
+printf '%s\tdesigner     \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+post_summary "<one line on what was produced and any subtasks created>"
 # IMPORTANT: call this Bash block with timeout=600000
-signal_attention "event:completion" "done"
+await_user "Attention"
+read_inbox
 printf '%s\tdesigner     \tresumed\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-Designer exits after confirmed `done` state (orchestrator auto-acks designer completion).
+Designer sets `Done` itself once the user approves, then exits.
 
 ---
 
@@ -530,7 +564,7 @@ Designer exits after confirmed `done` state (orchestrator auto-acks designer com
 | Design plan | `<slug>/DESIGN` |
 
 **Task states used by designer**: `Doing` (working), `Attention` (needs user review or signaling completion)
-**Task states set by orchestrator**: `Done` (acknowledged), `Doing` (resumed after review)
+**Task states you set yourself**: `Done` (after the user approves), `Won't Do` (on abort)
 
 ---
 
@@ -538,7 +572,7 @@ Designer exits after confirmed `done` state (orchestrator auto-acks designer com
 
 *(See Shared Critical Rules above. Designer-specific additions:)*
 
-- **Never create child tasks before the design is approved** — the `event:design-ready` Attention signal is the approval gate.
-- **Do NOT set task state to Done in Phase 4** — `completion.sh` handles the Done transition. Setting Done before signaling `event:completion` creates a misleading `Done → Attention → Done` sequence.
+- **Never create child tasks before the design is approved** — the `await_user` pause after writing DESIGN is the approval gate.
+- **Finish with `finish_task "Done" "<project>"` in Phase 4, once the user has approved** — a bare state change leaves dependents blocked and your sidecar running.
 - **DESCRIPTION notes must be rich and unambiguous** — include aesthetic direction, design notes, exact files to create/modify, and acceptance criteria. The implementing worker must not need to speculate about design intent.
 - **Aesthetic choices must be bold and specific** — avoid generic AI aesthetics (Inter/Roboto fonts, purple gradients, predictable layouts). Commit to a clear conceptual direction and specify it precisely in the DESIGN note so implementing workers can execute it faithfully.
