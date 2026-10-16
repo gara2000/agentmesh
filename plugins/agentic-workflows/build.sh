@@ -48,7 +48,8 @@
 #      sidecar filters the agent's own comments by author name.
 #   2. Add <!-- BASE-AGENT:START --> and <!-- BASE-AGENT:END --> markers where shared
 #      content should be injected.
-#   3. Use <!-- SIGNAL: await --> markers at each point the agent waits for the user.
+#   3. Use <!-- SIGNAL: await --> at each point the agent hands the task back to the
+#      user, and <!-- SIGNAL: resume --> at the top of a turn a delivered message started.
 #   4. Run ./build.sh to populate the markers.
 
 set -euo pipefail
@@ -206,18 +207,31 @@ skill_file = sys.argv[1]
 # ---------------------------------------------------------------------------
 SIGNAL_MACROS = {
     # The comment protocol has exactly one interaction shape: say what happened,
-    # wait for the user, read what woke you. There are no per-event variants
-    # because the orchestrator that used to dispatch on event type is gone.
+    # hand the task back, end the turn. There are no per-event variants because
+    # the orchestrator that used to dispatch on event type is gone.
     #
-    # <state> defaults to Attention. Pass a different state only when the agent
-    # is parking the task somewhere else on purpose.
+    # Nothing blocks. The sidecar types a message into this worker's Claude REPL
+    # when the user replies, which arrives as a new turn — so anything written
+    # after request_attention in the same turn is simply never reached by that
+    # reply. <state> defaults to Attention; pass a different state only when the
+    # agent is parking the task somewhere else on purpose.
     'await': '''\
 ```bash
 printf '%s\\t{{LOG_PREFIX}}\\tawaiting-user\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 post_summary "<brief summary — a few sentences; link any note you wrote>"
-# IMPORTANT: call this Bash block with timeout=600000
-await_user "Attention"
-read_inbox
+request_attention "Attention"
+```
+
+**Then end your turn.** Do not poll, do not sleep, do not run anything else. The sidecar delivers the user's reply into your REPL as a new turn; your next turn starts with `resume_work` and `read_inbox`.''',
+
+    # The other half of the cycle: what to run at the top of a turn that a
+    # delivered message started.
+    'resume': '''\
+```bash
+source {{AGENTMESH}}/scripts/agent-notecove.sh
+agent_init "<slug>" "{{AGENT_USER}}"
+resume_work                # back to Doing — you are working again
+read_inbox                 # what the sidecar had to tell you
 printf '%s\\t{{LOG_PREFIX}}\\tresumed\\t<slug>\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```''',
 }

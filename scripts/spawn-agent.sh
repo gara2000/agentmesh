@@ -25,6 +25,13 @@ if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "
   exit 1
 fi
 
+# Clear any .ready left behind by a dead worker. It is the sidecar's gate for
+# typing messages into this window's REPL, and the skill invocation below is
+# send-keys'd in too — a nudge arriving while that command line is being typed
+# would land in the middle of it. agent_init re-creates .ready once the skill is
+# actually running.
+rm -f "$AGENTMESH/signals/${SLUG}.ready"
+
 # Launch claude AS THE WINDOW'S COMMAND rather than send-keys'ing it into a
 # shell. This is what makes window liveness a sound proxy for "the agent is
 # running": the window dies with the process. Created as a shell wrapper so the

@@ -97,7 +97,7 @@ touch "$LOG"
 #     On a warm start every one of these steps is actively harmful:
 #       - killing sidecars strands the workers they serve
 #       - truncating signals/workers hides live workers from the watchdog
-#       - deleting *.inbox throws away replies workers are blocked on
+#       - deleting *.inbox throws away replies workers have yet to read
 #       - truncating events.log loses the running system's history
 #
 #     A sidecar that outlives the wipe is worse still: with its baseline files
@@ -120,7 +120,9 @@ if [[ $CLEAN -eq 1 ]] || ! _runtime_is_live; then
   rm -f "$SIGNALS/"*.launching
   rm -f "$SIGNALS/"*.untyped
   rm -f "$SIGNALS/"*.inbox
-  rm -f "$SIGNALS/"*.seq
+  rm -f "$SIGNALS/"*.ready
+  rm -f "$SIGNALS/"*.pending-delivery
+  rm -f "$SIGNALS/"*.self-state
   rm -f "$SIGNALS/"*.seen-comments
   rm -f "$SIGNALS/"*.seen-state
   rm -f "$SIGNALS/"*.backoff

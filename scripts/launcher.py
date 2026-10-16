@@ -357,10 +357,11 @@ class Launcher:
     def reconcile_sidecars(self) -> None:
         """Re-pair live workers with a sidecar, and re-register ones gone missing.
 
-        A sidecar is the only thing that can wake a blocked agent, so a worker
-        whose sidecar died waits on `await_user` forever — silently, since its own
-        window is still alive and nothing reports it. Adoption cannot cover this:
-        it skips any slug with a live worker window, which is exactly this case.
+        A sidecar is the only thing that delivers the user's replies into a
+        worker's REPL, so a worker whose sidecar died sits in `Attention` forever
+        — silently, since its own window is still alive and nothing reports it.
+        Adoption cannot cover this: it skips any slug with a live worker window,
+        which is exactly this case.
 
         Two repairs, both keyed off the live worker windows:
 

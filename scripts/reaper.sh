@@ -140,7 +140,9 @@ reap() {
   sed -i '' "/^${slug} /d" "$REGISTRY" 2>/dev/null || true
 
   rm -f "${SIGNALS}/${slug}.inbox" \
-        "${SIGNALS}/${slug}.seq" \
+        "${SIGNALS}/${slug}.ready" \
+        "${SIGNALS}/${slug}.pending-delivery" \
+        "${SIGNALS}/${slug}.self-state" \
         "${SIGNALS}/${slug}.launching" \
         "${SIGNALS}/${slug}.untyped" \
         "${SIGNALS}/${slug}.seen-comments" \

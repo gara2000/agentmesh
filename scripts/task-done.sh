@@ -69,8 +69,10 @@ tmux kill-window -t "orchestrator:pr-mon-${SLUG}" 2>/dev/null || true
 sed -i '' "/^${SLUG} /d" "$AGENTMESH/signals/workers" 2>/dev/null || true
 
 # 4. Remove per-task signal files
-rm -f "$AGENTMESH/signals/${SLUG}.seq" \
-      "$AGENTMESH/signals/${SLUG}.inbox" \
+rm -f "$AGENTMESH/signals/${SLUG}.inbox" \
+      "$AGENTMESH/signals/${SLUG}.ready" \
+      "$AGENTMESH/signals/${SLUG}.pending-delivery" \
+      "$AGENTMESH/signals/${SLUG}.self-state" \
       "$AGENTMESH/signals/${SLUG}.launching" \
       "$AGENTMESH/signals/${SLUG}.untyped" \
       "$AGENTMESH/signals/${SLUG}.seen-comments" \
