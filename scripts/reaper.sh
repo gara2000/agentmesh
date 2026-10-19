@@ -28,9 +28,11 @@ cd "$AGENTMESH"
 SIGNALS="$AGENTMESH/signals"
 REGISTRY="$SIGNALS/workers"
 LOG="$SIGNALS/events.log"
-# notecove is a shell function, not a binary, so the CLI is called directly.
-# Overridable so the tests can point it at a stub; nothing else sets it.
-NOTECOVE="${AGENTMESH_NOTECOVE:-node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs}"
+# notecove is a shell function, not a binary, so the CLI is called via nc_run,
+# which closes stdin and bounds every call. NOTECOVE_BIN stays overridable
+# through AGENTMESH_NOTECOVE so the tests can point it at a stub.
+# shellcheck source=notecove-ref.sh
+source "$AGENTMESH/scripts/notecove-ref.sh"
 
 POLL_INTERVAL=30
 # How long a task must have been terminal before its worker is killed.
@@ -43,8 +45,8 @@ GRACE=60
 ONCE=0
 DRY_RUN=0
 # Upper bound on any single NoteCove call, as in sidecar.sh: a hung CLI must
-# cost one cycle, not the daemon.
-CALL_TIMEOUT=30
+# cost one cycle, not the daemon. Applied by nc_run.
+NC_CALL_TIMEOUT=30
 # Matches LAUNCHING_TIMEOUT_SECS in launcher.py.
 LAUNCHING_TIMEOUT=300
 
@@ -151,7 +153,10 @@ reap() {
         "${SIGNALS}/${slug}.sidecar-handle" \
         "${SIGNALS}/${slug}.backoff" \
         "${SIGNALS}/${slug}.crash-count" \
-        "${SIGNALS}/${slug}.terminal-since"
+        "${SIGNALS}/${slug}.terminal-since" \
+        "${SIGNALS}/${slug}.full-slug" \
+        "${SIGNALS}/${slug}.task-id" \
+        "${SIGNALS}/${slug}.summary-posted"
 
   log_event "worker-reaped" "$slug"
   echo "[reaper] $slug: terminal — killed worker, sidecar and pr-monitor"
@@ -207,7 +212,10 @@ reap_pass() {
       fi
     fi
 
-    task_json=$(timeout "$CALL_TIMEOUT" $NOTECOVE task show "$slug" --json 2>/dev/null) || true
+    # nc_ref gives the unambiguous full slug; slug itself stays the local
+    # window/file identifier. nc_run closes stdin, so an unresolvable slug
+    # fails fast instead of blocking this pass on an interactive prompt.
+    task_json=$(nc_run task show "$(nc_ref "$slug")" --json 2>/dev/null) || true
     # A failed or timed-out lookup is not evidence of anything. Never reap on it.
     [[ -z "$task_json" ]] && continue
 

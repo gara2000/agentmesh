@@ -226,5 +226,97 @@ class TestCommentFiltering(DiffHarness):
         self.assertIn("c1", self.seen_comments.read_text())
 
 
+def extract_frame_program() -> str:
+    """Pull the frame_is_ours python program out of sidecar.sh."""
+    text = SIDECAR.read_text()
+    m = re.search(r"TASK_REF=\"\$TASK_REF\" python3 -c '\n(.*?)\n' 2>/dev/null",
+                  text, re.S)
+    if not m:
+        raise AssertionError(
+            "could not find frame_is_ours's embedded program in sidecar.sh")
+    return m.group(1)
+
+
+class TestFrameMatching(unittest.TestCase):
+    """
+    Which SSE frames count as "this task changed".
+
+    This replaces `grep -qF "$SLUG"` on the raw frame, which never matched once.
+    A frame identifies its subject by internal id and carries no slug at all:
+
+      {"type":"task.modified","item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"}}
+
+    The short slug has a project prefix and a hyphen that the id does not
+    (WORK-7jp vs 7jphatbqq...), so the substring test could never succeed — SSE
+    triggered no diff from the day the sidecar was written, and the 60-second
+    poll was silently the only detection path. Combined with the ambiguous-slug
+    hang that wedged that poll, the task went completely deaf.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.program = extract_frame_program()
+
+    TASK_ID = "7jphatbqq77qtm4g4x76zz6de5"
+    TASK_REF = "WORK-7jp:hatbqq77qtm4g4x76zz6de5"
+
+    def matches(self, frame, task_id: str = None, task_ref: str = None) -> bool:
+        payload = frame if isinstance(frame, str) else json.dumps(frame)
+        r = subprocess.run(
+            ["python3", "-c", self.program],
+            input=payload, capture_output=True, text=True,
+            env=dict(os.environ,
+                     TASK_ID=task_id if task_id is not None else self.TASK_ID,
+                     TASK_REF=task_ref if task_ref is not None else self.TASK_REF),
+        )
+        return r.returncode == 0
+
+    def _frame(self, item_id: str, ftype: str = "task.modified") -> dict:
+        return {
+            "id": "evt-1", "type": ftype, "seq": 7,
+            "item": {"type": "task", "id": item_id},
+            "payload": {"projectId": "proj-1"},
+        }
+
+    def test_frame_for_this_task_matches(self):
+        self.assertTrue(self.matches(self._frame(self.TASK_ID)))
+
+    def test_frame_for_another_task_does_not_match(self):
+        """Every worker's sidecar sees every frame; matching all of them would
+        have each one wake its agent on any task in the project changing."""
+        self.assertFalse(self.matches(self._frame("someotherid999")))
+
+    def test_the_old_substring_test_would_have_failed_here(self):
+        """Regression guard for the actual defect, stated as the thing it fixes."""
+        frame = json.dumps(self._frame(self.TASK_ID))
+        self.assertNotIn("WORK-7jp", frame, "frames carry no slug — hence the id match")
+        self.assertTrue(self.matches(frame))
+
+    def test_id_is_matched_as_a_field_not_a_substring(self):
+        """A longer id containing ours, or ours appearing in projectId, must not
+        count — the old grep would have matched both."""
+        self.assertFalse(self.matches(self._frame(self.TASK_ID + "extra")))
+        frame = self._frame("other")
+        frame["payload"]["projectId"] = self.TASK_ID
+        self.assertFalse(self.matches(frame))
+
+    def test_a_frame_carrying_a_slug_still_matches(self):
+        """No frame does today; this keeps it correct if one ever starts to."""
+        frame = self._frame("unknown-id")
+        frame["item"]["slug"] = {"full": self.TASK_REF, "short": "WORK-7jp"}
+        self.assertTrue(self.matches(frame))
+
+        frame2 = self._frame("unknown-id")
+        frame2["item"]["slug"] = self.TASK_REF
+        self.assertTrue(self.matches(frame2))
+
+    def test_malformed_frames_are_not_matched(self):
+        """The stream is line-delimited and can carry keepalives and partials.
+        Treating a parse failure as a match would nudge on every one of them."""
+        for junk in ("", "not json", "[]", '{"item": "not-a-dict"}', "{}"):
+            with self.subTest(junk=junk):
+                self.assertFalse(self.matches(junk))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -24,6 +24,19 @@
 
 SIGNALS=~/agentmesh/signals
 
+# nc_run / nc_ref. Every NoteCove call below goes through nc_run: it closes
+# stdin and bounds the call, so an ambiguous slug fails fast instead of blocking
+# the agent on an interactive prompt it cannot see.
+# shellcheck source=notecove-ref.sh
+source ~/agentmesh/scripts/notecove-ref.sh
+
+# Longest comment body NoteCove will accept. Measured, not documented: 996
+# characters post, 997 is rejected with rc=1 and no output at all. Comments are
+# meant to be a few sentences anyway, so anything approaching this is already
+# wrong — but it must fail loudly rather than silently, because a dropped
+# summary hands the user a task in Attention with no explanation of why.
+COMMENT_MAX_CHARS=900
+
 # agent_init <slug> <agent-handle>
 #
 # <agent-handle> must match the --user value the agent passes to
@@ -34,6 +47,13 @@ agent_init() {
     SLUG="$1"
     AGENT_HANDLE="$2"
     INBOX="${SIGNALS}/${SLUG}.inbox"
+    # The unambiguous form of this slug. A short slug is a uniquePrefix — unique
+    # only when it was read — so an agent that has been running for a while can
+    # be holding one that now resolves to several tasks. Everything below
+    # addresses the task by TASK_REF; SLUG stays the local file identifier.
+    # Exported so a skill making its own raw CLI calls can use it too.
+    TASK_REF=$(nc_ref "$SLUG")
+    export TASK_REF
     # The launcher sets .launching so its next scan does not spawn a second
     # worker while Claude boots. Claiming the task clears it.
     rm -f "${SIGNALS}/${SLUG}.launching"
@@ -63,10 +83,31 @@ agent_init() {
 set_state() {
     local state="${1:?set_state: state required}"
     printf '%s' "$state" > "${SIGNALS}/${SLUG}.self-state"
-    if ! notecove task change "$SLUG" --state "$state"; then
+    if ! nc_run task change "$(_task_ref)" --state "$state"; then
         rm -f "${SIGNALS}/${SLUG}.self-state"
         return 1
     fi
+}
+
+# _task_ref — the slug to address the task by.
+#
+# Normally TASK_REF, set by agent_init. Falls back to resolving on the spot so a
+# helper called from a shell that lost its state (a new Bash invocation that
+# sourced this file but skipped agent_init) still addresses the task correctly
+# rather than re-introducing the ambiguous short slug.
+_task_ref() {
+    if [ -n "${TASK_REF:-}" ]; then
+        printf '%s' "$TASK_REF"
+    else
+        nc_ref "$SLUG"
+    fi
+}
+
+# _log_event <event-type>
+_log_event() {
+    printf '%s\tagent        \t%s\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${SLUG:--}" \
+        >> ~/agentmesh/signals/events.log 2>/dev/null || true
 }
 
 # resume_work
@@ -77,6 +118,11 @@ set_state() {
 # "the agent is finished for now and the user has the task". A task left in
 # Attention while the agent works misreports both.
 resume_work() {
+    # A new working turn owes the user a new summary. Clearing the marker here
+    # is what makes "post a summary before handing the task back" enforceable:
+    # request_attention checks it and writes a fallback comment if this turn
+    # produced nothing.
+    rm -f "${SIGNALS}/${SLUG}.summary-posted"
     set_state "Doing"
 }
 
@@ -86,23 +132,82 @@ resume_work() {
 # sentences: comments are a notification surface, not a document store. Anything
 # longer than a short paragraph belongs in a NoteCove note, with the comment
 # pointing at it.
+#
+# The result is checked, which the first version of this did not do. NoteCove
+# rejects a body over COMMENT_MAX_CHARS with rc=1 and no output whatsoever, so an
+# over-long summary vanished silently while request_attention still set Attention
+# — handing the user a task with nothing said about it. Over-length bodies are
+# therefore truncated rather than dropped, and a genuine failure is retried once
+# and then logged.
+#
+# Returns 0 only if a comment actually landed.
 post_summary() {
     local text="$1"
-    notecove task comments add "$SLUG" --user "$AGENT_HANDLE" "$text"
+
+    if [ -z "$text" ]; then
+        return 1
+    fi
+
+    # Count characters, not bytes: the limit is on the stored string.
+    if [ "${#text}" -gt "$COMMENT_MAX_CHARS" ]; then
+        text="${text:0:$COMMENT_MAX_CHARS}… (truncated — see the task folder notes)"
+        _log_event "summary-truncated"
+    fi
+
+    local attempt
+    for attempt in 1 2; do
+        if nc_run task comments add "$(_task_ref)" --user "$AGENT_HANDLE" "$text"; then
+            : > "${SIGNALS}/${SLUG}.summary-posted"
+            return 0
+        fi
+        sleep 2
+    done
+
+    _log_event "summary-post-failed"
+    echo "[agent-notecove] WARNING: the summary comment did not post." >&2
+    echo "[agent-notecove] The user will see no explanation on this task." >&2
+    return 1
 }
 
-# request_attention [<state>]
+# _ensure_summary <fallback-text>
 #
-# Hand the task back to the user: set <state> (normally Attention) and return.
+# Guarantee the user is told something before the task leaves the agent's hands.
+# If this turn already posted a summary, do nothing; otherwise post the fallback.
+#
+# This exists because "always comment before handing back" was a rule in the
+# skills and nothing enforced it. A skipped comment, or one silently rejected for
+# being too long, leaves the user staring at a task in Attention with no idea
+# what is wanted — which is indistinguishable from a wedged agent.
+_ensure_summary() {
+    local fallback="$1"
+    [ -f "${SIGNALS}/${SLUG}.summary-posted" ] && return 0
+    _log_event "summary-fallback"
+    post_summary "$fallback" || true
+}
+
+# request_attention [<state>] [<summary>]
+#
+# Hand the task back to the user: post a summary if one has not been posted
+# since the last resume_work, set <state> (normally Attention), and return.
 #
 # It does NOT block, and nothing after it in the same turn will be reached by a
 # reply — end your turn once it returns. The sidecar types a message into this
 # worker's REPL when the user responds, which starts a fresh turn.
 #
-# Post the summary comment BEFORE calling this, or the user is handed a task with
-# no explanation of what is wanted.
+# Prefer calling post_summary yourself with something specific; the <summary>
+# argument and the generic fallback are safety nets, not the intended path.
 request_attention() {
-    set_state "${1:-Attention}"
+    local state="${1:-Attention}"
+    local summary="${2:-}"
+
+    if [ -n "$summary" ]; then
+        post_summary "$summary" || true
+    fi
+    _ensure_summary "Handing this task back for your input. No summary was \
+posted for this round of work — check the task folder notes for the latest \
+state, and reply here with what you want done next."
+
+    set_state "$state"
 }
 
 # await_user [<state>] — DEPRECATED. Kept only so a worker still running
@@ -139,13 +244,14 @@ read_inbox() {
 # Current state ID of the task, for agents that need to check whether the user
 # moved it somewhere terminal.
 task_state() {
-    notecove task show "$SLUG" --json \
+    nc_run task show "$(_task_ref)" --json \
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('stateId',''))"
 }
 
-# finish_task <state> <project>
+# finish_task <state> <project> [<summary>]
 #
-# Set the task's terminal state and run the cleanup that has to happen with it.
+# Post a closing summary, set the task's terminal state, and run the cleanup that
+# has to happen with it.
 # Use this instead of a bare `notecove task change --state Done`.
 #
 #   finish_task "Done" "$PROJECT"        # user approved
@@ -163,6 +269,15 @@ task_state() {
 finish_task() {
     local state="${1:?finish_task: state required}"
     local project="${2:?finish_task: project required}"
+    local summary="${3:-}"
+
+    if [ -n "$summary" ]; then
+        post_summary "$summary" || true
+    fi
+    # Same guarantee as request_attention, and it matters more here: this is the
+    # last thing that will ever be written to the task.
+    _ensure_summary "Closing this task as ${state}."
+
     set_state "$state"
     bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
 }
@@ -177,6 +292,14 @@ finish_task() {
 #   finish_cleanup "$PROJECT"   # user set Done / Won't Do in NoteCove
 finish_cleanup() {
     local project="${1:?finish_cleanup: project required}"
+    local summary="${2:-}"
+
+    if [ -n "$summary" ]; then
+        post_summary "$summary" || true
+    fi
+    _ensure_summary "Stopping work: you moved this task to a terminal state. \
+Dependent tasks have been released and this task's sidecar stopped."
+
     bash ~/agentmesh/scripts/task-done.sh "$SLUG" "$project"
 }
 

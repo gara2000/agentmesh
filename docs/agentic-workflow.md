@@ -53,6 +53,8 @@ The agent never blocks. That is what lets the user reach it **while it is workin
 - **The user writes free text**, interpreted with judgement ("the linter is failing", "there are conflicts, resolve them").
 - **Two reserved commands** are honoured literally rather than read as feedback: `approve` (the agent sets `Done`) and `abort` (the agent sets `Won't Do`).
 - **Agents echo their reading back** ("Read as: approve → marking Done") so a misinterpretation is visible rather than silent.
+- **Every round of work owes the user a comment.** `resume_work` clears `signals/<slug>.summary-posted` and `request_attention` refuses to leave without it: if the agent posted nothing since it resumed, a generic placeholder goes up in its place and `summary-fallback` is logged. The placeholder is the visible failure, not the fix — an agent handing back a task with no explanation used to be invisible.
+- **996 characters is the hard limit.** Measured, not documented: NoteCove accepts a 996-character comment and rejects a 997-character one with `rc=1` and no output at all. `post_summary` truncates at 900 and logs `summary-truncated` rather than letting a summary vanish, verifies the call succeeded, and retries once before warning.
 
 ### Answering worker questions
 
@@ -170,13 +172,32 @@ flowchart LR
     Inbox --> Nudge["send-keys a one-line nudge<br/>into workers:&lt;slug&gt;"]
 ```
 
-A single `notecove task show <slug> --json` call returns `stateId`, `commentCount`, and the **full `comments` array** with author names — so one call per check is enough to detect both kinds of change and attribute them.
+A single `notecove task show "$TASK_REF" --json` call returns `stateId`, `commentCount`, and the **full `comments` array** with author names — so one call per check is enough to detect both kinds of change and attribute them.
+
+**A frame is matched on `item.id`, which is the only identifier it carries:**
+
+```json
+{"id":"…","type":"task.modified","item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"},"payload":{"projectId":"…"},"seq":7}
+```
+
+There is no slug in it. The sidecar used to test each frame with `grep -qF "$SLUG"`, on the assumption that an id-only frame would still match as a substring — it cannot, because the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so **SSE never triggered a single diff** and every sidecar was silently poll-only from the day it was written. `nc_task_id` now resolves and caches the id in `signals/<slug>.task-id`, and frames are parsed as JSON and compared field-wise — a substring test would also match on a `projectId` that happens to contain the id. A sidecar that cannot resolve its id logs `task-id-unresolved` and stays poll-only rather than guessing.
 
 **The poll runs always, not only when SSE is unavailable.** The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference. The poll makes correctness independent of that inference. Duplicate triggers are harmless: the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
 **Baselines** live in `signals/<slug>.seen-comments` (comment IDs already reported) and `signals/<slug>.seen-state`. The first run establishes them without nudging — comments that exist before the sidecar starts are history the agent already has, not events to replay at it.
 
 **Replies are walked too.** A reply to a comment is as much a message as a top-level comment, and the user may answer either way.
+
+### Slug identity
+
+A task's `slug.short` is a *uniquePrefix*: unique only at the moment it is read. Creating tasks lengthens prefixes, so a short slug recorded when a worker booted can later match several tasks. The CLI does not fail on that — it **prompts**, and since every daemon runs in a tmux window with a TTY, the call blocks until it times out. `WORK-7w2` reached that state and its sidecar logged 43 consecutive `notecove-call-timed-out` events without ever seeing a comment.
+
+`scripts/notecove-ref.sh` is the single fix point, sourced by every daemon and by the agent helper:
+
+- **`nc_run`** runs the CLI with stdin closed and a `NC_CALL_TIMEOUT` bound, turning a silent permanent hang into a loud immediate `rc=1`.
+- **`nc_ref`** resolves a short slug to the stable full slug (`WORK-7jp:hatbqq77qtm4g4x76zz6de5`), from `signals/<slug>.full-slug` — written by the launcher at spawn, the one moment the full slug is known for certain — or by listing tasks and caching the result. Two matches resolve to **nothing** rather than a guess: the distinguishing part was never recorded, and acting on the wrong task is worse than failing.
+
+Short slugs stay in use as *local* identifiers — tmux window names and `signals/` filenames — because renaming those would invalidate every running worker's state. Only what reaches the CLI changes. Agents get the resolved value as **`$TASK_REF`** from `agent_init`, and `launcher.py` passes `stdin=subprocess.DEVNULL` to every subprocess for the same reason `nc_run` does.
 
 ### Two filters, one rule
 
@@ -207,10 +228,10 @@ Agents source `scripts/agent-notecove.sh`:
 
 | Function | Purpose |
 |---|---|
-| `agent_init <slug> <handle>` | Set slug and handle; clear `signals/<slug>.launching`; open the delivery gate (`signals/<slug>.ready`) |
+| `agent_init <slug> <handle>` | Set slug and handle; resolve `$TASK_REF`; clear `signals/<slug>.launching`; open the delivery gate (`signals/<slug>.ready`) |
 | `resume_work` | Back to `Doing`. The first action of every working turn |
-| `post_summary <text>` | Post one brief comment as `<handle>` |
-| `request_attention <state>` | Hand the task back to the user. **Does not block** — end the turn once it returns |
+| `post_summary <text>` | Post one brief comment as `<handle>`, truncated to 900 chars, retried once, verified |
+| `request_attention [<state>] [<summary>]` | Hand the task back to the user, posting a placeholder if no summary went up this round. **Does not block** — end the turn once it returns |
 | `read_inbox` | Print the inbox as line-delimited JSON and clear it |
 | `finish_task <state> <project>` | Set the terminal state **and** run the cleanup that must go with it |
 | `finish_cleanup <project>` | The cleanup alone, for when the *user* set the terminal state |
@@ -415,7 +436,7 @@ An `Attention` task whose window is gone is **not** a clean exit: the task is mi
 
 This path still **counts crashes**. Adoption respawns on a 30s cadence, so a worker that reproducibly dies right after `request_attention` would otherwise be respawned forever with no cap and nothing reported. At three the task is set `Blocked` with a comment warning that the user's reply may never have been read.
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, and `.terminal-since` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, and `.summary-posted` files.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
@@ -600,6 +621,10 @@ Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one
 **Inbox durability.** The inbox is an append-only file and the nudge is idempotent, so neither a delivery landing mid-turn nor a duplicate one loses or double-counts anything: the agent drains whatever is there on its next `read_inbox`, and an empty read is defined as "nothing new".
 
 **Delivery durability.** A nudge that could not be typed leaves `.pending-delivery` behind and is retried on every sidecar poll, because the change it reported is already absorbed into the baseline and will never be reported a second time.
+
+**Slug stability.** Every NoteCove call made with a slug goes through `nc_run`/`nc_ref` in `scripts/notecove-ref.sh`, so an ambiguous short slug fails loudly instead of blocking on a prompt no one can see, and normally does not go ambiguous at all because the full slug is what is passed. The same hazard sat in `task-done.sh`, where dependents were matched by `slug.short`: a prefix lengthened while the worker was running made a task fail to recognise itself as its own dependent's blocker, and the dependent stayed `Blocked` forever with nothing logged.
+
+**Summary guarantee.** A comment over 996 characters is rejected by NoteCove with no output, which used to drop the summary silently and hand the user a task in `Attention` with no explanation. `post_summary` truncates, verifies and retries; `request_attention` posts a placeholder if nothing went up at all. Both are logged, so the failure is visible in `events.log` rather than only in the user's confusion.
 
 **Launching-flag expiry.** A worker that dies before claiming its task leaves a `.launching` flag behind. The flag expires after 5 minutes, after which the next scan retries the task rather than leaving it stranded in `Ready`.
 

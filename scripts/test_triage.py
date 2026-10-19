@@ -102,7 +102,9 @@ class TestPickUpReadyTasks(unittest.TestCase):
             patch.object(lnch, "_print"),
         ):
             mock_rb.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks))
-            mock_sw.side_effect = lambda slug, agent_type: spawned.append((slug, agent_type))
+            mock_sw.side_effect = (
+                lambda slug, agent_type, full_slug="": spawned.append((slug, agent_type))
+            )
             mock_nc.side_effect = lambda args: refused.append(args) or ""
             l.pick_up_ready_tasks()
 
@@ -210,7 +212,9 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             patch.object(lnch, "log"),
             patch.object(lnch, "_print"),
         ):
-            mock_sw.side_effect = lambda slug, agent_type: adopted.append((slug, agent_type))
+            mock_sw.side_effect = (
+                lambda slug, agent_type, full_slug="": adopted.append((slug, agent_type))
+            )
             l.adopt_orphaned_tasks()
 
         return adopted
@@ -268,9 +272,9 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             patch.object(lnch, "_print"),
         ):
             # Registering consumes the single slot, as the real _spawn_worker does.
-            def fake_spawn(slug, agent_type):
+            def fake_spawn(slug, agent_type, full_slug=""):
                 adopted.append(slug)
-                l._register_worker(slug, agent_type)
+                l._register_worker(slug, agent_type, full_slug)
             mock_sw.side_effect = fake_spawn
             l.adopt_orphaned_tasks()
 
@@ -303,7 +307,8 @@ class TestAdoptionGuards(unittest.TestCase):
         with (
             patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
             patch.object(l, "_live_worker_windows", return_value=set()),
-            patch.object(l, "_spawn_worker", side_effect=lambda s_, t: adopted.append(s_)),
+            patch.object(l, "_spawn_worker",
+                         side_effect=lambda s_, t, f_="": adopted.append(s_)),
             patch.object(lnch, "log"), patch.object(lnch, "_print"),
         ):
             l.adopt_orphaned_tasks()
@@ -319,7 +324,8 @@ class TestAdoptionGuards(unittest.TestCase):
         with (
             patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
             patch.object(l, "_live_worker_windows", return_value=None),
-            patch.object(l, "_spawn_worker", side_effect=lambda s_, t: adopted.append(s_)),
+            patch.object(l, "_spawn_worker",
+                         side_effect=lambda s_, t, f_="": adopted.append(s_)),
             patch.object(lnch, "log"), patch.object(lnch, "_print"),
         ):
             l.adopt_orphaned_tasks()

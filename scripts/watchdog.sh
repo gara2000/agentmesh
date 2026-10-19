@@ -22,8 +22,13 @@ cd "$AGENTMESH"
 REGISTRY="${AGENTMESH}/signals/workers"
 SIGNALS="${AGENTMESH}/signals"
 LOG="${AGENTMESH}/signals/events.log"
-NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 MAX_CRASH_COUNT=3
+
+# nc_run / nc_ref: every NoteCove call goes through these. The watchdog runs in
+# a tmux window, so it has a TTY, so an ambiguous short slug would make the CLI
+# prompt and hang this loop indefinitely. See notecove-ref.sh.
+# shellcheck source=notecove-ref.sh
+source "${AGENTMESH}/scripts/notecove-ref.sh"
 
 log_event() {
   printf '%s\twatchdog     \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:--}" >> "$LOG"
@@ -43,7 +48,10 @@ cleanup_task() {
         "${SIGNALS}/${slug}.ready" \
         "${SIGNALS}/${slug}.pending-delivery" \
         "${SIGNALS}/${slug}.sidecar-handle" \
-        "${SIGNALS}/${slug}.terminal-since"
+        "${SIGNALS}/${slug}.terminal-since" \
+        "${SIGNALS}/${slug}.full-slug" \
+        "${SIGNALS}/${slug}.task-id" \
+        "${SIGNALS}/${slug}.summary-posted"
 }
 
 echo "[watchdog] started"
@@ -71,9 +79,12 @@ while true; do
       continue
     fi
 
-    # Window is gone — check task state
-    # notecove is a shell function (not a binary), so call the CLI directly
-    state=$($NOTECOVE task show "$slug" --json 2>/dev/null \
+    # Window is gone — check task state.
+    # notecove is a shell function (not a binary), so the CLI is called via
+    # nc_run, which also closes stdin and bounds the call. task_ref is the
+    # unambiguous full slug; slug stays the local window/file identifier.
+    task_ref=$(nc_ref "$slug")
+    state=$(nc_run task show "$task_ref" --json 2>/dev/null \
       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stateId',''))" 2>/dev/null || true)
 
     if [[ "$state" == "doing" ]]; then
@@ -87,9 +98,9 @@ while true; do
         echo "[watchdog] crash limit reached for $slug ($new_count crashes) — setting Blocked"
         log_event "crash-limit-reached" "$slug"
         rm -f "$crash_count_file"
-        $NOTECOVE task comments add "$slug" --user "Watchdog" \
+        nc_run task comments add "$task_ref" --user "Watchdog" \
           "Worker crashed ${new_count} times in a row and has been set to Blocked. It will not be retried automatically — needs investigation." 2>/dev/null || true
-        $NOTECOVE task change "$slug" --state Blocked 2>/dev/null || true
+        nc_run task change "$task_ref" --state Blocked 2>/dev/null || true
         cleanup_task "$slug"
       else
         echo "[watchdog] crash $new_count for $slug — backing off before retry"
@@ -121,7 +132,7 @@ while true; do
 
         # Back to Ready — the launcher spawns a fresh worker on its next scan.
         cleanup_task "$slug"
-        $NOTECOVE task change "$slug" --state Ready 2>/dev/null || true
+        nc_run task change "$task_ref" --state Ready 2>/dev/null || true
       fi
     elif [[ "$state" == "attention" ]]; then
       # Attention + dead window is NOT a clean exit: the task is mid-conversation
@@ -142,9 +153,9 @@ while true; do
         echo "[watchdog] $slug died in Attention $new_count times — setting Blocked"
         log_event "crash-limit-reached-attention" "$slug"
         rm -f "$crash_count_file"
-        $NOTECOVE task comments add "$slug" --user "Watchdog" \
+        nc_run task comments add "$task_ref" --user "Watchdog" \
           "Worker died ${new_count} times while waiting for your input, so the task has been set to Blocked and will not be retried automatically. Any reply you left may not have been read — needs investigation." 2>/dev/null || true
-        $NOTECOVE task change "$slug" --state Blocked 2>/dev/null || true
+        nc_run task change "$task_ref" --state Blocked 2>/dev/null || true
         cleanup_task "$slug"
       else
         echo "[watchdog] $slug window gone while in Attention ($new_count) — leaving for launcher adoption"
