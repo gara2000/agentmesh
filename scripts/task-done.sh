@@ -20,37 +20,59 @@ set -euo pipefail
 SLUG="${1:?Usage: task-done.sh <slug> <PROJECT>}"
 PROJECT="${2:?Usage: task-done.sh <slug> <PROJECT>}"
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
+# shellcheck source=notecove-ref.sh
+source "$AGENTMESH/scripts/notecove-ref.sh"
 
-# 1. Unblock any tasks whose only remaining blocker was this slug.
+# The unambiguous form of this task's slug. Everything below compares and
+# addresses tasks by full slug: a short slug is a uniquePrefix, so it can go
+# ambiguous as new tasks are created. That matters doubly here — an ambiguous
+# slug would both hang the CLI on a prompt and, because a stale short slug no
+# longer equals the blocker's current one, silently fail to match any blocker
+# and leave every dependent blocked forever.
+TASK_REF=$(nc_ref "$SLUG")
+
+# 1. Unblock any tasks whose only remaining blocker was this task.
 #    Retry up to 3 times with a 2s delay to handle API propagation lag after
 #    the task was marked terminal.
 sleep 2
 _attempt=0
 while [ $_attempt -lt 3 ]; do
   _attempt=$((_attempt + 1))
-  _blocked_json=$($NOTECOVE task list --project "$PROJECT" --state Blocked --limit 100 --json)
-  _blocked_slugs=$(echo "$_blocked_json" | python3 -c "import sys,json; [print(t['slug']['short']) for t in json.load(sys.stdin)]")
+  _blocked_json=$(nc_run task list --project "$PROJECT" --state Blocked --limit 100 --json)
+  _blocked_slugs=$(echo "$_blocked_json" | python3 -c "
+import sys, json
+for t in json.load(sys.stdin):
+    full = ((t.get('slug') or {}).get('full') or '').strip()
+    if full:
+        print(full)
+")
   # On the final attempt, process even if empty (no blocked tasks is a valid result)
   if [ -n "$_blocked_slugs" ] || [ $_attempt -eq 3 ]; then
     echo "$_blocked_slugs" | while read -r dep_slug; do
       [ -z "$dep_slug" ] && continue
-      dep_json=$($NOTECOVE task show "$dep_slug" --json)
-      should_unblock=$(echo "$dep_json" | python3 -c "
-import sys, json
+      dep_json=$(nc_run task show "$dep_slug" --json)
+      should_unblock=$(echo "$dep_json" | TASK_REF="$TASK_REF" python3 -c "
+import sys, json, os
+
+me = os.environ['TASK_REF'].strip().lower()
 d = json.load(sys.stdin)
 blockers = d.get('blockers', [])
-blocker_slugs = [b['slug']['short'] for b in blockers]
-if '$SLUG' not in blocker_slugs:
+
+
+def full_of(b):
+    return ((b.get('slug') or {}).get('full') or '').strip().lower()
+
+
+if me not in [full_of(b) for b in blockers]:
     sys.exit()
 remaining = [b for b in blockers
-             if b['slug']['short'] != '$SLUG'
+             if full_of(b) != me
              and not b.get('state', {}).get('isTerminal', False)]
 if not remaining:
     print('yes')
 " 2>/dev/null)
       if [ "$should_unblock" = "yes" ]; then
-        $NOTECOVE task change "$dep_slug" --state Ready
+        nc_run task change "$dep_slug" --state Ready
       fi
     done
     break
@@ -80,7 +102,10 @@ rm -f "$AGENTMESH/signals/${SLUG}.inbox" \
       "$AGENTMESH/signals/${SLUG}.merged" \
       "$AGENTMESH/signals/${SLUG}.sidecar-handle" \
       "$AGENTMESH/signals/${SLUG}.backoff" \
-      "$AGENTMESH/signals/${SLUG}.terminal-since"
+      "$AGENTMESH/signals/${SLUG}.terminal-since" \
+      "$AGENTMESH/signals/${SLUG}.full-slug" \
+      "$AGENTMESH/signals/${SLUG}.task-id" \
+      "$AGENTMESH/signals/${SLUG}.summary-posted"
 # Clearing .terminal-since restarts the reaper's grace clock, which is what we
 # want: this script is the cleanup the grace period exists to protect, so the
 # worker gets a fresh window rather than whatever was left of the first one.

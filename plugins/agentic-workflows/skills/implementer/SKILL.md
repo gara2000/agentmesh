@@ -61,6 +61,10 @@ request_attention "Attention"
 
 `request_attention` sets the task state and **returns immediately** — it does not wait. End your turn once it returns. Anything you write after it in the same turn will not be reached by the user's reply.
 
+**Every round of work owes the user a comment.** `resume_work` reopens that obligation and `request_attention` will not let you leave without meeting it: if you have posted nothing since the last `resume_work`, it writes a generic placeholder in your place. That placeholder is a failure mode, not a feature — it tells the user only that you want something, not what. Call `post_summary` yourself.
+
+Keep it under **900 characters**. NoteCove rejects a longer comment outright, and until recently that rejection was silent — the summary vanished and the user was handed a task in `Attention` with no explanation. `post_summary` now truncates rather than dropping, but a truncated summary is still a summary you wrote badly. Anything that does not fit belongs in a note the comment names.
+
 ### Resuming after a message
 
 A delivered message looks like `[agentmesh] New activity on <slug> — …`. Start that turn by getting back into working shape:
@@ -160,7 +164,15 @@ read_inbox                 # drain anything left by a previous worker
 printf '%s\timplementer  \tstarted\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 ```
 
-`agent_init` does two things besides setting your handle. It clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting — claiming the task by setting `Doing` is what releases it. And it writes `signals/<slug>.ready`, the sidecar's gate for typing into your REPL: until it exists the sidecar records changes in your inbox but delivers nothing, because `spawn-agent.sh` may still be typing your skill invocation and a message would land in the middle of that command line. That is why Step 1 drains the inbox.
+`agent_init` also resolves **`$TASK_REF`** — the unambiguous full slug of your task (`WORK-abc:hatbqq77qtm4g4x76zz6de5`). Use it, not `<slug>`, whenever you call the `notecove` CLI yourself:
+
+```bash
+notecove task show "$TASK_REF" --format markdown-with-comments
+```
+
+The short slug is a *uniquePrefix*: unique only at the moment it was read. A task created while you are working can lengthen it, and your copy then matches several tasks. The CLI does not fail on that — it **prompts**, and since you are inside a tmux window with a TTY, the call hangs until it times out. The helper functions all go through `$TASK_REF` already; raw calls are the gap.
+
+`agent_init` does two more things besides setting your handle. It clears `signals/<slug>.launching`, the flag the launcher uses to keep its next scan from spawning a second worker for this task while you were booting — claiming the task by setting `Doing` is what releases it. And it writes `signals/<slug>.ready`, the sidecar's gate for typing into your REPL: until it exists the sidecar records changes in your inbox but delivers nothing, because `spawn-agent.sh` may still be typing your skill invocation and a message would land in the middle of that command line. That is why Step 1 drains the inbox.
 
 The handle passed to `agent_init` **must** match the `--user` value your comments carry (`Implementer`) — the sidecar filters your own comments by author name, so a mismatch makes you wake yourself on every comment you write.
 
@@ -170,7 +182,9 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 
 - **Always `source ~/agentmesh/scripts/agent-notecove.sh` + `agent_init <slug> "Implementer"`** at startup, and define `LOG=`. Write `printf '%s\timplementer  \t<event>\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"` at each phase transition (started, awaiting-user, resumed, implementing, pr-created, approved/feedback-received).
 - **Never interact with the user outside NoteCove.** No terminal output intended for them, no other channel.
-- **Always post a summary comment before `request_attention`** — otherwise the user is handed a task with no explanation of what you want.
+- **Always post a summary comment before `request_attention`** — otherwise the user is handed a task with no explanation of what you want. A generic placeholder is posted in your place if you skip it; that is a visible failure, not a get-out.
+- **Keep comments under 900 characters.** NoteCove rejects longer ones; `post_summary` truncates to stay inside the limit.
+- **Use `$TASK_REF`, not the short slug, in raw `notecove` calls.** A short slug can go ambiguous while you work, and the CLI then prompts and hangs instead of failing.
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
 - **`request_attention` does not block — end your turn after it.** Do not poll the inbox, do not sleep, do not call it in a loop. The sidecar starts your next turn by typing a message into your REPL.
 - **Call `resume_work` at the top of every working turn.** `Doing` while you work, `Attention` only when the user has the task.

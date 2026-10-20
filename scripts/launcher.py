@@ -73,7 +73,8 @@ def log(component: str, event_type: str, slug: str = "-") -> None:
 
 def notecove(args: str) -> str:
     result = subprocess.run(
-        f"{NOTECOVE_BIN} {args}", shell=True, capture_output=True, text=True
+        f"{NOTECOVE_BIN} {args}", shell=True, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         log("launcher     ", f"notecove-error: {result.stderr.strip()[:120]}")
@@ -81,11 +82,43 @@ def notecove(args: str) -> str:
 
 
 def run_bash(cmd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    # stdin closed, always. The launcher runs in a tmux window and therefore has
+    # a TTY, and the NoteCove CLI asks an interactive question when a slug it is
+    # given resolves to more than one task. With stdin open that prompt blocks
+    # the whole scan loop forever; with it closed the call fails fast and the
+    # caller can fall back. See notecove-ref.sh for the bash-side equivalent.
+    return subprocess.run(
+        cmd, shell=True, capture_output=True, text=True, stdin=subprocess.DEVNULL
+    )
 
 
 def tmux(args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(f"tmux {args}", shell=True, capture_output=True, text=True)
+    return subprocess.run(
+        f"tmux {args}", shell=True, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def full_slug_of(task: dict) -> str:
+    """The unambiguous slug of a task, falling back to the short one.
+
+    `slug.short` is a *uniquePrefix* — unique only at the moment it was read.
+    Creating another task sharing that prefix lengthens it, and every stored
+    copy of the old value silently becomes ambiguous. `slug.full` never changes,
+    so it is what every CLI call addressing a task must use.
+    """
+    slug_obj = task.get("slug", {})
+    if not isinstance(slug_obj, dict):
+        return str(slug_obj)
+    return (slug_obj.get("full") or slug_obj.get("short") or "").strip()
+
+
+def short_slug_of(task: dict) -> str:
+    """The short slug, used only as a local identifier (window + file names)."""
+    slug_obj = task.get("slug", {})
+    if not isinstance(slug_obj, dict):
+        return str(slug_obj)
+    return (slug_obj.get("short") or "").strip()
 
 
 def _print(msg: str) -> None:
@@ -176,8 +209,17 @@ class Launcher:
     # Spawning
     # -----------------------------------------------------------------------
 
-    def _spawn_worker(self, slug: str, agent_type: str) -> None:
-        """Launch the worker agent and its sidecar, and register the worker."""
+    def _spawn_worker(self, slug: str, agent_type: str, full_slug: str = "") -> None:
+        """Launch the worker agent and its sidecar, and register the worker.
+
+        `full_slug` is cached to signals/<slug>.full-slug before anything is
+        spawned. The launcher is the only component that sees the task JSON that
+        produced this slug, so it is the only one that can record the mapping
+        for free; every other component (sidecar, watchdog, reaper, the agent
+        itself) reads that file first and only falls back to resolving the slug
+        itself. See nc_ref in notecove-ref.sh.
+        """
+        self._write_full_slug(slug, full_slug)
         self._launching_flag(slug).touch()
 
         result = subprocess.run([
@@ -196,13 +238,30 @@ class Launcher:
                    f"{result.stderr.strip()[:200]}")
             return
 
-        self._register_worker(slug, agent_type)
+        self._register_worker(slug, agent_type, full_slug)
         log("launcher     ", f"{agent_type}-spawned", slug)
         _print(f"spawned {agent_type} for {slug}")
 
         self._spawn_sidecar(slug, agent_type)
 
-    def _register_worker(self, slug: str, agent_type: str) -> None:
+    def _write_full_slug(self, slug: str, full_slug: str) -> None:
+        """Cache slug -> full slug, if we actually have a longer form to cache."""
+        if not full_slug or full_slug == slug:
+            return
+        try:
+            (SIGNALS / f"{slug}.full-slug").write_text(full_slug + "\n")
+        except OSError:
+            pass
+
+    def _full_slug(self, slug: str) -> str:
+        """The cached full slug for slug, or the short slug if none is known."""
+        try:
+            cached = (SIGNALS / f"{slug}.full-slug").read_text().strip()
+        except OSError:
+            return slug
+        return cached or slug
+
+    def _register_worker(self, slug: str, agent_type: str, full_slug: str = "") -> None:
         """Record the worker in signals/workers, replacing any existing entry.
 
         Replace rather than append: adoption can re-spawn a worker for a slug the
@@ -217,7 +276,12 @@ class Launcher:
                 l for l in workers_file.read_text().splitlines()
                 if l.strip() and l.split()[0] != slug
             ]
-        lines.append(f"{slug} {slug} {agent_type}")
+        # The optional 4th field is the full slug. Readers that only know the
+        # three-field form (awk '{print $1}', `len(parts) >= 3`) are unaffected.
+        entry = f"{slug} {slug} {agent_type}"
+        if full_slug and full_slug != slug:
+            entry += f" {full_slug}"
+        lines.append(entry)
         workers_file.write_text("\n".join(lines) + "\n")
 
     def _spawn_sidecar(self, slug: str, agent_handle: str) -> None:
@@ -343,8 +407,13 @@ class Launcher:
         return out
 
     def _agent_type_for(self, slug: str) -> str | None:
-        """Re-derive a running worker's agent type from its task."""
-        result = run_bash(f"{NOTECOVE_BIN} task show {slug} --json")
+        """Re-derive a running worker's agent type from its task.
+
+        Addressed by the cached full slug: this runs for workers that may have
+        been launched long ago, and a short slug that was unique then can have
+        gone ambiguous since.
+        """
+        result = run_bash(f"{NOTECOVE_BIN} task show {self._full_slug(slug)} --json")
         try:
             return self._triage(json.loads(result.stdout))
         except (json.JSONDecodeError, ValueError):
@@ -399,7 +468,7 @@ class Launcher:
                 if agent_type is None:
                     log("launcher     ", "reconcile-skipped-untyped", slug)
                     continue
-                self._register_worker(slug, agent_type)
+                self._register_worker(slug, agent_type, self._full_slug(slug))
                 log("launcher     ", "worker-reregistered", slug)
                 _print(f"re-registered live worker {slug} ({agent_type})")
 
@@ -456,8 +525,8 @@ class Launcher:
                 if self._free_slots() <= 0:
                     return
 
-                slug_obj = task.get("slug", {})
-                slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
+                slug = short_slug_of(task)
+                full_slug = full_slug_of(task)
                 if not slug:
                     continue
 
@@ -490,7 +559,7 @@ class Launcher:
 
                 log("launcher     ", f"task-adopted:{state.lower()}", slug)
                 _print(f"adopting {slug} (was {state}, worker gone) -> {agent_type}")
-                self._spawn_worker(slug, agent_type)
+                self._spawn_worker(slug, agent_type, full_slug)
                 live_windows.add(slug)
 
     # -----------------------------------------------------------------------
@@ -529,13 +598,12 @@ class Launcher:
             if slots <= 0:
                 break
 
-            slug_obj = task.get("slug", {})
-            slug = slug_obj.get("short", "") if isinstance(slug_obj, dict) else str(slug_obj)
+            slug = short_slug_of(task)
             if not slug:
                 continue
             # Use the full slug (short prefix + unique id) for mutations, so two
             # tasks sharing a short prefix cannot produce an ambiguous-slug error.
-            full_slug = slug_obj.get("full", slug) if isinstance(slug_obj, dict) else slug
+            full_slug = full_slug_of(task)
 
             if slug in live_windows:
                 continue
@@ -553,7 +621,7 @@ class Launcher:
             _print(f"picked up {slug}: {title} -> {agent_type}")
             (SIGNALS / f"{slug}.untyped").unlink(missing_ok=True)
 
-            self._spawn_worker(slug, agent_type)
+            self._spawn_worker(slug, agent_type, full_slug)
             slots -= 1
 
     def _triage(self, task: dict) -> str | None:

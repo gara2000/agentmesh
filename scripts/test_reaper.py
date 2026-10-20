@@ -115,6 +115,9 @@ class ReaperHarness(unittest.TestCase):
 
         shutil.copy(SCRIPTS / "reaper.sh", self.scripts / "reaper.sh")
         (self.scripts / "reaper.sh").chmod(0o755)
+        # reaper.sh sources this for nc_run/nc_ref, so the throwaway layout needs
+        # it too — the daemon locates it relative to its own path.
+        shutil.copy(SCRIPTS / "notecove-ref.sh", self.scripts / "notecove-ref.sh")
         (self.signals / "workers").write_text(
             "# format: <task-slug> <tmux-window-name> <agent-type>\n")
         (self.signals / "events.log").touch()

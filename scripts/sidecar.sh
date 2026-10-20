@@ -21,7 +21,7 @@
 # Change detection runs two mechanisms against one shared diff step:
 #
 #   1. SSE push — subscribes to the NoteCove event stream and runs the diff step
-#      whenever a task.* frame arrives for this slug. Near-zero latency.
+#      whenever a task.* frame arrives for this task. Near-zero latency.
 #   2. Safety-net poll — runs the same diff step every --poll-interval seconds.
 #      This runs ALWAYS, not only when SSE is unavailable: the documented event
 #      type list (task.created/modified/deleted) has no comment-specific type, so
@@ -32,6 +32,10 @@
 # decides whether to nudge. Duplicate triggers are harmless — the diff is against
 # stored baseline state, so a change is reported exactly once regardless of how
 # many times the check runs.
+#
+# Frames are matched on the task's internal id, never on its slug: a frame
+# carries {"item":{"type":"task","id":"..."}} and no slug anywhere. See
+# notecove-ref.sh for why the previous slug-substring match could never fire.
 set -uo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -39,17 +43,19 @@ cd "$AGENTMESH"
 
 SIGNALS="$AGENTMESH/signals"
 LOG="$SIGNALS/events.log"
-NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
 
+# shellcheck source=notecove-ref.sh
+source "$AGENTMESH/scripts/notecove-ref.sh"
 # shellcheck source=notify-worker.sh
 source "$AGENTMESH/scripts/notify-worker.sh"
 
 SLUG=""
 AGENT_HANDLE=""
 POLL_INTERVAL="60"
-# Upper bound on any single NoteCove call. Comfortably above a normal local-socket
-# response, low enough that a hang costs one poll cycle rather than the session.
-CALL_TIMEOUT="30"
+# Upper bound on any single NoteCove call, applied by nc_run. Comfortably above
+# a normal local-socket response, low enough that a hang costs one poll cycle
+# rather than the session.
+NC_CALL_TIMEOUT="30"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,6 +75,11 @@ INBOX="$SIGNALS/${SLUG}.inbox"
 SEEN_COMMENTS="$SIGNALS/${SLUG}.seen-comments"
 SEEN_STATE="$SIGNALS/${SLUG}.seen-state"
 SELF_STATE="$SIGNALS/${SLUG}.self-state"
+
+# The slug actually handed to the CLI. SLUG itself stays the local identifier
+# for window names and signals/ files; TASK_REF is the unambiguous full slug.
+# Resolved once here rather than per call.
+TASK_REF=$(nc_ref "$SLUG")
 
 log_event() {
   printf '%s\tsidecar      \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-$SLUG}" >> "$LOG"
@@ -90,18 +101,28 @@ log_event() {
 # ---------------------------------------------------------------------------
 check_for_changes() {
   local task_json rc
-  # Bound the call. Without a timeout a hung NoteCove wedges this loop forever,
-  # and the failure is invisible: the sidecar's window stays alive, so both the
-  # watchdog and `agentmesh status` keep counting it as healthy while the agent
-  # it is supposed to wake blocks indefinitely.
-  task_json=$(timeout "$CALL_TIMEOUT" $NOTECOVE task show "$SLUG" --json 2>/dev/null)
+  # nc_run bounds the call and closes stdin. Without the timeout a hung NoteCove
+  # wedges this loop forever and the failure is invisible: the sidecar's window
+  # stays alive, so both the watchdog and `agentmesh status` keep counting it as
+  # healthy while the agent it is supposed to wake blocks indefinitely. Without
+  # the closed stdin an ambiguous slug does exactly that, by prompting.
+  task_json=$(nc_run task show "$TASK_REF" --json 2>/dev/null)
   rc=$?
   if [[ $rc -eq 124 ]]; then
     log_event "notecove-call-timed-out"
-    echo "[sidecar] $SLUG: notecove task show timed out after ${CALL_TIMEOUT}s — will retry"
+    echo "[sidecar] $SLUG: notecove task show timed out after ${NC_CALL_TIMEOUT}s — will retry"
     return 0
   fi
-  [[ $rc -ne 0 ]] && return 0
+  if [[ $rc -ne 0 ]]; then
+    # A failed lookup when TASK_REF is still the bare short slug means it never
+    # resolved. Say so rather than retrying in silence — that silence is what
+    # made the original bug invisible for as long as it was.
+    if [[ "$TASK_REF" == "$SLUG" ]]; then
+      log_event "slug-unresolved"
+      echo "[sidecar] $SLUG: cannot resolve to a unique task (ambiguous or deleted) — retrying"
+    fi
+    return 0
+  fi
   [[ -z "$task_json" ]] && return 0
 
   # Pass baselines by path so python does the whole diff in one pass.
@@ -252,32 +273,58 @@ if entries and not first_run:
 # ---------------------------------------------------------------------------
 # SSE subscription loop.
 #
-# Streams task.* frames and runs the diff step for any frame naming this slug.
-# Frames carry {type, source, item:{type,slug,id}, timestamp, payload}; we match
-# on item.slug, falling back to a substring check so an id-only frame for this
-# task still triggers a diff.
+# Streams task.* frames and runs the diff step for any frame about this task.
+# A real frame looks like:
+#
+#   {"id":"bdzn...","type":"task.modified","timestamp":"...","source":"local",
+#    "item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"},
+#    "payload":{"projectId":"79hb..."},"seq":46099}
+#
+# The subject is identified by item.id and NOTHING else — there is no slug in
+# the frame. This loop previously tested frames with `grep -qF "$SLUG"`, on the
+# stated belief that an id-only frame would still match as a substring. It
+# cannot: the short slug carries a project prefix and a hyphen the id does not
+# (WORK-7jp vs 7jphatbqq77qtm4g4x76zz6de5). That grep never matched once, so
+# SSE never triggered a single diff and the sidecar was silently poll-only from
+# the day it was written.
+#
+# So: resolve this task's id up front and match frames on item.id. A substring
+# check on the full slug is kept as a secondary path, harmless today and
+# correct if a future frame shape does carry one.
 #
 # Runs in a background subshell. If the stream is unavailable — notably when the
 # CLI token lacks events:subscribe — it logs once and exits, leaving the
-# safety-net poll as the sole mechanism.
+# safety-net poll as the sole mechanism. The same applies if the task id cannot
+# be resolved: without it there is nothing to match frames against, and matching
+# everything would run the diff on every task change in the project.
 # ---------------------------------------------------------------------------
 sse_loop() {
-  local probe
-  probe=$(timeout "$CALL_TIMEOUT" $NOTECOVE events recent --types "task.*" --limit 1 --json 2>&1 | head -1)
+  local probe task_id
+  probe=$(nc_run events recent --types "task.*" --limit 1 --json 2>&1 | head -1)
   if [[ "$probe" == *"does not have events:subscribe"* ]]; then
     log_event "sse-unavailable:no-permission"
     echo "[sidecar] $SLUG: SSE unavailable (token lacks events:subscribe) — relying on ${POLL_INTERVAL}s poll"
     return 0
   fi
 
+  if ! task_id=$(nc_task_id "$SLUG") || [[ -z "$task_id" ]]; then
+    log_event "task-id-unresolved"
+    echo "[sidecar] $SLUG: could not resolve task id — relying on ${POLL_INTERVAL}s poll"
+    return 0
+  fi
+
   log_event "sse-subscribed"
-  echo "[sidecar] $SLUG: subscribed to NoteCove event stream"
+  echo "[sidecar] $SLUG: subscribed to NoteCove event stream (task id: $task_id)"
 
   while true; do
-    # --json prints one JSON object per line as frames arrive.
-    $NOTECOVE events --types "task.*" --json 2>/dev/null | while IFS= read -r line; do
+    # --json prints one JSON object per line as frames arrive. Note this is the
+    # one call that must NOT be bounded by a timeout — it is a long-lived
+    # stream, not a request — but stdin is still closed for the same reason as
+    # everywhere else.
+    $NOTECOVE_BIN events --types "task.*" --json </dev/null 2>/dev/null | while IFS= read -r line; do
       [[ -z "$line" ]] && continue
-      if printf '%s' "$line" | grep -qF "$SLUG"; then
+      if frame_is_ours "$line" "$task_id"; then
+        log_event "sse-frame-matched"
         check_for_changes
       fi
     done
@@ -285,6 +332,41 @@ sse_loop() {
     log_event "sse-reconnecting"
     sleep 5
   done
+}
+
+# frame_is_ours <json-line> <task-id>
+#
+# True when an event frame is about this task. Parses the frame rather than
+# grepping it: item.id is an exact field, and a substring search over the whole
+# line would also match the projectId or an unrelated id that happens to
+# contain ours.
+frame_is_ours() {
+  local line="$1" task_id="$2"
+  printf '%s' "$line" | TASK_ID="$task_id" TASK_REF="$TASK_REF" python3 -c '
+import json, os, sys
+
+task_id = os.environ["TASK_ID"].strip()
+task_ref = os.environ["TASK_REF"].strip().lower()
+
+try:
+    frame = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    sys.exit(1)
+
+item = frame.get("item") or {}
+if isinstance(item, dict):
+    if (item.get("id") or "").strip() == task_id:
+        sys.exit(0)
+    # Secondary path: no frame carries a slug today, but if one ever does this
+    # keeps matching correct rather than silently dropping to the poll.
+    slug = item.get("slug")
+    if isinstance(slug, str) and slug.strip().lower() == task_ref:
+        sys.exit(0)
+    if isinstance(slug, dict) and (slug.get("full") or "").strip().lower() == task_ref:
+        sys.exit(0)
+
+sys.exit(1)
+' 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------

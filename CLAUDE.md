@@ -31,8 +31,34 @@ When the message lands the agent calls `resume_work` (back to `Doing`), reads it
 - **`signals/<slug>.ready`** — delivery gate; written by the agent's `agent_init`, so nothing is typed before the skill is running
 - **`signals/<slug>.pending-delivery`** — retry sentinel; cleared only by a delivered nudge
 - **`signals/<slug>.self-state`** — the state name the agent is about to set, so the sidecar can tell its own writes from the user's
+- **`signals/<slug>.full-slug`** — the task's unambiguous full slug, written by the launcher at spawn time; every CLI call addressing the task reads it first
+- **`signals/<slug>.task-id`** — the task's internal id, which is the only thing an SSE frame names
+- **`scripts/notecove-ref.sh`** — the one safe way to call the NoteCove CLI with a slug; sourced by every daemon and by the agent helper
 - **`scripts/notify-worker.sh`** — the one place that knows how to deliver; sourced by the sidecar and the pr-monitor
 - **`scripts/sidecar.sh`** — one per worker; watches the task in NoteCove and nudges its agent on any change
+
+### Slug identity
+
+A task has two slugs. **`slug.short`** (`WORK-7jp`) is a *uniquePrefix* — unique only at the moment it is read. Creating another task sharing that prefix lengthens it, and every copy stored earlier silently becomes ambiguous. **`slug.full`** (`WORK-7jp:hatbqq77qtm4g4x76zz6de5`) never changes.
+
+**Short slugs are local identifiers only** — tmux window names and `signals/` filenames. Renaming those would invalidate every running worker's state, so they stay. **Everything passed to the NoteCove CLI uses the full slug**, via `nc_ref` in `scripts/notecove-ref.sh`.
+
+This matters because the CLI does not *fail* on an ambiguous slug. With stdin on a TTY it asks which task you meant:
+
+```
+Ambiguous slug. Multiple tasks match:
+  1. work-7w25:…   2. work-7w2p:…
+Pick one (1-2):
+```
+
+Every daemon runs in a tmux window, so every daemon has a TTY, so the call blocks until its timeout — every poll, forever. WORK-7w2's sidecar logged 43 consecutive `notecove-call-timed-out` events that way and never saw a comment in between.
+
+Two defences, both in `notecove-ref.sh`:
+
+- **`nc_run` closes stdin** on every call. The same ambiguous call then returns `rc=1` and "Please use a more specific slug." immediately. This converts a silent permanent hang into a loud fast failure, and it holds even when resolution has nothing to work with.
+- **`nc_ref` resolves the short slug to the full one**, from `signals/<slug>.full-slug` (written by the launcher, which had the task JSON in hand anyway), or by listing tasks and caching the result. Two matches resolve to *nothing* rather than a guess — the distinguishing part was never recorded, and acting on the wrong task is worse than failing.
+
+Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` call. In Python, `launcher.py` passes `stdin=subprocess.DEVNULL` on every CLI invocation for the same reason.
 
 ### Delivery Protocol
 
@@ -89,6 +115,8 @@ The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashe
 ### Comment Conventions
 
 - **Comments are summaries, not documents.** A few sentences at most — a comment tells the user what happened and where to look. Anything longer goes in a NoteCove note that the comment names.
+- **NoteCove rejects a comment body over 996 characters** with `rc=1` and no output at all. `post_summary` truncates at 900 and appends a marker rather than letting one vanish — a dropped summary leaves the user staring at a task in `Attention` with no idea what is wanted, which is indistinguishable from a wedged agent.
+- **Every round of work owes the user a comment.** `resume_work` clears `signals/<slug>.summary-posted`; `request_attention`, `finish_task` and `finish_cleanup` check it and post a generic placeholder if the agent wrote nothing. The placeholder is the visible symptom of a skipped summary, not a substitute for one.
 - **Agents post under their role name** (`--user "Implementer"`, `--user "Investigator"`, …). The sidecar filters an agent's own comments by author name, so this value must match the skill's `agent-user` frontmatter and the `AGENT_AUTHOR` map in `launcher.py` — a mismatch makes an agent wake itself on every comment it writes.
 - **The user writes free text**, interpreted with judgement. Two words are reserved commands honoured literally: `approve` (accept the work; the agent sets `Done`) and `abort` (stop; the agent sets `Won't Do`).
 - **Agents echo their reading back** ("Read as: approve → marking Done") so a misinterpretation is visible rather than silent.
@@ -150,12 +178,20 @@ The sidecar is **completely generic** — it carries no task-type knowledge. It 
 Responsibilities:
 - Establish a baseline of comment IDs and task state at startup (pre-existing comments are history, not replayed at the agent)
 - Detect changes two ways, both funnelling into one diff step:
-  - **SSE push** — subscribe to `notecove events --types "task.*"` and run the diff on any frame naming this slug
+  - **SSE push** — subscribe to `notecove events --types "task.*"` and run the diff on any frame whose `item.id` is this task's id
   - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60)
 - On a change, append to `signals/<slug>.inbox` and deliver a nudge via `notify-worker.sh`
 - Retry any outstanding `.pending-delivery` on every poll
 
 **Two filters keep an agent from waking itself.** New comments authored by `--agent-handle` are ignored, and a state change matching `signals/<slug>.self-state` is suppressed — see the Task State section above. Both are the same rule: the sidecar reports what *others* did to the task.
+
+**Frames are matched on `item.id`, not on the slug.** A frame carries no slug at all:
+
+```json
+{"id":"…","type":"task.modified","item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"},"payload":{"projectId":"…"},"seq":41}
+```
+
+The original check was `grep -qF "$SLUG"` on the raw frame, on the belief that an id-only frame would still match as a substring. It cannot: the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so SSE triggered no diff from the day the sidecar was written and the poll was silently the only detection path. The sidecar now resolves its task id via `nc_task_id` at subscribe time and parses each frame; if the id cannot be resolved it logs `task-id-unresolved` and stays poll-only rather than subscribing to a stream it could not match.
 
 The poll runs **always**, not only when SSE is unavailable. The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference; the poll makes correctness independent of it. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
@@ -190,14 +226,17 @@ Responsibilities:
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, and `.seen-state` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, and `.summary-posted` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
-# format: <task-slug> <tmux-window-name> <agent-type>
-WORK-pm4 WORK-pm4 implementer
+# format: <task-slug> <tmux-window-name> <agent-type> [<full-slug>]
+WORK-pm4 WORK-pm4 implementer WORK-pm4:fg9k2m4x76zz6de5hatbq
 WORK-xyz WORK-xyz investigator
 ```
+
+The 4th field is optional and the launcher omits it when the full slug is not
+known; every reader already tolerates the 3-field form.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
@@ -323,6 +362,7 @@ agentmesh/
 ├── scripts/
 │   ├── bootstrap.sh        # idempotent runtime startup: notecove init, signals dir, watchdog + folder-cleanup + reaper + launcher
 │   ├── launcher.py         # launcher daemon: Ready-task pickup, triage, worker + sidecar spawning
+│   ├── notecove-ref.sh     # the one safe way to call the NoteCove CLI with a slug: stdin closed, short slug resolved to full
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
 │   ├── notify-worker.sh    # delivery: types a one-line nudge into a worker's Claude REPL; sourced by sidecar + pr-monitor
 │   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox
@@ -337,7 +377,10 @@ agentmesh/
 │   ├── test_reaper.py      # unit tests for reaper.sh, driven with --once against stub tmux/notecove
 │   ├── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
 │   ├── test_notify_worker.py # unit tests for nudge delivery: the .ready gate, retry sentinel, what gets typed
-│   └── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author and self-state filtering
+│   ├── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author/self-state filtering, SSE frame matching
+│   ├── test_slug_resolution.py # unit tests for notecove-ref.sh: stdin closure, full-slug resolution, refusal to guess
+│   ├── test_agent_notecove.py  # unit tests for the agent helper: TASK_REF addressing, the summary guarantee
+│   └── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
@@ -355,7 +398,10 @@ agentmesh/
     ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
     ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged
     ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
-    └── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
+    ├── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
+    ├── <slug>.full-slug        # the task's unambiguous full slug; written by the launcher at spawn, read by every CLI call
+    ├── <slug>.task-id          # the task's internal id; what an SSE frame names, so what the sidecar matches on
+    └── <slug>.summary-posted   # set by a successful post_summary, cleared by resume_work; the per-turn summary guarantee
 ```
 
 The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a waiting worker has yet to read. `agentmesh start --clean` forces the wipe.
@@ -384,6 +430,10 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        launching-flag-expired          WORK-xyz
 2026-04-26T...  sidecar         started                         WORK-xyz
 2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
+2026-04-26T...  sidecar         sse-frame-matched                WORK-xyz
+2026-04-26T...  sidecar         sse-reconnecting                 WORK-xyz
+2026-04-26T...  sidecar         task-id-unresolved               WORK-xyz
+2026-04-26T...  sidecar         slug-unresolved                  WORK-xyz
 2026-04-26T...  sidecar         sse-unavailable:no-permission   WORK-xyz
 2026-04-26T...  sidecar         change-detected:comments=1:state=0  WORK-xyz
 2026-04-26T...  sidecar         notecove-call-timed-out          WORK-xyz
@@ -394,6 +444,9 @@ timestamp       component       event_type                      slug
 2026-04-26T...  implementer     started                         WORK-xyz
 2026-04-26T...  implementer     awaiting-user                   WORK-xyz
 2026-04-26T...  implementer     resumed                         WORK-xyz
+2026-04-26T...  agent           summary-truncated                WORK-xyz
+2026-04-26T...  agent           summary-post-failed              WORK-xyz
+2026-04-26T...  agent           summary-fallback                 WORK-xyz
 2026-04-26T...  watchdog        crash-detected                  WORK-xyz
 2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
 2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz

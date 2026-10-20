@@ -5,10 +5,16 @@
 set -euo pipefail
 
 # cd to agentmesh so notecove can find its .notecove config
-cd /Users/firas.gara/agentmesh
+AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$AGENTMESH"
 
-NOTECOVE="node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs"
-LOG=/Users/firas.gara/agentmesh/signals/events.log
+# No slug is ever passed here, but the calls go through nc_run for the same
+# reason as everywhere else: stdin closed and a bounded timeout, so this daemon
+# cannot be wedged by a CLI that decides to ask a question.
+# shellcheck source=notecove-ref.sh
+source "$AGENTMESH/scripts/notecove-ref.sh"
+
+LOG="$AGENTMESH/signals/events.log"
 POLL_INTERVAL=60  # seconds
 
 log_event() {
@@ -24,8 +30,8 @@ while true; do
   # injection when passing JSON to Python (folder/task names may contain $, `, \)
   folders_file=$(mktemp)
   tasks_file=$(mktemp)
-  $NOTECOVE folder list --json > "$folders_file" 2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
-  $NOTECOVE task list --json   > "$tasks_file"   2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
+  nc_run folder list --json > "$folders_file" 2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
+  nc_run task list --json > "$tasks_file"   2>/dev/null || { rm -f "$folders_file" "$tasks_file"; continue; }
 
   # Find moves needed: for each terminal task, check if its named subfolder
   # still lives in the task's parent folder (not yet moved to Done).
@@ -66,7 +72,7 @@ PYEOF
   [ -z "$moves" ] && continue
 
   while IFS=$'\t' read -r slug subfolder_id done_folder_id; do
-    if $NOTECOVE folder move "$subfolder_id" "$done_folder_id" 2>/dev/null; then
+    if nc_run folder move "$subfolder_id" "$done_folder_id" 2>/dev/null; then
       echo "[folder-cleanup] moved $slug folder to Done"
       log_event "folder-moved" "$slug"
     fi
