@@ -219,58 +219,23 @@ notecove task show <slug> --format markdown-with-comments
 
 ### Find or create task folder
 
-Follow this lookup order:
+One call, from the helper you already sourced:
 
-1. **Check task description** for a `[[F:<folder-id>|...]]` link. If found → use that folder ID.
-2. **If no link found**, check whether a folder named `<slug>` already exists under the task's parent folder (`folderId` from JSON):
-   ```bash
-   notecove folder list --json | python3 -c "
-   import sys, json
-   folders = json.load(sys.stdin)
-   match = next((f for f in folders if f['name'] == '<slug>' and f['parentId'] == '<task-parent-folder-id>'), None)
-   print(match['id'] if match else '')
-   "
-   ```
-   If a folder is found → use it and prepend the folder link to the existing description (preserving any existing content):
-   ```bash
-   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
-   import sys
-   text = sys.stdin.read()
-   if 'Description:\n' in text:
-       print(text.split('Description:\n', 1)[1].strip())
-   else:
-       print('')
-   ")
-   if [ -n "$EXISTING_DESC" ]; then
-       printf '%s\n\n%s' "[[F:<folder-id>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
-   else
-       notecove task change <slug> --content "[[F:<folder-id>|<folder-path>]]" --content-format markdown
-   fi
-   ```
-3. **If no folder exists**, create one:
-   ```bash
-   notecove folder create "<slug>" --parent <task-parent-folder-id>
-   ```
-   Then prepend the folder link to the existing description (preserving any existing content):
-   ```bash
-   EXISTING_DESC=$(notecove task show <slug> --format markdown | python3 -c "
-   import sys
-   text = sys.stdin.read()
-   if 'Description:\n' in text:
-       print(text.split('Description:\n', 1)[1].strip())
-   else:
-       print('')
-   ")
-   if [ -n "$EXISTING_DESC" ]; then
-       printf '%s\n\n%s' "[[F:<folder-longid>|<folder-path>]]" "$EXISTING_DESC" | notecove task change <slug> --content-file - --content-format markdown
-   else
-       notecove task change <slug> --content "[[F:<folder-longid>|<folder-path>]]" --content-format markdown
-   fi
-   ```
-
-**In all cases where the folder already existed** (steps 1 or 2), list and read any existing notes to get context from prior work:
 ```bash
-notecove note list --folder <task-folder-id> --json
+ensure_task_folder          # exports TASK_FOLDER_ID (and TASK_FOLDER_PATH)
+```
+
+It finds or creates the folder named after your task under the task's own parent folder, and prepends a `[[F:<folder-id>|<folder-path>]]` link to the task description. It takes no arguments — the parent folder and the folder name both come from the task itself, so there is nothing to substitute and nothing to get wrong.
+
+**Do not hand-roll this.** It used to be a recipe in this file that every agent retyped by hand, and it destroyed task descriptions: the read and the write were both keyed off a text parse, and an empty parse result — which means *either* "the description is empty" *or* "the read failed" — took a branch that replaced the whole description with just the link. Descriptions containing tables were reduced to a single link. `ensure_task_folder` reads the stored content rather than a text rendering, writes nothing at all when anything is in doubt, keeps the previous description in `signals/<slug>.description-backup`, and verifies the link landed.
+
+It is **idempotent**: a description that already carries a `[[F:…]]` link is left untouched and its folder id is exported. So a restarted worker just calls it again.
+
+If it returns non-zero, stop and tell the user — do not fall back to editing the description yourself.
+
+**If the folder already existed**, read any notes in it to pick up prior work:
+```bash
+notecove note list --folder "$TASK_FOLDER_ID" --json
 ```
 For each note found, read its content with `notecove note show <note-id> --format markdown`. This gives you context from prior sessions (existing QUESTIONS rounds, PLAN, COMPLETION, etc.) before proceeding.
 
@@ -298,7 +263,7 @@ Proceed automatically to Phase 2.
 If the task is ambiguous or you need clarification before proceeding confidently, write a questions note for the user:
 
 ```bash
-notecove note create "<slug>/QUESTIONS-<N>" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
+notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content-file - --format markdown --json << 'EOF'
 # Questions — Round <N>
 
 > **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
@@ -374,6 +339,7 @@ EOF
 
 ## Shared Critical Rules (Implementer Additions)
 
+- **Use `ensure_task_folder` for the task folder and its description link — never edit the description by hand.** Hand-rolled versions of this destroyed users' task descriptions. If it fails, stop and say so.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 - **Re-read your QUESTIONS note after every wake** — inline answers written into the note are the most common way users reply, and a note edit does not reliably wake you.
 <!-- BASE-AGENT:END -->

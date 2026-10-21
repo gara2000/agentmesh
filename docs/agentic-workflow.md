@@ -233,6 +233,7 @@ Agents source `scripts/agent-notecove.sh`:
 | `post_summary <text>` | Post one brief comment as `<handle>`, truncated to 900 chars, retried once, verified |
 | `request_attention [<state>] [<summary>]` | Hand the task back to the user, posting a placeholder if no summary went up this round. **Does not block** — end the turn once it returns |
 | `read_inbox` | Print the inbox as line-delimited JSON and clear it |
+| `ensure_task_folder` | Find or create this task's folder, link it from the task description, export `TASK_FOLDER_ID` |
 | `finish_task <state> <project>` | Set the terminal state **and** run the cleanup that must go with it |
 | `finish_cleanup <project>` | The cleanup alone, for when the *user* set the terminal state |
 | `watch_pr <pr-url>` | Start the merge monitor for this task |
@@ -240,6 +241,8 @@ Agents source `scripts/agent-notecove.sh`:
 `finish_task` is not optional sugar over `notecove task change --state Done`. It is the only thing that releases tasks blocked on this one and stops this task's sidecar and pr-monitor — before the refactor the orchestrator's event handlers did that, and they are gone. A bare state change leaves dependents blocked forever and leaks two processes.
 
 `finish_cleanup` exists for the case where the **user** sets a terminal state in NoteCove. The agent must not overwrite their state, but the cleanup is still owed — so it runs the same teardown without the `task change`.
+
+`ensure_task_folder` replaces a recipe that used to live in the implementer-family skill text and was retyped by hand by every agent. That recipe destroyed task descriptions: it decided whether a description existed by parsing the markdown rendering, and an empty parse result — which means *either* "the description is empty" *or* "the read failed" — took a branch that replaced the whole description with nothing but the folder link. The helper reads the stored content (`task show --json` → `contentJson.content`) rather than a text rendering, writes nothing at all when anything is in doubt, keeps the previous description in `signals/<slug>.description-backup`, and verifies the link landed before returning. It is idempotent: a description already carrying a `[[F:…]]` link is left untouched. Agents must not edit the description by hand.
 
 `await_user` survives as a **deprecated alias of `request_attention`** — it announces and returns rather than blocking. It exists only so a worker that somehow boots on pre-3.5.0 skill text degrades to "ends its turn early" instead of hanging forever on a signal nobody fires.
 
