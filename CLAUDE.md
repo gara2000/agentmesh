@@ -112,6 +112,32 @@ The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashe
 
 **Agents change state only through `resume_work` / `request_attention` / `finish_task`, never a bare `notecove task change --state`.** All three go through `set_state`, which writes the state name to `signals/<slug>.self-state` *before* calling the CLI. That marker is how the sidecar tells "I moved this" from "the user moved this" — it compares the task's `stateName` against the marker and suppresses a match. Writing it first closes the race: there is no window in which the sidecar can observe the new state without also seeing the marker. Without it, an agent's own `Doing`/`Attention` writes come straight back as a message and interrupt it mid-work — harmless under the old blocking protocol, a self-inflicted interruption under this one. The marker is consumed once the sidecar's baseline has absorbed the state it names, so it cannot later swallow a genuine user move to that same state.
 
+### The task folder link
+
+Every task gets a folder named after it, holding that task's notes, and the folder is linked from the task description as `[[F:<folder-id>|<folder-path>]]`. Agents create both through one helper, **`ensure_task_folder`** in `agent-notecove.sh`. It takes no arguments: the parent folder and the folder name come from the task itself.
+
+This was previously a ~20-line recipe pasted into all nine implementer-family skills, which each agent retyped by hand with `<slug>`, `<folder-id>` and `<folder-path>` substituted in. **It destroyed task descriptions.** The shape was:
+
+```bash
+EXISTING_DESC=$(notecove task show <slug> --format markdown | …split on "Description:"…)
+if [ -n "$EXISTING_DESC" ]; then  …prepend the link…
+else  notecove task change <slug> --content "[[F:…]]"   # replaces the whole description
+fi
+```
+
+`EXISTING_DESC` is empty for two unrelated reasons — *the description really is empty* and *the read failed* — and both took the destructive branch. The read fails on an ambiguous short slug (the recipe used `<slug>`, not `$TASK_REF`, so the CLI prompted on the worker's TTY and hung to timeout), on any CLI error, and whenever NoteCove is not running. A description holding a table and two paragraphs came back as nothing but the link. Nothing verified the write either, so a failed one left the agent believing the folder was linked — the other half of the same report.
+
+The helper's rules, in order of importance:
+
+- **Never write on a failed read.** Any CLI failure aborts; it does not fall through to "the description must have been empty".
+- **Decide emptiness from the stored content**, read via `task show --json` → `contentJson.content`, not from a text parse. An empty NoteCove description is `<paragraph></paragraph>`, not `""`.
+- **Refuse a write the parse cannot justify.** Stored content present but the markdown parse empty means the parse is wrong, not the task.
+- **Back up first**, to `signals/<slug>.description-backup`.
+- **Verify afterwards** — the link must be present and the content must not have shrunk.
+- **Be idempotent.** A description already carrying a `[[F:…]]` link is left untouched and its id exported, so a restarted worker simply calls it again.
+
+One trap it encodes: `--content-file -` must never be used through `nc_run`, which closes stdin — the CLI then reads nothing and writes an **empty** description. The helper writes to a temp file and passes a real path.
+
 ### Comment Conventions
 
 - **Comments are summaries, not documents.** A few sentences at most — a comment tells the user what happened and where to look. Anything longer goes in a NoteCove note that the comment names.
@@ -365,7 +391,7 @@ agentmesh/
 │   ├── notecove-ref.sh     # the one safe way to call the NoteCove CLI with a slug: stdin closed, short slug resolved to full
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
 │   ├── notify-worker.sh    # delivery: types a one-line nudge into a worker's Claude REPL; sourced by sidecar + pr-monitor
-│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox
+│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox, ensure_task_folder
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state
@@ -380,6 +406,7 @@ agentmesh/
 │   ├── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author/self-state filtering, SSE frame matching
 │   ├── test_slug_resolution.py # unit tests for notecove-ref.sh: stdin closure, full-slug resolution, refusal to guess
 │   ├── test_agent_notecove.py  # unit tests for the agent helper: TASK_REF addressing, the summary guarantee
+│   ├── test_task_folder_link.py # unit tests for ensure_task_folder: never writing on a failed read, idempotence, verification
 │   └── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
@@ -401,7 +428,8 @@ agentmesh/
     ├── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
     ├── <slug>.full-slug        # the task's unambiguous full slug; written by the launcher at spawn, read by every CLI call
     ├── <slug>.task-id          # the task's internal id; what an SSE frame names, so what the sidecar matches on
-    └── <slug>.summary-posted   # set by a successful post_summary, cleared by resume_work; the per-turn summary guarantee
+    ├── <slug>.summary-posted   # set by a successful post_summary, cleared by resume_work; the per-turn summary guarantee
+    └── <slug>.description-backup # the task description as it was before ensure_task_folder prepended the folder link
 ```
 
 The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a waiting worker has yet to read. `agentmesh start --clean` forces the wipe.
@@ -447,6 +475,12 @@ timestamp       component       event_type                      slug
 2026-04-26T...  agent           summary-truncated                WORK-xyz
 2026-04-26T...  agent           summary-post-failed              WORK-xyz
 2026-04-26T...  agent           summary-fallback                 WORK-xyz
+2026-04-26T...  agent           task-folder-linked               WORK-xyz
+2026-04-26T...  agent           task-folder-aborted-read         WORK-xyz
+2026-04-26T...  agent           task-folder-aborted-parse        WORK-xyz
+2026-04-26T...  agent           task-folder-create-failed        WORK-xyz
+2026-04-26T...  agent           task-folder-link-failed          WORK-xyz
+2026-04-26T...  agent           task-folder-verify-failed        WORK-xyz
 2026-04-26T...  watchdog        crash-detected                  WORK-xyz
 2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
 2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz

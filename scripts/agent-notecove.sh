@@ -248,6 +248,161 @@ task_state() {
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('stateId',''))"
 }
 
+# ensure_task_folder
+#
+# Find or create this task's folder, link it from the task description, and
+# export TASK_FOLDER_ID (and TASK_FOLDER_PATH). Idempotent: a description that
+# already carries a [[F:…]] link is left completely alone, so a restarted worker
+# re-running this is a no-op.
+#
+# This used to be a ~20-line recipe pasted into every implementer-family skill,
+# which each agent retyped by hand with <slug>/<folder-id>/<folder-path>
+# substituted in. It destroyed task descriptions. The shape was:
+#
+#   EXISTING_DESC=$(notecove task show <slug> --format markdown | …split…)
+#   if [ -n "$EXISTING_DESC" ]; then  …prepend…
+#   else  notecove task change <slug> --content "[[F:…]]"   # replaces EVERYTHING
+#   fi
+#
+# EXISTING_DESC is empty for two unrelated reasons — the description really is
+# empty, and the read failed — and both took the destructive branch. A read
+# fails on an ambiguous short slug (the recipe used <slug>, not $TASK_REF, so
+# the CLI prompted on the worker's TTY and hung to timeout), on any CLI error,
+# and when NoteCove is not running. A description holding a table and two
+# paragraphs came back as nothing but the folder link.
+#
+# So the rules here are: read losslessly, decide emptiness from the *stored*
+# content rather than from a text parse, never write on a failed read, keep a
+# backup, and verify afterwards.
+ensure_task_folder() {
+    local ref show parsed existing_id parent_id has_body
+    ref=$(_task_ref)
+
+    # --json (not --format json) returns one clean object with no human preamble,
+    # and carries contentJson.content — the authoritative stored string.
+    show=$(nc_run task show "$ref" --json) || { _log_event "task-folder-aborted-read"; return 1; }
+    [ -n "$show" ] || { _log_event "task-folder-aborted-read"; return 1; }
+
+    parsed=$(printf '%s' "$show" | python3 -c '
+import sys, json, re
+d = json.load(sys.stdin)
+content = (d.get("contentJson") or {}).get("content") or ""
+m = re.search(r"\[\[F:([^|\]]+)", content)
+# An empty description is stored as "<paragraph></paragraph>", so strip the
+# paragraph wrappers before asking whether there is anything here. Any other
+# node (a table, a file, an embed) counts as content even with no plain text.
+body = re.sub(r"</?paragraph>", "", content).strip()
+print(m.group(1) if m else "")
+print(d.get("folderId") or "")
+print("1" if body else "")
+') || { _log_event "task-folder-aborted-read"; return 1; }
+
+    existing_id=$(printf '%s' "$parsed" | sed -n 1p)
+    parent_id=$(printf '%s' "$parsed" | sed -n 2p)
+    has_body=$(printf '%s' "$parsed" | sed -n 3p)
+
+    # Already linked: adopt it and touch nothing.
+    if [ -n "$existing_id" ]; then
+        TASK_FOLDER_ID="$existing_id"
+        export TASK_FOLDER_ID
+        return 0
+    fi
+
+    if [ -z "$parent_id" ]; then
+        _log_event "task-folder-aborted-read"
+        echo "[agent-notecove] ensure_task_folder: the task reports no parent folder." >&2
+        return 1
+    fi
+
+    local listing folder_id parent_path
+    listing=$(nc_run folder list --json) || { _log_event "task-folder-aborted-read"; return 1; }
+
+    folder_id=$(printf '%s' "$listing" | python3 -c '
+import sys, json
+name, parent = sys.argv[1], sys.argv[2]
+for f in json.load(sys.stdin):
+    if f.get("name") == name and f.get("parentId") == parent:
+        sys.stdout.write(f.get("id") or ""); break
+' "$SLUG" "$parent_id") || return 1
+
+    parent_path=$(printf '%s' "$listing" | python3 -c '
+import sys, json
+parent = sys.argv[1]
+for f in json.load(sys.stdin):
+    if f.get("id") == parent:
+        sys.stdout.write(f.get("path") or f.get("name") or ""); break
+' "$parent_id") || return 1
+
+    if [ -z "$folder_id" ]; then
+        folder_id=$(nc_run folder create "$SLUG" --parent "$parent_id" --json \
+            | python3 -c 'import sys,json; sys.stdout.write(json.load(sys.stdin).get("id") or "")') || {
+            _log_event "task-folder-create-failed"; return 1; }
+        [ -n "$folder_id" ] || { _log_event "task-folder-create-failed"; return 1; }
+    fi
+
+    TASK_FOLDER_ID="$folder_id"
+    TASK_FOLDER_PATH="${parent_path:+$parent_path/}$SLUG"
+    export TASK_FOLDER_ID TASK_FOLDER_PATH
+
+    local link="[[F:${folder_id}|${TASK_FOLDER_PATH}]]"
+    local tmp; tmp=$(mktemp) || return 1
+
+    if [ -n "$has_body" ]; then
+        # There is a description to preserve. The markdown body is what we can
+        # write back; the stored content above is what tells us it exists.
+        local body
+        body=$(nc_run task show "$ref" --format markdown | python3 -c '
+import sys
+t = sys.stdin.read()
+sys.stdout.write(t.split("Description:\n", 1)[1].strip() if "Description:\n" in t else "")
+')
+        if [ -z "$body" ]; then
+            # The stored content is non-empty but the parse produced nothing, so
+            # the parse — not the description — is what is wrong. Writing now is
+            # exactly the bug this function exists to prevent.
+            rm -f "$tmp"
+            _log_event "task-folder-aborted-parse"
+            echo "[agent-notecove] ensure_task_folder: could not parse the description; refusing to write." >&2
+            return 1
+        fi
+        # Keep a copy before touching anything. Cheap, and it is the difference
+        # between "recoverable" and "the user's text is gone".
+        printf '%s' "$body" > "${SIGNALS}/${SLUG}.description-backup"
+        printf '%s\n\n%s' "$link" "$body" > "$tmp"
+    else
+        printf '%s' "$link" > "$tmp"
+    fi
+
+    # --content-file with a real path, never `-`: nc_run closes stdin, so
+    # `--content-file -` through it silently writes an empty description.
+    if ! nc_run task change "$ref" --content-file "$tmp" --content-format markdown >/dev/null; then
+        rm -f "$tmp"
+        _log_event "task-folder-link-failed"
+        echo "[agent-notecove] ensure_task_folder: writing the folder link failed." >&2
+        return 1
+    fi
+    rm -f "$tmp"
+
+    # Verify rather than assume. The write is the step that can silently eat the
+    # description, so confirm the link landed and nothing shrank.
+    local after
+    after=$(nc_run task show "$ref" --json) || { _log_event "task-folder-verify-failed"; return 1; }
+    if ! printf '%s' "$after" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+content = (d.get("contentJson") or {}).get("content") or ""
+sys.exit(0 if "[[F:" in content and len(content) >= int(sys.argv[1]) else 1)
+' "${#link}"; then
+        _log_event "task-folder-verify-failed"
+        echo "[agent-notecove] ensure_task_folder: the folder link did not land as expected." >&2
+        [ -f "${SIGNALS}/${SLUG}.description-backup" ] && \
+            echo "[agent-notecove] The previous description is in ${SIGNALS}/${SLUG}.description-backup" >&2
+        return 1
+    fi
+
+    _log_event "task-folder-linked"
+}
+
 # finish_task <state> <project> [<summary>]
 #
 # Post a closing summary, set the task's terminal state, and run the cleanup that
