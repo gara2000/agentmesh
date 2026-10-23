@@ -146,6 +146,7 @@ One trap it encodes: `--content-file -` must never be used through `nc_run`, whi
 - **Agents post under their role name** (`--user "Implementer"`, `--user "Investigator"`, …). The sidecar filters an agent's own comments by author name, so this value must match the skill's `agent-user` frontmatter and the `AGENT_AUTHOR` map in `launcher.py` — a mismatch makes an agent wake itself on every comment it writes.
 - **The user writes free text**, interpreted with judgement. Two words are reserved commands honoured literally: `approve` (accept the work; the agent sets `Done`) and `abort` (stop; the agent sets `Won't Do`).
 - **Agents echo their reading back** ("Read as: approve → marking Done") so a misinterpretation is visible rather than silent.
+- **PR descriptions are summaries too.** One screen, five emoji-headed sections (🎯 Motivation, 📝 Summary, 🔧 Changes, 💥 Blast radius, 🧪 Testing), no code blocks or history. The rules are written once in `shared/base-agent.md` under *Writing the PR description*.
 
 ---
 

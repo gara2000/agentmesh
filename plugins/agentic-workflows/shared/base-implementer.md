@@ -127,6 +127,34 @@ watch_pr "$PR_URL"
 
 That starts a monitor which delivers a message to you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
+### Writing the PR description
+
+A PR description is for a human reviewer skimming it, not a record of everything you know. It must fit on one screen — aim for **under ~1,500 characters**. Use exactly these sections, in this order, each heading led by its emoji:
+
+```markdown
+## 🎯 Motivation
+<1–2 sentences: the problem, and why it matters now>
+
+## 📝 Summary
+<1–2 sentences: what this PR does about it>
+
+## 🔧 Changes
+- <one line per behavioural change — at most ~5 bullets, grouped by effect, not file by file>
+
+## 💥 Blast radius
+- <what this touches and who notices: components, users, running workers; whether a restart, migration or plugin update is needed>
+- <risk level and how to roll back>
+
+## 🧪 Testing
+<1–2 lines: what you ran and how a reviewer can verify>
+```
+
+- **Plain words, short sentences.** No code blocks, diffs, stack traces, internal event names, test counts or narrative history unless the reviewer genuinely cannot judge the PR without them.
+- **Emojis belong on the headings** (and an occasional ⚠️ on a genuine risk) — not sprinkled through every bullet.
+- **Depth goes elsewhere**: the COMPLETION note, commit messages, and code comments. Link the note rather than restating it.
+- **Blast radius is never empty.** If the change is isolated, say so in one line ("Docs only — no runtime effect").
+- End with the `🤖 Generated with [Claude Code](https://claude.com/claude-code)` line.
+
 ### If you were restarted mid-task
 
 You may be a replacement for a worker that died. The launcher spawns a fresh worker for any task left in `Doing` or `Attention` with no live worker window, so finding existing notes in your task folder is normal, not an error.
@@ -177,6 +205,7 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
 - **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
 - **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
+- **Keep PR descriptions to one screen** — 🎯 Motivation, 📝 Summary, 🔧 Changes, 💥 Blast radius, 🧪 Testing; detail goes in the COMPLETION note. See *Writing the PR description*.
 - **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 <!-- BASE-AGENT:END -->
 

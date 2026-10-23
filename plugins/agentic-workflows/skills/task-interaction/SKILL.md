@@ -249,17 +249,25 @@ Where `<type>` is one of: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. If
 
 ### 5b. Push & Create PR
 
+Keep the description to one screen (under ~1,500 characters): plain words, no code blocks or history, emojis on the headings only. Depth belongs in commit messages and the task's notes.
+
 ```bash
 git push -u origin <branch-name>
 gh pr create --title "<type>(<scope>): <short summary>" --body "$(cat <<'EOF'
-## Summary
-<1-3 sentences: what this PR does and why, referencing the task>
+## 🎯 Motivation
+<1–2 sentences: the problem, and why it matters now>
 
-## Changes
-<bullet list of key files/modules changed>
+## 📝 Summary
+<1–2 sentences: what this PR does about it>
 
-## Test plan
-<how to verify — commands to run, behavior to check>
+## 🔧 Changes
+- <one line per behavioural change — at most ~5>
+
+## 💥 Blast radius
+- <what this touches and who notices; risk and how to roll back>
+
+## 🧪 Testing
+<1–2 lines: what you ran and how to verify>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
