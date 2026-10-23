@@ -55,6 +55,7 @@ The agent never blocks. That is what lets the user reach it **while it is workin
 - **Agents echo their reading back** ("Read as: approve → marking Done") so a misinterpretation is visible rather than silent.
 - **Every round of work owes the user a comment.** `resume_work` clears `signals/<slug>.summary-posted` and `request_attention` refuses to leave without it: if the agent posted nothing since it resumed, a generic placeholder goes up in its place and `summary-fallback` is logged. The placeholder is the visible failure, not the fix — an agent handing back a task with no explanation used to be invisible.
 - **996 characters is the hard limit.** Measured, not documented: NoteCove accepts a 996-character comment and rejects a 997-character one with `rc=1` and no output at all. `post_summary` truncates at 900 and logs `summary-truncated` rather than letting a summary vanish, verifies the call succeeded, and retries once before warning.
+- **PR descriptions follow the same rule.** One screen, under ~1,500 characters, in five emoji-headed sections — 🎯 Motivation, 📝 Summary, 🔧 Changes, 💥 Blast radius, 🧪 Testing. Plain words, no code blocks or history; depth goes in the COMPLETION note and commit messages. The rules live once in `shared/base-agent.md` (*Writing the PR description*) and every PR-creating skill's template follows them.
 
 ### Answering worker questions
 

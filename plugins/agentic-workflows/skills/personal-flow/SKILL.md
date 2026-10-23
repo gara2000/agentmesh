@@ -591,19 +591,24 @@ git push -u origin <branch-name>
 
 ### 5c. Create PR
 
+Keep the description to one screen (under ~1,500 characters): plain words, no code blocks or history, emojis on the headings only. Depth belongs in commit messages and the task's notes.
+
 ```bash
 gh pr create --title "<type>(<scope>): <short summary>" --body "$(cat <<'EOF'
-## Summary
+## 🎯 Motivation
+<1–2 sentences: the problem, and why it matters now>
 
-<1–3 bullet points describing what this PR does>
+## 📝 Summary
+<1–2 sentences: what this PR does about it>
 
-## Changes
+## 🔧 Changes
+- <one line per behavioural change — at most ~5>
 
-<bullet list of key files/modules changed and why>
+## 💥 Blast radius
+- <what this touches and who notices; risk and how to roll back>
 
-## Test plan
-
-<bulleted checklist of how to verify the changes work>
+## 🧪 Testing
+<1–2 lines: what you ran and how to verify>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
