@@ -3,7 +3,8 @@
 #
 # Source this file at agent startup, then call:
 #   agent_init "<slug>" "<agent-handle>"
-#   resume_work                 # back to Doing — call this whenever you start working
+#   resume_work                 # back to Doing — call this whenever you start working;
+#                               # returns 3 (writing nothing) if the user closed the task
 #   post_summary "<brief summary of what just happened>"
 #   request_attention "<state>" # hand the task back to the user, then END YOUR TURN
 #   read_inbox                  # what the sidecar had to tell you
@@ -117,11 +118,51 @@ _log_event() {
 # work. `Doing` means "an agent is working on this right now"; `Attention` means
 # "the agent is finished for now and the user has the task". A task left in
 # Attention while the agent works misreports both.
+#
+# Returns 3, without changing anything, when the user has closed the task —
+# any terminal state, or Blocked. The agent should then read_inbox, call
+# finish_cleanup and stop. Returns 1, again without writing, if the task cannot
+# be read.
+#
+# The guard exists because every wake-up runs resume_work *before* read_inbox.
+# When the change being delivered was the user setting Done, an unguarded
+# resume_work put the task back in Doing before the agent ever saw the state
+# change, and the user's decision was lost unless the agent noticed and undid
+# it (WORK-s5p). Checking here protects every caller, whatever order its skill
+# text runs things in. A failed read fails closed for the same reason: the
+# write is the harmful step, so nothing is written on doubt.
 resume_work() {
+    local verdict
+    verdict=$(nc_run task show "$(_task_ref)" --json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    sys.exit(1)
+if not isinstance(d, dict) or not (d.get("stateId") or d.get("stateName")):
+    sys.exit(1)
+# isTerminal, not a name: custom terminal states have arbitrary ids and names.
+# Blocked is not terminal but is still the user telling the agent to stop.
+blocked = "blocked" in ((d.get("stateId") or "").lower(), (d.get("stateName") or "").lower())
+print("closed:" + (d.get("stateName") or "") if d.get("isTerminal") or blocked else "open")
+' 2>/dev/null)
+    if [ -z "$verdict" ]; then
+        _log_event "resume-aborted-read"
+        echo "[agent-notecove] resume_work: could not read the task state; not setting Doing." >&2
+        return 1
+    fi
+    if [ "${verdict#closed:}" != "$verdict" ]; then
+        _log_event "resume-refused-terminal"
+        echo "[agent-notecove] resume_work: the task is '${verdict#closed:}' — the user closed it." >&2
+        echo "[agent-notecove] Not setting Doing. Run read_inbox, then finish_cleanup, and stop." >&2
+        return 3
+    fi
+
     # A new working turn owes the user a new summary. Clearing the marker here
     # is what makes "post a summary before handing the task back" enforceable:
     # request_attention checks it and writes a fallback comment if this turn
-    # produced nothing.
+    # produced nothing. After the guard, so a refused resume — which is not a
+    # working turn — does not make finish_cleanup post a stale fallback.
     rm -f "${SIGNALS}/${SLUG}.summary-posted"
     set_state "Doing"
 }

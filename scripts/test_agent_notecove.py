@@ -19,6 +19,7 @@ guarantee to "once per working turn" rather than "once ever".
 Everything is driven through a stub CLI on PATH, so the assertions are about
 what actually reaches NoteCove.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -103,6 +104,16 @@ class AgentHarness(unittest.TestCase):
 
         (self.signals / "events.log").touch()
         (self.signals / f"{self.SLUG}.full-slug").write_text(self.FULL)
+        # resume_work reads the task before it writes, so every harness starts
+        # from an ordinary non-terminal state. Tests that care overwrite it.
+        self.set_task_state("attention", "Attention", terminal=False)
+
+    def set_task_state(self, state_id: str, name: str, terminal: bool):
+        (self.stub_dir / "show.json").write_text(json.dumps({
+            "id": "longid", "stateId": state_id, "stateName": name,
+            "isTerminal": terminal,
+            "state": {"id": state_id, "name": name, "isTerminal": terminal},
+        }))
 
     def run_snippet(self, snippet: str, comment_limit: int = 996,
                     init: bool = True, shell: str = "bash",
@@ -162,6 +173,67 @@ class TestTaskRef(AgentHarness):
         )
         self.assertEqual(r.returncode, 0)
         self.assertEqual(self.comments(), [f"{self.FULL}|x"])
+
+
+class TestResumeWorkGuard(AgentHarness):
+    """
+    The nudge and every skill run resume_work before read_inbox. When the change
+    being delivered is the user closing the task, an unguarded resume_work set
+    Doing over the user's Done before the agent ever saw the state change — the
+    agent then had to notice and put it back itself (WORK-s5p).
+    """
+
+    def assert_untouched(self, r):
+        self.assertEqual(self.states(), [])
+        self.assertFalse((self.signals / f"{self.SLUG}.self-state").exists())
+
+    def test_done_is_not_overwritten(self):
+        self.set_task_state("done", "Done", terminal=True)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=3", r.stdout)
+        self.assert_untouched(r)
+        self.assertIn("resume-refused-terminal", (self.signals / "events.log").read_text())
+
+    def test_wont_do_is_not_overwritten(self):
+        self.set_task_state("wontdo", "Won't Do", terminal=True)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=3", r.stdout)
+        self.assert_untouched(r)
+
+    def test_custom_terminal_state_is_detected_by_flag_not_name(self):
+        self.set_task_state("xyz123", "Shipped", terminal=True)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=3", r.stdout)
+        self.assert_untouched(r)
+
+    def test_user_set_blocked_is_not_overwritten(self):
+        self.set_task_state("blocked", "Blocked", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=3", r.stdout)
+        self.assert_untouched(r)
+
+    def test_failed_read_writes_nothing(self):
+        # Fails closed: overwriting the user's state is the harm being prevented.
+        (self.stub_dir / "show.json").unlink()
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=1", r.stdout)
+        self.assert_untouched(r)
+        self.assertIn("resume-aborted-read", (self.signals / "events.log").read_text())
+
+    def test_attention_resumes_to_doing(self):
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
+
+    def test_refused_resume_keeps_the_summary_marker(self):
+        """
+        A refused resume is not a new working turn, so it must not reopen the
+        summary obligation and make finish_cleanup post a stale fallback.
+        """
+        (self.signals / f"{self.SLUG}.summary-posted").touch()
+        self.set_task_state("done", "Done", terminal=True)
+        self.run_snippet('resume_work')
+        self.assertTrue((self.signals / f"{self.SLUG}.summary-posted").exists())
 
 
 class TestPostSummary(AgentHarness):
