@@ -20,6 +20,7 @@ Everything is driven through a stub CLI on PATH, so the assertions are about
 what actually reaches NoteCove.
 """
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -104,10 +105,11 @@ class AgentHarness(unittest.TestCase):
         (self.signals / f"{self.SLUG}.full-slug").write_text(self.FULL)
 
     def run_snippet(self, snippet: str, comment_limit: int = 996,
-                    init: bool = True) -> subprocess.CompletedProcess:
+                    init: bool = True, shell: str = "bash",
+                    notecove_bin: str = None) -> subprocess.CompletedProcess:
         lines = [
             f'export SIGNALS="{self.signals}"',
-            f'export NOTECOVE_BIN="{self.cli}"',
+            f'export NOTECOVE_BIN="{notecove_bin or self.cli}"',
             f'source "{self.scripts / "agent-notecove.sh"}"',
         ]
         if init:
@@ -120,7 +122,7 @@ class AgentHarness(unittest.TestCase):
             COMMENT_LIMIT=str(comment_limit),
         )
         return subprocess.run(
-            ["bash", "-c", "\n".join(lines)], capture_output=True, text=True, env=env
+            [shell, "-c", "\n".join(lines)], capture_output=True, text=True, env=env
         )
 
     def comments(self) -> list:
@@ -264,6 +266,38 @@ class TestSummaryGuarantee(AgentHarness):
         self.run_snippet('resume_work; finish_task "Done" "WORK"')
         log = (self.stub_dir / "task-done.log").read_text()
         self.assertIn(f"{self.SLUG} WORK", log)
+
+
+@unittest.skipUnless(shutil.which("zsh"), "zsh not installed")
+class TestSourcedFromZsh(AgentHarness):
+    """
+    The skills tell agents to source this helper straight into their shell, and
+    the Claude Code Bash tool's shell is zsh on macOS. With the real two-word
+    NOTECOVE_BIN every call failed there, so resume_work never set Doing and
+    post_summary never posted. The stub is invoked as `bash <stub>` to keep that
+    two-word shape — a one-word path would pass regardless.
+    """
+
+    def run_zsh(self, snippet: str, **kw) -> subprocess.CompletedProcess:
+        return self.run_snippet(snippet, shell="zsh",
+                                notecove_bin=f"bash {self.cli}", **kw)
+
+    def test_resume_work_sets_doing(self):
+        r = self.run_zsh('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout, r.stderr)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
+
+    def test_summary_then_attention(self):
+        r = self.run_zsh('resume_work && post_summary "did the thing" && request_attention Attention')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bodies(), ["did the thing"])
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing", f"{self.FULL}|Attention"])
+
+    def test_over_long_summary_is_truncated_not_dropped(self):
+        self.run_zsh(f'post_summary "{"x" * 2000}"')
+        self.assertEqual(len(self.bodies()), 1)
+        self.assertTrue(self.bodies()[0].startswith("x" * 900))
+        self.assertNotIn("x" * 901, self.bodies()[0])
 
 
 if __name__ == "__main__":

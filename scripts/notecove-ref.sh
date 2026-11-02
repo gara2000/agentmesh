@@ -61,7 +61,11 @@ _NOTECOVE_REF_SOURCED=1
 # in a git worktree reads and writes its own caches — most callers do not export
 # SIGNALS, and silently resolving to a different tree's cache would have the
 # daemons of one checkout addressing tasks through another's slug mappings.
-_NC_DEFAULT_SIGNALS=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/signals
+#
+# BASH_SOURCE is empty when an agent sources this from zsh (the Claude Code Bash
+# tool's shell on macOS), and `dirname ""` is the caller's cwd. zsh sets $0 to
+# the file being sourced, so that is the fallback.
+_NC_DEFAULT_SIGNALS=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/signals
 
 _nc_signals() {
     if [[ -n "${SIGNALS:-}" && -d "${SIGNALS}" ]]; then
@@ -76,7 +80,17 @@ _nc_signals() {
 # Run the NoteCove CLI. stdin is closed so no prompt can ever block, and the
 # call is bounded by NC_CALL_TIMEOUT. Returns the CLI exit code, or 124 on
 # timeout.
+#
+# NOTECOVE_BIN is a command line ("node /path/cli.cjs"), deliberately left
+# unquoted so it splits into words. zsh does not word-split parameters, so an
+# agent that sources this into its zsh shell ran a program literally named
+# "node /path/cli.cjs" — every helper call failed, and resume_work silently did
+# not set Doing. sh_word_split restores bash's behaviour for this call only;
+# local_options puts the caller's shell back as it was on return.
 nc_run() {
+    if [[ -n "${ZSH_VERSION:-}" ]]; then
+        setopt local_options sh_word_split
+    fi
     timeout "$NC_CALL_TIMEOUT" $NOTECOVE_BIN "$@" </dev/null
 }
 

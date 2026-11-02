@@ -19,6 +19,7 @@ Plus the resolution rules themselves: cache first, refuse to guess between two
 matches, and never return empty (callers use nc_ref inline).
 """
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -74,17 +75,20 @@ class RefHarness(unittest.TestCase):
         stub.chmod(0o755)
         self.stub = stub
 
-    def run_snippet(self, snippet: str) -> subprocess.CompletedProcess:
-        """Source notecove-ref.sh in a fresh bash and run snippet against it."""
+    def run_snippet(self, snippet: str, shell: str = "bash",
+                    notecove_bin: str = None, signals: bool = True,
+                    cwd: str = None) -> subprocess.CompletedProcess:
+        """Source notecove-ref.sh in a fresh shell and run snippet against it."""
         script = (
-            f'export SIGNALS="{self.signals}"\n'
-            f'export NOTECOVE_BIN="{self.stub}"\n'
+            (f'export SIGNALS="{self.signals}"\n' if signals else "")
+            + f'export NOTECOVE_BIN="{notecove_bin or self.stub}"\n'
             f'source "{SCRIPTS / "notecove-ref.sh"}"\n'
             f"{snippet}\n"
         )
         env = dict(os.environ, STUB_DIR=str(self.stub_dir), HOME=str(self.root))
+        env.pop("SIGNALS", None)
         return subprocess.run(
-            ["bash", "-c", script], capture_output=True, text=True, env=env
+            [shell, "-c", script], capture_output=True, text=True, env=env, cwd=cwd
         )
 
     def write_task_list(self, tasks: list) -> None:
@@ -120,6 +124,78 @@ class TestNcRun(RefHarness):
     def test_passes_arguments_through_verbatim(self):
         self.run_snippet('nc_run task list --state Ready --json >/dev/null')
         self.assertEqual(self.calls(), ["task list --state Ready --json"])
+
+
+@unittest.skipUnless(shutil.which("zsh"), "zsh not installed")
+class TestSourcedFromZsh(RefHarness):
+    """
+    Agents source the helpers straight into the Claude Code Bash tool's shell,
+    which is zsh on macOS. zsh does not word-split an unquoted parameter, and the
+    real NOTECOVE_BIN is a command line of two words
+    ("node /Applications/NoteCove.app/.../cli.cjs"). So `$NOTECOVE_BIN "$@"` ran
+    a program literally named "node /Applications/..." and every helper call
+    failed — resume_work never set Doing, and nothing said so.
+
+    The stub is therefore invoked as `bash <stub>`: a single-word NOTECOVE_BIN
+    passes under either shell and would hide the bug.
+    """
+
+    def two_word_bin(self) -> str:
+        return f"bash {self.stub}"
+
+    def test_two_word_bin_reaches_the_cli_under_zsh(self):
+        r = self.run_snippet(
+            'nc_run task list --state Ready --json >/dev/null; echo "rc=$?"',
+            shell="zsh", notecove_bin=self.two_word_bin(),
+        )
+        self.assertIn("rc=0", r.stdout, r.stderr)
+        self.assertNotIn("failed to run command", r.stderr)
+        self.assertEqual(self.calls(), ["task list --state Ready --json"])
+
+    def test_two_word_bin_still_works_under_bash(self):
+        self.run_snippet(
+            'nc_run task list --json >/dev/null',
+            notecove_bin=self.two_word_bin(),
+        )
+        self.assertEqual(self.calls(), ["task list --json"])
+
+    def test_arguments_with_spaces_stay_one_argument_under_zsh(self):
+        """Only NOTECOVE_BIN is split — a comment body must not be."""
+        argc = self.bin / "argc"
+        argc.write_text('printf "%s|" "$#" "$@"\n')
+        r = self.run_snippet(
+            'nc_run task comments add "two words"',
+            shell="zsh", notecove_bin=f"bash {argc}",
+        )
+        self.assertEqual(r.stdout, "4|task|comments|add|two words|")
+
+    def test_stdin_closed_and_exit_code_propagated_under_zsh(self):
+        r = self.run_snippet(
+            'nc_run task show WORK-nope --json 2>/dev/null; echo "rc=$?"',
+            shell="zsh", notecove_bin=self.two_word_bin(),
+        )
+        self.assertIn("rc=1", r.stdout)
+        stdin_log = (self.stub_dir / "stdin.log").read_text().splitlines()
+        self.assertEqual(stdin_log, ["closed-or-pipe"])
+
+    def test_word_splitting_does_not_leak_into_the_callers_shell(self):
+        """The option is scoped to nc_run; the agent's shell keeps zsh semantics."""
+        r = self.run_snippet(
+            'nc_run task list >/dev/null; v="a b"; for w in $v; do echo "[$w]"; done',
+            shell="zsh", notecove_bin=self.two_word_bin(),
+        )
+        self.assertEqual(r.stdout.splitlines(), ["[a b]"])
+
+    def test_default_signals_dir_is_the_repos_not_the_cwd(self):
+        """
+        BASH_SOURCE is empty in zsh, so the default was computed from `dirname ""`
+        — the caller's working directory — and pointed at some other signals/.
+        """
+        expected = os.path.realpath(SCRIPTS.parent / "signals")
+        r = self.run_snippet(
+            '_nc_signals', shell="zsh", signals=False, cwd=str(self.root),
+        )
+        self.assertEqual(os.path.realpath(r.stdout), expected, r.stderr)
 
 
 class TestNcRef(RefHarness):
