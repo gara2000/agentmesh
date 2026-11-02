@@ -229,6 +229,13 @@ class TestWhatGetsTyped(NotifyHarness):
         self.assertNotIn("\n", r.stdout)
         self.assertIn(self.SLUG, r.stdout)
 
+    def test_message_says_what_a_refused_resume_means(self):
+        # resume_work returns 3 when the user closed the task; an agent woken
+        # after a long gap has only this line to tell it what to do then.
+        r = self.run_fn(f'nudge_message "{self.SLUG}"')
+        self.assertIn("exits 3", r.stdout)
+        self.assertIn("finish_cleanup", r.stdout)
+
     def test_delivery_is_logged(self):
         self.run_fn(f'deliver_nudge "{self.SLUG}"')
         self.assertIn("nudge-delivered", self.events())

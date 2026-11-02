@@ -230,7 +230,7 @@ Agents source `scripts/agent-notecove.sh`:
 | Function | Purpose |
 |---|---|
 | `agent_init <slug> <handle>` | Set slug and handle; resolve `$TASK_REF`; clear `signals/<slug>.launching`; open the delivery gate (`signals/<slug>.ready`) |
-| `resume_work` | Back to `Doing`. The first action of every working turn |
+| `resume_work` | Back to `Doing`. The first action of every working turn. Returns 3 and writes nothing if the user closed the task (terminal or `Blocked`) — then `read_inbox`, `finish_cleanup`, stop; returns 1 and writes nothing if the task cannot be read |
 | `post_summary <text>` | Post one brief comment as `<handle>`, truncated to 900 chars, retried once, verified |
 | `request_attention [<state>] [<summary>]` | Hand the task back to the user, posting a placeholder if no summary went up this round. **Does not block** — end the turn once it returns |
 | `read_inbox` | Print the inbox as line-delimited JSON and clear it |
@@ -247,7 +247,7 @@ Agents source `scripts/agent-notecove.sh`:
 
 `await_user` survives as a **deprecated alias of `request_attention`** — it announces and returns rather than blocking. It exists only so a worker that somehow boots on pre-3.5.0 skill text degrades to "ends its turn early" instead of hanging forever on a signal nobody fires.
 
-Every state change an agent makes goes through `resume_work` / `request_attention` / `finish_task`, all of which call `set_state`. A **bare `notecove task change --state`** skips the `.self-state` marker, so the sidecar reports the change back and the agent interrupts itself.
+Every state change an agent makes goes through `resume_work` / `request_attention` / `finish_task`, all of which call `set_state`. `resume_work` reads the task first and refuses to leave a terminal or `Blocked` state: wake-ups run it before `read_inbox`, so without that check a user's `Done` was overwritten with `Doing` before the agent saw the state change. A **bare `notecove task change --state`** skips the `.self-state` marker, so the sidecar reports the change back and the agent interrupts itself.
 
 ### Inbox format
 

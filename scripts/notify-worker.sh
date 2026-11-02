@@ -36,7 +36,7 @@ _nw_log() {
 # have lost all shell state since it last ran, so the message names the helper to
 # source rather than assuming the functions are still defined.
 nudge_message() {
-  printf '%s' "[agentmesh] New activity on $1 — source ~/agentmesh/scripts/agent-notecove.sh and run agent_init if your shell state is gone, then resume_work (back to Doing) and read_inbox, act on what you find, and request_attention only when you next need the user."
+  printf '%s' "[agentmesh] New activity on $1 — source ~/agentmesh/scripts/agent-notecove.sh and run agent_init if your shell state is gone, then resume_work (back to Doing) and read_inbox — if resume_work exits 3 the user closed the task, so finish_cleanup and stop — act on what you find, and request_attention only when you next need the user."
 }
 
 # mark_pending <slug>

@@ -50,6 +50,8 @@ resume_work                # back to Doing — you are working again
 read_inbox                 # what the sidecar had to tell you
 ```
 
+**If `resume_work` returns 3, the user has closed the task** (a terminal state, or `Blocked`) — very likely the very change this message is about. It has written nothing, so their state stands. Run `read_inbox` for anything they said, then `finish_cleanup "<project>"`, and end your turn. Do not "restore" anything with `finish_task`. A return of 1 means the task could not be read and nothing was changed; retry once before going on.
+
 `read_inbox` prints line-delimited JSON and clears the inbox:
 
 ```
@@ -99,7 +101,7 @@ finish_task "Won't Do" "<project>"    # the user aborted
 
 `finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
 
-If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. `resume_work` returning 3 is the same situation, caught before it could overwrite their state. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
 
 ```bash
 finish_cleanup "<project>"    # the user set the terminal state; still release dependents
@@ -190,6 +192,7 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **Keep comments brief.** A few sentences. Artifacts belong in notes.
 - **`request_attention` does not block — end your turn after it.** Do not poll the inbox, do not sleep, do not call it in a loop. The sidecar starts your next turn by typing a message into your REPL.
 - **Call `resume_work` at the top of every working turn.** `Doing` while you work, `Attention` only when the user has the task.
+- **`resume_work` returning 3 means the user closed the task.** It wrote nothing; `read_inbox`, then `finish_cleanup "<project>"`, then stop.
 - **Never change state with a bare `notecove task change --state ...`** — go through `resume_work` / `request_attention` / `finish_task`, which record the move so the sidecar does not report it back to you.
 - **An empty `read_inbox` is not an error.** It means nothing new; carry on.
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
