@@ -200,6 +200,8 @@ A task's `slug.short` is a *uniquePrefix*: unique only at the moment it is read.
 
 Short slugs stay in use as *local* identifiers — tmux window names and `signals/` filenames — because renaming those would invalidate every running worker's state. Only what reaches the CLI changes. Agents get the resolved value as **`$TASK_REF`** from `agent_init`, and `launcher.py` passes `stdin=subprocess.DEVNULL` to every subprocess for the same reason `nc_run` does.
 
+**The helpers must work when sourced from zsh**, because agents source `agent-notecove.sh` straight into the Claude Code Bash tool's shell, which is zsh on macOS. `NOTECOVE_BIN` is a two-word command line (`node …/cli.cjs`) expanded unquoted, and zsh does not word-split parameters, so every call there used to fail with `failed to run command 'node /Applications/…'` — `resume_work` silently never set `Doing`. `nc_run` now turns on `sh_word_split` for that call only, and the default signals dir falls back to `$0` where zsh leaves `BASH_SOURCE` empty. Both are covered by zsh tests in `test_slug_resolution.py` and `test_agent_notecove.py`.
+
 ### Two filters, one rule
 
 The sidecar reports what *others* did to the task, never what the agent did to it:

@@ -60,6 +60,8 @@ Two defences, both in `notecove-ref.sh`:
 
 Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` call. In Python, `launcher.py` passes `stdin=subprocess.DEVNULL` on every CLI invocation for the same reason.
 
+**The helpers must work when sourced from zsh**, because agents source `agent-notecove.sh` straight into the Claude Code Bash tool's shell, which is zsh on macOS. `NOTECOVE_BIN` is a two-word command line (`node …/cli.cjs`) expanded unquoted, and zsh does not word-split parameters, so every call there used to fail with `failed to run command 'node /Applications/…'` — `resume_work` silently never set `Doing`. `nc_run` now turns on `sh_word_split` for that call only, and the default signals dir falls back to `$0` where zsh leaves `BASH_SOURCE` empty. Both are covered by zsh tests in `test_slug_resolution.py` and `test_agent_notecove.py`.
+
 ### Delivery Protocol
 
 | Mechanism | Direction | Trigger |
