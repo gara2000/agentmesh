@@ -300,9 +300,7 @@ Proceed automatically to Phase 2.
 If the task is ambiguous or you need clarification before proceeding confidently, write a questions note for the user:
 
 ```bash
-notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content-file - --format markdown --json << 'EOF'
-# Questions — Round <N>
-
+create_note "<slug>/QUESTIONS-<N>" << 'EOF'
 > **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
 
 ## Q1: <question>
@@ -314,6 +312,8 @@ notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content
 **Answer:** _(write your answer here)_
 EOF
 ```
+
+**Create every note with `create_note "<title>" [<folder-id>]`** — body on stdin, folder defaulting to your task folder. It prints the new note's id and exports `NOTE_ID`. `notecove note create` has no title argument: the title is the first line of the content, and a title passed as a positional is silently dropped, which is how notes came to be named "Implementation Plan" instead of `<slug>/PLAN`. `create_note` writes the `# <title>` line itself and fails if the title did not take, so start the body *below* the heading.
 
 Comment that the questions are waiting, then block:
 ```bash
@@ -377,6 +377,7 @@ EOF
 ## Shared Critical Rules (Implementer Additions)
 
 - **Use `ensure_task_folder` for the task folder and its description link — never edit the description by hand.** Hand-rolled versions of this destroyed users' task descriptions. If it fails, stop and say so.
+- **Create notes with `create_note "<slug>/<NAME>"`, never `notecove note create "<title>" …`** — the CLI ignores a title argument, and a restarted worker finds prior work by these names.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 - **Re-read your QUESTIONS note after every wake** — inline answers written into the note are the most common way users reply, and a note edit does not reliably wake you.
 <!-- BASE-AGENT:END -->
@@ -396,9 +397,7 @@ For each proposed subtask, identify the specific files it will likely modify (us
 Create a DECOMPOSITION note proposing the subtasks:
 
 ```bash
-notecove note create "<slug>/DECOMPOSITION" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# Decomposition Plan
-
+create_note "<slug>/DECOMPOSITION" << 'EOF'
 **Parent task:** <slug> — <title>
 
 ## Proposed Subtasks
@@ -513,7 +512,7 @@ CHILD_FOLDER_PATH=$(echo "$CHILD_FOLDER_JSON" | python3 -c "import sys,json; pri
 Because independent subtasks are created first (Step A), their slugs are already known when you write DESCRIPTION notes for blocked subtasks. Fill in the `## Blocked by` section with actual blocker slugs at this point — do not leave it as a placeholder.
 
 ```bash
-notecove note create "${CHILD_SLUG}/DESCRIPTION" --folder ${CHILD_FOLDER_ID} --content-file - --format markdown --json << 'EOF'
+create_note "${CHILD_SLUG}/DESCRIPTION" "$CHILD_FOLDER_ID" << 'EOF'
 ## Context
 
 Part of parent task [[T:<parent-task-id>|<parent-slug>]].

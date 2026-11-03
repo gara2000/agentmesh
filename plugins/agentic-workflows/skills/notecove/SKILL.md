@@ -133,6 +133,7 @@ notecove note recent [--hot|--cold] [--hot-days <n>] [--cold-days <n>] [--limit 
 
 ```bash
 notecove note create [--folder <id>] [--sd <id>] [--content <text>] [--content-file <path>] [--format text|markdown|json] [--json]
+                                                  # no title argument: the title is the first content line
 notecove note edit <id> --content <text>          # replace content
 notecove note edit <id> --content-file <path>     # replace content from file (use - for stdin)
 notecove note edit <id> --append <text>           # append content

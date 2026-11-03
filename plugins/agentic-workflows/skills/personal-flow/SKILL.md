@@ -298,8 +298,10 @@ After initial exploration:
 **Create a NoteCove note for each questions round:**
 
 ```bash
-notecove note create "<task-code>/<slug>/QUESTIONS-<N>" --folder <notes folder ID>
+notecove note create --folder <notes folder ID> --content "# <task-code>/<slug>/QUESTIONS-<N>"
 ```
+
+Keep `# <task-code>/<slug>/QUESTIONS-<N>` as the note's first line when you populate it — NoteCove titles a note by its first line, and `note create` has no title argument.
 
 Then open the note in NoteCove (it will appear in the desktop app). Populate it with this template:
 
@@ -380,8 +382,10 @@ Based on the full exchange, produce a markdown plan and save it as a NoteCove no
 **Create the PLAN note:**
 
 ```bash
-notecove note create "<task-code>/<slug>/PLAN" --folder <notes folder ID>
+notecove note create --folder <notes folder ID> --content "# <task-code>/<slug>/PLAN"
 ```
+
+Keep `# <task-code>/<slug>/PLAN` as the note's first line when you populate it — NoteCove titles a note by its first line, and `note create` has no title argument.
 
 Open the note in the desktop app and populate it with the full plan using the format below.
 After writing the plan, create NoteCove tasks for each phase and link them to the feature task:
