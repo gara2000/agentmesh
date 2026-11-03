@@ -257,8 +257,10 @@ Each brainstorming round produces a note in NoteCove. The goal is to **think out
 **Create a brainstorming note:**
 
 ```bash
-notecove note create "<task-code>/BRAINSTORM-<N>" --folder <brainstorming folder ID>
+notecove note create --folder <brainstorming folder ID> --content "# <task-code>/BRAINSTORM-<N>"
 ```
+
+Keep `# <task-code>/BRAINSTORM-<N>` as the note's first line when you populate it — NoteCove titles a note by its first line, and `note create` has no title argument.
 
 Populate it with this structure:
 
@@ -355,8 +357,10 @@ For each subtask, determine:
 ### Create the Decomposition Summary
 
 ```bash
-notecove note create "<task-code>/DECOMPOSITION" --folder <plans folder ID>
+notecove note create --folder <plans folder ID> --content "# <task-code>/DECOMPOSITION"
 ```
+
+Keep `# <task-code>/DECOMPOSITION` as the note's first line when you populate it — NoteCove titles a note by its first line, and `note create` has no title argument.
 
 Populate it with:
 
@@ -436,8 +440,10 @@ These plans will be picked up by **other AI agents** running the `personal-flow`
 **Create a plan note for each subtask:**
 
 ```bash
-notecove note create "<task-code>/PLAN-<subtask-slug>" --folder <plans folder ID>
+notecove note create --folder <plans folder ID> --content "# <task-code>/PLAN-<subtask-slug>"
 ```
+
+Keep `# <task-code>/PLAN-<subtask-slug>` as the note's first line when you populate it — NoteCove titles a note by its first line, and `note create` has no title argument.
 
 Populate with this structure:
 

@@ -300,9 +300,7 @@ Proceed automatically to Phase 2.
 If the task is ambiguous or you need clarification before proceeding confidently, write a questions note for the user:
 
 ```bash
-notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content-file - --format markdown --json << 'EOF'
-# Questions — Round <N>
-
+create_note "<slug>/QUESTIONS-<N>" << 'EOF'
 > **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
 
 ## Q1: <question>
@@ -314,6 +312,8 @@ notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content
 **Answer:** _(write your answer here)_
 EOF
 ```
+
+**Create every note with `create_note "<title>" [<folder-id>]`** — body on stdin, folder defaulting to your task folder. It prints the new note's id and exports `NOTE_ID`. `notecove note create` has no title argument: the title is the first line of the content, and a title passed as a positional is silently dropped, which is how notes came to be named "Implementation Plan" instead of `<slug>/PLAN`. `create_note` writes the `# <title>` line itself and fails if the title did not take, so start the body *below* the heading.
 
 Comment that the questions are waiting, then block:
 ```bash
@@ -377,6 +377,7 @@ EOF
 ## Shared Critical Rules (Implementer Additions)
 
 - **Use `ensure_task_folder` for the task folder and its description link — never edit the description by hand.** Hand-rolled versions of this destroyed users' task descriptions. If it fails, stop and say so.
+- **Create notes with `create_note "<slug>/<NAME>"`, never `notecove note create "<title>" …`** — the CLI ignores a title argument, and a restarted worker finds prior work by these names.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 - **Re-read your QUESTIONS note after every wake** — inline answers written into the note are the most common way users reply, and a note edit does not reliably wake you.
 <!-- BASE-AGENT:END -->
@@ -394,9 +395,7 @@ mcp__atlassian__atlassianUserInfo()
 **If the MCP call fails** (error, timeout, or returns an error response):
 - Write a note explaining the issue:
 ```bash
-notecove note create "<slug>/QUESTIONS-1" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# MCP Access Issue — Round 1
-
+create_note "<slug>/QUESTIONS-1" << 'EOF'
 > **How to answer:** Edit this note and write your answers inline below each question.
 
 ## Q1: Atlassian MCP is not accessible
@@ -440,9 +439,7 @@ Record the project key and issue type IDs found — these will be used in Phase 
 Draft all tickets that need to be created. Write a `<slug>/DRAFT` note with the full ticket details so the user can review and confirm before any Jira API calls are made.
 
 ```bash
-notecove note create "<slug>/DRAFT" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# Ticket Draft
-
+create_note "<slug>/DRAFT" << 'EOF'
 **Jira Project:** <project-key>
 
 ---
@@ -533,9 +530,7 @@ If any ticket creation fails, note the error and continue creating the remaining
 Write a `<slug>/COMPLETION` note summarizing what was created:
 
 ```bash
-notecove note create "<slug>/COMPLETION" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# Tickets Created
-
+create_note "<slug>/COMPLETION" << 'EOF'
 ## Summary
 
 <N> ticket(s) created in Jira project <project-key>.

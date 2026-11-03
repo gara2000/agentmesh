@@ -468,6 +468,88 @@ sys.exit(0 if "[[F:" in content and len(content) >= int(sys.argv[1]) else 1)
     _log_event "task-folder-linked"
 }
 
+# create_note <title> [<folder-id>]   (body on stdin)
+#
+# Create a note titled exactly <title> — `<slug>/PLAN`, `<slug>/QUESTIONS-2` —
+# in <folder-id>, defaulting to this task's folder. Prints the new note's id and
+# exports NOTE_ID.
+#
+#   create_note "$SLUG/PLAN" << 'EOF'
+#   **Task:** …
+#   EOF
+#
+# `notecove note create` takes no title argument: the title is the first line of
+# the content. Every skill template used to pass one anyway —
+# `notecove note create "<slug>/PLAN" --folder … --content-file -` — and the CLI
+# dropped it without a word, so notes came out titled after their first heading
+# ("Implementation Plan", "Questions — Round 1"). That broke the naming
+# convention a restarted worker relies on to find PLAN / QUESTIONS / COMPLETION.
+#
+# So the title line is written here, not by the caller: the body must not start
+# with its own heading (one that already reads `# <title>` is tolerated). The
+# result is checked rather than assumed — a note whose title came out different
+# is reported as a failure, with its id, so it can be fixed instead of lost.
+create_note() {
+    local title="${1:?create_note: title required}"
+    local folder="${2:-${TASK_FOLDER_ID:-}}"
+
+    # A shell that lost its state has no TASK_FOLDER_ID. ensure_task_folder is
+    # idempotent and read-only once the folder is linked, so it is the safe way
+    # to get it back rather than guessing.
+    if [ -z "$folder" ]; then
+        ensure_task_folder || { _log_event "note-create-failed"; return 1; }
+        folder="$TASK_FOLDER_ID"
+    fi
+
+    local tmp; tmp=$(mktemp) || return 1
+    {
+        printf '# %s\n\n' "$title"
+        # Nothing piped in means an empty body, not a read that waits on a TTY.
+        [ -t 0 ] || python3 -c '
+import sys
+title = sys.argv[1]
+body = sys.stdin.read()
+first, _, rest = body.lstrip("\n").partition("\n")
+# The caller wrote the title line too; do not repeat it.
+if first.strip() == "# " + title:
+    body = rest.lstrip("\n")
+sys.stdout.write(body)
+' "$title"
+    } > "$tmp"
+
+    # A real path, never `--content-file -`: nc_run closes stdin.
+    local out
+    out=$(nc_run note create --folder "$folder" --content-file "$tmp" --format markdown --json)
+    local rc=$?
+    rm -f "$tmp"
+    if [ $rc -ne 0 ] || [ -z "$out" ]; then
+        _log_event "note-create-failed"
+        echo "[agent-notecove] create_note: creating '$title' failed." >&2
+        return 1
+    fi
+
+    local parsed id got
+    parsed=$(printf '%s' "$out" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+print(d.get("id") or "")
+print(d.get("title") or "")
+') || { _log_event "note-create-failed"; return 1; }
+    id=$(printf '%s' "$parsed" | sed -n 1p)
+    got=$(printf '%s' "$parsed" | sed -n 2p)
+    [ -n "$id" ] || { _log_event "note-create-failed"; return 1; }
+
+    NOTE_ID="$id"
+    export NOTE_ID
+    if [ "$got" != "$title" ]; then
+        _log_event "note-title-mismatch"
+        echo "[agent-notecove] create_note: note $id was titled '$got', not '$title'." >&2
+        printf '%s\n' "$id"
+        return 1
+    fi
+    printf '%s\n' "$id"
+}
+
 # finish_task <state> <project> [<summary>]
 #
 # Post a closing summary, set the task's terminal state, and run the cleanup that

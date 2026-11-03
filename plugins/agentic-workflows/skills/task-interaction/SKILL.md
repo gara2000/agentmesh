@@ -136,7 +136,9 @@ Ask the user to clarify ambiguities and align on the approach. Ask SPECIFIC, DET
 **Create a NoteCove note for each questions round:**
 
 ```bash
-notecove note create "<task-slug>/QUESTIONS-<N>" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
+notecove note create --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
+# <task-slug>/QUESTIONS-<N>
+
 <!-- Answer each question inline below it. When done, say 'continue'. -->
 
 ## Q1: <your question>
@@ -167,8 +169,8 @@ When all questions are resolved, proceed automatically to Phase 3.
 Produce a lightweight implementation plan.
 
 ```bash
-notecove note create "<task-slug>/PLAN" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# Implementation Plan
+notecove note create --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
+# <task-slug>/PLAN
 
 **Task:** <task-slug> — <task title>
 

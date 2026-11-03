@@ -300,9 +300,7 @@ Proceed automatically to Phase 2.
 If the task is ambiguous or you need clarification before proceeding confidently, write a questions note for the user:
 
 ```bash
-notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content-file - --format markdown --json << 'EOF'
-# Questions — Round <N>
-
+create_note "<slug>/QUESTIONS-<N>" << 'EOF'
 > **How to answer:** Edit this note and write your answers inline below each question, OR create a separate `<slug>/ANSWER-<N>` note.
 
 ## Q1: <question>
@@ -314,6 +312,8 @@ notecove note create "<slug>/QUESTIONS-<N>" --folder "$TASK_FOLDER_ID" --content
 **Answer:** _(write your answer here)_
 EOF
 ```
+
+**Create every note with `create_note "<title>" [<folder-id>]`** — body on stdin, folder defaulting to your task folder. It prints the new note's id and exports `NOTE_ID`. `notecove note create` has no title argument: the title is the first line of the content, and a title passed as a positional is silently dropped, which is how notes came to be named "Implementation Plan" instead of `<slug>/PLAN`. `create_note` writes the `# <title>` line itself and fails if the title did not take, so start the body *below* the heading.
 
 Comment that the questions are waiting, then block:
 ```bash
@@ -377,6 +377,7 @@ EOF
 ## Shared Critical Rules (Implementer Additions)
 
 - **Use `ensure_task_folder` for the task folder and its description link — never edit the description by hand.** Hand-rolled versions of this destroyed users' task descriptions. If it fails, stop and say so.
+- **Create notes with `create_note "<slug>/<NAME>"`, never `notecove note create "<title>" …`** — the CLI ignores a title argument, and a restarted worker finds prior work by these names.
 - **File triage tasks proactively** — anything noteworthy you notice goes into the Triage folder (`${TRIAGE_FOLDER}`, resolved at startup), regardless of whether it is related to your assigned task.
 - **Re-read your QUESTIONS note after every wake** — inline answers written into the note are the most common way users reply, and a note edit does not reliably wake you.
 <!-- BASE-AGENT:END -->
@@ -441,9 +442,7 @@ Fill every section. Do not leave template placeholders in the final document.
 Before writing the full RFC, write an outline note so the user can redirect scope or emphasis before the full document is drafted.
 
 ```bash
-notecove note create "<slug>/OUTLINE" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# RFC Outline
-
+create_note "<slug>/OUTLINE" << 'EOF'
 **Proposed title:** <RFC title>
 **Target:** Confluence | repo file (rfcs/<slug>-<kebab-title>.md)
 
@@ -538,9 +537,7 @@ Capture the URL from the API response as `RFC_URL`.
 ### 4a-4. Create COMPLETION note and signal
 
 ```bash
-notecove note create "<slug>/COMPLETION" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# RFC Creation Complete
-
+create_note "<slug>/COMPLETION" << 'EOF'
 ## What was written
 <summary of the RFC scope and key decisions>
 
@@ -669,9 +666,7 @@ watch_pr "$PR_URL"
 ### 5c. COMPLETION note and signal
 
 ```bash
-notecove note create "<slug>/COMPLETION" --folder <task-folder-id> --content-file - --format markdown --json << 'EOF'
-# RFC Creation Complete
-
+create_note "<slug>/COMPLETION" << 'EOF'
 ## What was written
 <summary>
 

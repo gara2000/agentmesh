@@ -144,6 +144,12 @@ The helper's rules, in order of importance:
 
 One trap it encodes: `--content-file -` must never be used through `nc_run`, which closes stdin — the CLI then reads nothing and writes an **empty** description. The helper writes to a temp file and passes a real path.
 
+### Note titles
+
+Task notes are found by name — `<slug>/PLAN`, `<slug>/QUESTIONS-<N>`, `<slug>/COMPLETION` — which is how a restarted worker recognises work already done. **`notecove note create` has no title argument**: the title is the first line of the content. Every skill template used to pass one anyway (`notecove note create "<slug>/PLAN" --folder …`), and the CLI dropped it silently, so notes were titled after their first heading ("Implementation Plan", "Questions — Round 1").
+
+Agents create notes through **`create_note "<title>" [<folder-id>]`** in `agent-notecove.sh`, body on stdin, folder defaulting to `$TASK_FOLDER_ID` (recovered via `ensure_task_folder` if the shell lost it). It writes the `# <title>` line itself, sends the content through a real temp file for the same `nc_run` reason as above, and checks the title NoteCove actually assigned — a mismatch returns 1 and logs `note-title-mismatch` rather than leaving a misnamed note behind unnoticed. Skills outside the implementer family, which do not source the helper, put `# <title>` on the first content line themselves.
+
 ### Comment Conventions
 
 - **Comments are summaries, not documents.** A few sentences at most — a comment tells the user what happened and where to look. Anything longer goes in a NoteCove note that the comment names.
@@ -398,7 +404,7 @@ agentmesh/
 │   ├── notecove-ref.sh     # the one safe way to call the NoteCove CLI with a slug: stdin closed, short slug resolved to full
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
 │   ├── notify-worker.sh    # delivery: types a one-line nudge into a worker's Claude REPL; sourced by sidecar + pr-monitor
-│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox, ensure_task_folder
+│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox, ensure_task_folder, create_note
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state
@@ -414,6 +420,7 @@ agentmesh/
 │   ├── test_slug_resolution.py # unit tests for notecove-ref.sh: stdin closure, full-slug resolution, refusal to guess
 │   ├── test_agent_notecove.py  # unit tests for the agent helper: TASK_REF addressing, the summary guarantee
 │   ├── test_task_folder_link.py # unit tests for ensure_task_folder: never writing on a failed read, idempotence, verification
+│   ├── test_create_note.py     # unit tests for create_note: the title line, title verification, no stdin to the CLI
 │   └── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
@@ -491,6 +498,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  agent           task-folder-create-failed        WORK-xyz
 2026-04-26T...  agent           task-folder-link-failed          WORK-xyz
 2026-04-26T...  agent           task-folder-verify-failed        WORK-xyz
+2026-04-26T...  agent           note-create-failed               WORK-xyz
+2026-04-26T...  agent           note-title-mismatch              WORK-xyz
 2026-04-26T...  watchdog        crash-detected                  WORK-xyz
 2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
 2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz
