@@ -225,6 +225,79 @@ class TestResumeWorkGuard(AgentHarness):
         self.assertIn("rc=0", r.stdout)
         self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
 
+    def test_fresh_pickup_from_ready_resumes_to_doing(self):
+        # The launcher leaves the task in Ready while Claude boots; the worker
+        # claims it with this very call.
+        self.set_task_state("ready", "Ready", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
+
+    def test_doing_resumes_to_doing(self):
+        self.set_task_state("doing", "Doing", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
+
+
+class TestResumeWorkUserState(AgentHarness):
+    """
+    The terminal guard alone let resume_work overwrite any *open* state the user
+    chose. A user moving the task to In Review was put straight back in Doing
+    before read_inbox had reported the move (WORK-jtc, WORK-pjx). Only the states
+    the agent lifecycle itself produces — Ready, Doing, Attention — may be
+    overwritten; anything else is the user parking the task.
+    """
+
+    def assert_refused_as_parked(self, r):
+        self.assertIn("rc=4", r.stdout)
+        self.assertEqual(self.states(), [])
+        self.assertFalse((self.signals / f"{self.SLUG}.self-state").exists())
+        self.assertIn("resume-refused-user-state", (self.signals / "events.log").read_text())
+
+    def test_in_review_is_not_overwritten(self):
+        self.set_task_state("dnzszhtx927tvgd7ybpynkd72y", "In Review", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assert_refused_as_parked(r)
+        self.assertIn("In Review", r.stderr)
+
+    def test_to_do_is_not_overwritten(self):
+        self.set_task_state("todo", "To Do", terminal=False)
+        self.assert_refused_as_parked(self.run_snippet('resume_work; echo "rc=$?"'))
+
+    def test_custom_open_state_is_not_overwritten(self):
+        self.set_task_state("q7w8e9", "Waiting on vendor", terminal=False)
+        self.assert_refused_as_parked(self.run_snippet('resume_work; echo "rc=$?"'))
+
+    def test_owned_states_match_by_name_not_id(self):
+        # Real projects give Attention and Ready random ids.
+        self.set_task_state("e4e1r03fdqm4krnf1rwb0tjdg7", "attention", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
+
+    def test_parked_is_not_reported_as_closed(self):
+        # 3 tells the agent to run finish_cleanup, which would release
+        # dependents and kill the sidecar of a task the user merely parked.
+        self.set_task_state("dnzszhtx927tvgd7ybpynkd72y", "In Review", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertNotIn("rc=3", r.stdout)
+        self.assertNotIn("resume-refused-terminal", (self.signals / "events.log").read_text())
+
+    def test_parked_resume_keeps_the_summary_marker(self):
+        (self.signals / f"{self.SLUG}.summary-posted").touch()
+        self.set_task_state("dnzszhtx927tvgd7ybpynkd72y", "In Review", terminal=False)
+        self.run_snippet('resume_work')
+        self.assertTrue((self.signals / f"{self.SLUG}.summary-posted").exists())
+
+    def test_zsh_refuses_parked_state_too(self):
+        self.set_task_state("dnzszhtx927tvgd7ybpynkd72y", "In Review", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"', shell="zsh",
+                             notecove_bin=f"bash {self.cli}")
+        self.assert_refused_as_parked(r)
+
+
+class TestResumeWorkSummaryMarker(AgentHarness):
     def test_refused_resume_keeps_the_summary_marker(self):
         """
         A refused resume is not a new working turn, so it must not reopen the

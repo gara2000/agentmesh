@@ -236,6 +236,13 @@ class TestWhatGetsTyped(NotifyHarness):
         self.assertIn("exits 3", r.stdout)
         self.assertIn("finish_cleanup", r.stdout)
 
+    def test_message_says_what_a_parked_resume_means(self):
+        # resume_work returns 4 when the user parked the task (e.g. In Review);
+        # cleaning up then would release dependents of a task still open.
+        r = self.run_fn(f'nudge_message "{self.SLUG}"')
+        self.assertIn("exits 4", r.stdout)
+        self.assertIn("no cleanup", r.stdout)
+
     def test_delivery_is_logged(self):
         self.run_fn(f'deliver_nudge "{self.SLUG}"')
         self.assertIn("nudge-delivered", self.events())
