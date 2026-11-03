@@ -4,7 +4,8 @@
 # Source this file at agent startup, then call:
 #   agent_init "<slug>" "<agent-handle>"
 #   resume_work                 # back to Doing — call this whenever you start working;
-#                               # returns 3 (writing nothing) if the user closed the task
+#                               # returns 3 (writing nothing) if the user closed the task,
+#                               # 4 if they parked it in a state the agent does not own
 #   post_summary "<brief summary of what just happened>"
 #   request_attention "<state>" # hand the task back to the user, then END YOUR TURN
 #   read_inbox                  # what the sidecar had to tell you
@@ -121,8 +122,11 @@ _log_event() {
 #
 # Returns 3, without changing anything, when the user has closed the task —
 # any terminal state, or Blocked. The agent should then read_inbox, call
-# finish_cleanup and stop. Returns 1, again without writing, if the task cannot
-# be read.
+# finish_cleanup and stop. Returns 4, again without writing, when the task is in
+# any other state the agent does not own (In Review, To Do, a custom state): the
+# user has parked it, not closed it, so the agent reads the inbox and may answer,
+# but leaves the state alone and does not clean up. Returns 1, again without
+# writing, if the task cannot be read.
 #
 # The guard exists because every wake-up runs resume_work *before* read_inbox.
 # When the change being delivered was the user setting Done, an unguarded
@@ -131,6 +135,14 @@ _log_event() {
 # it (WORK-s5p). Checking here protects every caller, whatever order its skill
 # text runs things in. A failed read fails closed for the same reason: the
 # write is the harmful step, so nothing is written on doubt.
+#
+# Open states are an allowlist, not "anything not terminal". Refusing only
+# terminal states let resume_work put a task the user had moved to In Review
+# straight back in Doing (WORK-pjx). The only states it may overwrite are the
+# ones the agent lifecycle itself produces: Ready (the launcher's pickup, before
+# the worker claims), Doing and Attention. They are matched by name, as set_state
+# writes them; the self-state marker cannot do this job, because the sidecar
+# consumes it as soon as its baseline absorbs the state.
 resume_work() {
     local verdict
     verdict=$(nc_run task show "$(_task_ref)" --json 2>/dev/null | python3 -c '
@@ -143,8 +155,14 @@ if not isinstance(d, dict) or not (d.get("stateId") or d.get("stateName")):
     sys.exit(1)
 # isTerminal, not a name: custom terminal states have arbitrary ids and names.
 # Blocked is not terminal but is still the user telling the agent to stop.
-blocked = "blocked" in ((d.get("stateId") or "").lower(), (d.get("stateName") or "").lower())
-print("closed:" + (d.get("stateName") or "") if d.get("isTerminal") or blocked else "open")
+name = d.get("stateName") or ""
+blocked = "blocked" in ((d.get("stateId") or "").lower(), name.lower())
+if d.get("isTerminal") or blocked:
+    print("closed:" + name)
+elif name.lower() in ("ready", "doing", "attention"):
+    print("open")
+else:
+    print("parked:" + name)
 ' 2>/dev/null)
     if [ -z "$verdict" ]; then
         _log_event "resume-aborted-read"
@@ -156,6 +174,12 @@ print("closed:" + (d.get("stateName") or "") if d.get("isTerminal") or blocked e
         echo "[agent-notecove] resume_work: the task is '${verdict#closed:}' — the user closed it." >&2
         echo "[agent-notecove] Not setting Doing. Run read_inbox, then finish_cleanup, and stop." >&2
         return 3
+    fi
+    if [ "${verdict#parked:}" != "$verdict" ]; then
+        _log_event "resume-refused-user-state"
+        echo "[agent-notecove] resume_work: the user moved the task to '${verdict#parked:}'." >&2
+        echo "[agent-notecove] Not setting Doing. Run read_inbox and answer if asked, but leave the state alone and do not clean up." >&2
+        return 4
     fi
 
     # A new working turn owes the user a new summary. Clearing the marker here

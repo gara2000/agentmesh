@@ -114,6 +114,8 @@ The watchdog setting `Ready`/`Blocked` on a crash is the one exception: a crashe
 
 **`resume_work` never overwrites a state the user chose to close.** Every wake-up runs `resume_work` *before* `read_inbox`, so when the change being delivered is the user setting `Done`, an unguarded `resume_work` put the task straight back in `Doing` before the agent had even seen why it was woken. It now reads the task first: on `isTerminal` (or `Blocked`) it writes nothing, logs `resume-refused-terminal` and returns **3**, and the agent runs `read_inbox` → `finish_cleanup` and stops. A failed read also writes nothing and returns 1 (`resume-aborted-read`) — the write is the harmful step, so it is skipped on doubt. The guard sits in the helper rather than in the call order so that it protects every skill, restarted workers, and agents still running older skill text.
 
+**Nor a state the user parked it in.** The open states are an allowlist: `resume_work` overwrites only `Ready` (the launcher's pickup), `Doing` and `Attention` — the states the agent lifecycle itself produces, matched by name. Any other non-terminal state (`In Review`, `To Do`, a custom one) is the user parking the task: it writes nothing, logs `resume-refused-user-state` and returns **4**. Refusing only terminal states put a task the user had moved to `In Review` straight back in `Doing`. Return 4 is deliberately not 3 — the task is not closed, so the agent reads the inbox and may answer, but runs no `finish_cleanup` (that would release dependents and kill the sidecar). The `.self-state` marker cannot make this distinction: the sidecar consumes it as soon as its baseline absorbs the state.
+
 **Agents change state only through `resume_work` / `request_attention` / `finish_task`, never a bare `notecove task change --state`.** All three go through `set_state`, which writes the state name to `signals/<slug>.self-state` *before* calling the CLI. That marker is how the sidecar tells "I moved this" from "the user moved this" — it compares the task's `stateName` against the marker and suppresses a match. Writing it first closes the race: there is no window in which the sidecar can observe the new state without also seeing the marker. Without it, an agent's own `Doing`/`Attention` writes come straight back as a message and interrupt it mid-work — harmless under the old blocking protocol, a self-inflicted interruption under this one. The marker is consumed once the sidecar's baseline has absorbed the state it names, so it cannot later swallow a genuine user move to that same state.
 
 ### The task folder link
@@ -481,6 +483,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  agent           summary-post-failed              WORK-xyz
 2026-04-26T...  agent           summary-fallback                 WORK-xyz
 2026-04-26T...  agent           resume-refused-terminal          WORK-xyz
+2026-04-26T...  agent           resume-refused-user-state        WORK-xyz
 2026-04-26T...  agent           resume-aborted-read              WORK-xyz
 2026-04-26T...  agent           task-folder-linked               WORK-xyz
 2026-04-26T...  agent           task-folder-aborted-read         WORK-xyz
