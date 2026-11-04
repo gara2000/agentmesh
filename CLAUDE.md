@@ -348,6 +348,8 @@ Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window
 
 **The same rule applies to the daemons.** `bootstrap.sh` and `agentmesh switch` pass each daemon's command to `tmux new-window` instead of `send-keys`-ing it into a shell, for exactly the reason above: the window must die with the process. Under the old `send-keys` form a crashed watchdog left a live `watchdog` window running zsh, so `agentmesh status` reported it healthy and no re-run of `bootstrap.sh` could ever notice it was gone.
 
+**Typing the skill invocation is verified, not assumed.** After the prompt appears `spawn-agent.sh` waits briefly for startup rendering to settle, types the command with `send-keys -l`, and presses Enter as a *separate* send — the same split `notify-worker.sh` uses. One send carrying both is written to the pty as a single burst, which Claude Code can read as a paste: the Enter lands in the draft and the prompt sits there unsent, only some of the time. It then checks the pane: while the input line (`❯`+NBSP) still holds `--task <slug>` the command is a draft, so it presses Enter again, up to `SPAWN_SUBMIT_TRIES` (5). A draft that never clears logs `spawn-submit-unconfirmed`, **kills the window** and exits non-zero, so the launcher clears `.launching` and retries on its next scan — a live window holding an unsent prompt would otherwise hide the task from adoption indefinitely.
+
 ---
 
 ## Skills
@@ -416,6 +418,7 @@ agentmesh/
 │   ├── test_reaper.py      # unit tests for reaper.sh, driven with --once against stub tmux/notecove
 │   ├── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
 │   ├── test_notify_worker.py # unit tests for nudge delivery: the .ready gate, retry sentinel, what gets typed
+│   ├── test_spawn_agent.py   # unit tests for spawn-agent.sh: literal typing, separate Enter, draft verification and retry
 │   ├── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author/self-state filtering, SSE frame matching
 │   ├── test_slug_resolution.py # unit tests for notecove-ref.sh: stdin closure, full-slug resolution, refusal to guess
 │   ├── test_agent_notecove.py  # unit tests for the agent helper: TASK_REF addressing, the summary guarantee
@@ -479,6 +482,10 @@ timestamp       component       event_type                      slug
 2026-04-26T...  sidecar         sse-unavailable:no-permission   WORK-xyz
 2026-04-26T...  sidecar         change-detected:comments=1:state=0  WORK-xyz
 2026-04-26T...  sidecar         notecove-call-timed-out          WORK-xyz
+2026-04-26T...  spawn-agent     spawn-submitted                  WORK-xyz
+2026-04-26T...  spawn-agent     spawn-submit-retried:<n>         WORK-xyz
+2026-04-26T...  spawn-agent     spawn-submit-unconfirmed         WORK-xyz
+2026-04-26T...  spawn-agent     spawn-prompt-timeout             WORK-xyz
 2026-04-26T...  notify-worker   nudge-delivered                 WORK-xyz
 2026-04-26T...  notify-worker   delivery-deferred-not-ready      WORK-xyz
 2026-04-26T...  notify-worker   delivery-failed-send             WORK-xyz

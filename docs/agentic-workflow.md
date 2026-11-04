@@ -535,7 +535,11 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 ## Agent Spawner
 
-`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project>` creates a tmux window, starts `claude --dangerously-skip-permissions`, waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then sends the skill invocation.
+`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project>` creates a tmux window, starts `claude --dangerously-skip-permissions`, waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then types the skill invocation.
+
+The invocation is typed and submitted as **two separate sends** — the text with `send-keys -l`, then `Enter` after a short pause — after a one-second settle that lets startup rendering finish. A single send carrying both reaches the pty as one burst, which Claude Code can read as a paste: the Enter is inserted into the draft rather than submitting it, and the worker sits at its prompt with the command unsent. That happened only intermittently, because it depends on how the burst is split across reads.
+
+The submit is then **verified**. Claude Code draws its live input line as `❯` + NBSP and echoes a submitted message into the history with a plain space, so while a `❯`+NBSP line still contains `--task <slug>` the command is a draft and Enter is pressed again, up to `SPAWN_SUBMIT_TRIES` (5). If it never clears, the script logs `spawn-submit-unconfirmed`, kills the window and exits non-zero: the launcher then clears `.launching` and retries on its next scan. Leaving the window up would strand the task — adoption skips any slug whose window is alive. Successful spawns log `spawn-submitted` (and `spawn-submit-retried:<n>` when extra Enters were needed).
 
 ---
 
