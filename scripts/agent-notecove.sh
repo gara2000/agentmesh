@@ -121,11 +121,11 @@ _log_event() {
 # Attention while the agent works misreports both.
 #
 # Returns 3, without changing anything, when the user has closed the task —
-# any terminal state, or Blocked. The agent should then read_inbox, call
-# finish_cleanup and stop. Returns 4, again without writing, when the task is in
-# any other state the agent does not own (In Review, To Do, a custom state): the
-# user has parked it, not closed it, so the agent reads the inbox and may answer,
-# but leaves the state alone and does not clean up. Returns 1, again without
+# any terminal state. The agent should then read_inbox, call finish_cleanup and
+# stop. Returns 4, again without writing, when the task is in any other state
+# the agent does not own (Blocked, In Review, To Do, a custom state): the user
+# has parked it, not closed it, so the agent reads the inbox and may answer, but
+# leaves the state alone and does not clean up. Returns 1, again without
 # writing, if the task cannot be read.
 #
 # The guard exists because every wake-up runs resume_work *before* read_inbox.
@@ -143,6 +143,13 @@ _log_event() {
 # the worker claims), Doing and Attention. They are matched by name, as set_state
 # writes them; the self-state marker cannot do this job, because the sidecar
 # consumes it as soon as its baseline absorbs the state.
+#
+# Blocked is parked, not closed. It used to return 3, so the agent ran
+# finish_cleanup, which deletes .ready and kills the sidecar — but Blocked is
+# not terminal, so the reaper never collects the worker. The launcher then
+# reconciled a fresh sidecar for the still-live window, and every nudge after
+# the user unblocked the task was deferred forever: only agent_init writes
+# .ready, and only a delivered nudge would make the agent run it (WORK-bx4).
 resume_work() {
     local verdict
     verdict=$(nc_run task show "$(_task_ref)" --json 2>/dev/null | python3 -c '
@@ -154,10 +161,10 @@ except (json.JSONDecodeError, ValueError):
 if not isinstance(d, dict) or not (d.get("stateId") or d.get("stateName")):
     sys.exit(1)
 # isTerminal, not a name: custom terminal states have arbitrary ids and names.
-# Blocked is not terminal but is still the user telling the agent to stop.
+# Blocked is not terminal and falls through to parked with every other state
+# the user chose.
 name = d.get("stateName") or ""
-blocked = "blocked" in ((d.get("stateId") or "").lower(), name.lower())
-if d.get("isTerminal") or blocked:
+if d.get("isTerminal"):
     print("closed:" + name)
 elif name.lower() in ("ready", "doing", "attention"):
     print("open")
