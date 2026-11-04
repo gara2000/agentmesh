@@ -50,9 +50,9 @@ resume_work                # back to Doing — you are working again
 read_inbox                 # what the sidecar had to tell you
 ```
 
-**If `resume_work` returns 3, the user has closed the task** (a terminal state, or `Blocked`) — very likely the very change this message is about. It has written nothing, so their state stands. Run `read_inbox` for anything they said, then `finish_cleanup "<project>"`, and end your turn. Do not "restore" anything with `finish_task`.
+**If `resume_work` returns 3, the user has closed the task** (a terminal state) — very likely the very change this message is about. It has written nothing, so their state stands. Run `read_inbox` for anything they said, then `finish_cleanup "<project>"`, and end your turn. Do not "restore" anything with `finish_task`.
 
-**If `resume_work` returns 4, the user has parked the task** in a state you do not own — `In Review`, `To Do`, or any custom state that is neither terminal nor `Ready`/`Doing`/`Attention`. It has written nothing, and the task is *not* closed. Run `read_inbox`; if the user asked you something, answer with `post_summary`. Leave the state alone — no `request_attention`, no `finish_task`, no `finish_cleanup` (which would release dependents and stop your sidecar) — and end your turn. The user moving the task back, or commenting `approve` / `abort`, brings you back into the normal loop; `approve` and `abort` are still honoured with `finish_task`, because an explicit command outranks the parked state.
+**If `resume_work` returns 4, the user has parked the task** in a state you do not own — `Blocked`, `In Review`, `To Do`, or any custom state that is neither terminal nor `Ready`/`Doing`/`Attention`. It has written nothing, and the task is *not* closed. `Blocked` belongs here, not under 3: it is a pause the user lifts, and cleaning up would leave you alive but unreachable when they do. Run `read_inbox`; if the user asked you something, answer with `post_summary`. Leave the state alone — no `request_attention`, no `finish_task`, no `finish_cleanup` (which would release dependents and stop your sidecar) — and end your turn. The user moving the task back, or commenting `approve` / `abort`, brings you back into the normal loop; `approve` and `abort` are still honoured with `finish_task`, because an explicit command outranks the parked state.
 
 A return of 1 means the task could not be read and nothing was changed; retry once before going on.
 
@@ -105,7 +105,7 @@ finish_task "Won't Do" "<project>"    # the user aborted
 
 `finish_task` sets the state *and* runs the cleanup that has to happen with it: releasing tasks blocked on this one, and stopping this task's sidecar and pr-monitor. Nothing else does either — a bare `notecove task change --state Done` leaves dependent tasks blocked forever and leaks two processes.
 
-If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do`, `Blocked`, or anything terminal — stop work and exit. `resume_work` returning 3 is the same situation, caught before it could overwrite their state. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
+If `read_inbox` reports a `state-change` you did not make — the user moved the task to `Won't Do` or anything terminal — stop work and exit. (`Blocked` is not terminal: `resume_work` returns 4 for it, so treat it as parked.) `resume_work` returning 3 is the same situation, caught before it could overwrite their state. Do not call `finish_task`, which would overwrite their state; call `finish_cleanup` instead:
 
 ```bash
 finish_cleanup "<project>"    # the user set the terminal state; still release dependents
@@ -197,7 +197,7 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **`request_attention` does not block — end your turn after it.** Do not poll the inbox, do not sleep, do not call it in a loop. The sidecar starts your next turn by typing a message into your REPL.
 - **Call `resume_work` at the top of every working turn.** `Doing` while you work, `Attention` only when the user has the task.
 - **`resume_work` returning 3 means the user closed the task.** It wrote nothing; `read_inbox`, then `finish_cleanup "<project>"`, then stop.
-- **`resume_work` returning 4 means the user parked the task** (e.g. `In Review`). It wrote nothing; `read_inbox`, answer if asked, change no state, run no cleanup, end your turn.
+- **`resume_work` returning 4 means the user parked the task** (e.g. `Blocked`, `In Review`). It wrote nothing; `read_inbox`, answer if asked, change no state, run no cleanup, end your turn.
 - **Never change state with a bare `notecove task change --state ...`** — go through `resume_work` / `request_attention` / `finish_task`, which record the move so the sidecar does not report it back to you.
 - **An empty `read_inbox` is not an error.** It means nothing new; carry on.
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.

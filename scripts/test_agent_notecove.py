@@ -206,12 +206,6 @@ class TestResumeWorkGuard(AgentHarness):
         self.assertIn("rc=3", r.stdout)
         self.assert_untouched(r)
 
-    def test_user_set_blocked_is_not_overwritten(self):
-        self.set_task_state("blocked", "Blocked", terminal=False)
-        r = self.run_snippet('resume_work; echo "rc=$?"')
-        self.assertIn("rc=3", r.stdout)
-        self.assert_untouched(r)
-
     def test_failed_read_writes_nothing(self):
         # Fails closed: overwriting the user's state is the harm being prevented.
         (self.stub_dir / "show.json").unlink()
@@ -283,6 +277,24 @@ class TestResumeWorkUserState(AgentHarness):
         r = self.run_snippet('resume_work; echo "rc=$?"')
         self.assertNotIn("rc=3", r.stdout)
         self.assertNotIn("resume-refused-terminal", (self.signals / "events.log").read_text())
+
+    def test_blocked_is_parked_not_closed(self):
+        # Blocked is a pause the user can lift. Reporting it as closed made the
+        # agent run finish_cleanup, which deleted .ready and left a live worker
+        # that no nudge could ever reach again once the task was unblocked
+        # (WORK-8tq, WORK-bx4).
+        self.set_task_state("blocked", "Blocked", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assert_refused_as_parked(r)
+        self.assertNotIn("resume-refused-terminal", (self.signals / "events.log").read_text())
+
+    def test_unblocked_back_to_ready_resumes_to_doing(self):
+        self.set_task_state("blocked", "Blocked", terminal=False)
+        self.run_snippet('resume_work')
+        self.set_task_state("ready", "Ready", terminal=False)
+        r = self.run_snippet('resume_work; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.states(), [f"{self.FULL}|Doing"])
 
     def test_parked_resume_keeps_the_summary_marker(self):
         (self.signals / f"{self.SLUG}.summary-posted").touch()
