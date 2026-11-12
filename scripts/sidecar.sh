@@ -21,12 +21,18 @@
 # Change detection runs two mechanisms against one shared diff step:
 #
 #   1. SSE push — subscribes to the NoteCove event stream and runs the diff step
-#      whenever a task.* frame arrives for this task. Near-zero latency.
+#      whenever a task.* or comment.* frame arrives for this task. Near-zero
+#      latency.
 #   2. Safety-net poll — runs the same diff step every --poll-interval seconds.
-#      This runs ALWAYS, not only when SSE is unavailable: the documented event
-#      type list (task.created/modified/deleted) has no comment-specific type, so
-#      whether adding a comment emits a frame at all is an inference. The poll
-#      makes correctness independent of that inference.
+#      This runs ALWAYS, not only when SSE is unavailable: it covers frames lost
+#      while the stream is down or reconnecting (a NoteCove restart, a socket
+#      drop), which nothing replays.
+#
+# Both type families are needed. A new comment does NOT emit a task.* frame —
+# it emits comment.thread_added, whose item is the task it was posted on. The
+# stream used to be filtered to task.* alone, so the server dropped every
+# comment frame and the poll was the only thing that ever saw a user's reply:
+# up to a full --poll-interval of latency on most of the conversation.
 #
 # Both mechanisms funnel into check_for_changes(), which is the only place that
 # decides whether to nudge. Duplicate triggers are harmless — the diff is against
@@ -56,6 +62,9 @@ POLL_INTERVAL="60"
 # a normal local-socket response, low enough that a hang costs one poll cycle
 # rather than the session.
 NC_CALL_TIMEOUT="30"
+# Event types the SSE stream is filtered to. comment.* is what a new comment
+# emits; see the header.
+SSE_TYPES="task.*,comment.*"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -273,12 +282,18 @@ if entries and not first_run:
 # ---------------------------------------------------------------------------
 # SSE subscription loop.
 #
-# Streams task.* frames and runs the diff step for any frame about this task.
-# A real frame looks like:
+# Streams $SSE_TYPES frames and runs the diff step for any frame about this
+# task. A real frame looks like:
 #
 #   {"id":"bdzn...","type":"task.modified","timestamp":"...","source":"local",
 #    "item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"},
 #    "payload":{"projectId":"79hb..."},"seq":46099}
+#
+# and a new comment on it:
+#
+#   {"id":"hf1d...","type":"comment.thread_added","timestamp":"...",
+#    "source":"local","item":{"type":"task","id":"7jphatbqq77qtm4g4x76zz6de5"},
+#    "payload":{"itemId":"7jph...","threadId":"Y-OZ..."},"seq":2349}
 #
 # The subject is identified by item.id and NOTHING else — there is no slug in
 # the frame. This loop previously tested frames with `grep -qF "$SLUG"`, on the
@@ -321,7 +336,7 @@ sse_loop() {
     # one call that must NOT be bounded by a timeout — it is a long-lived
     # stream, not a request — but stdin is still closed for the same reason as
     # everywhere else.
-    $NOTECOVE_BIN events --types "task.*" --json </dev/null 2>/dev/null | while IFS= read -r line; do
+    $NOTECOVE_BIN events --types "$SSE_TYPES" --json </dev/null 2>/dev/null | while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       if frame_is_ours "$line" "$task_id"; then
         log_event "sse-frame-matched"

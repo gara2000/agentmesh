@@ -317,6 +317,47 @@ class TestFrameMatching(unittest.TestCase):
             with self.subTest(junk=junk):
                 self.assertFalse(self.matches(junk))
 
+    def test_a_comment_frame_for_this_task_matches(self):
+        """Adding a comment emits comment.thread_added, not a task.* frame. Its
+        item is the task the comment is on, so the id match covers it as is."""
+        frame = self._frame(self.TASK_ID, ftype="comment.thread_added")
+        frame["payload"] = {"itemId": self.TASK_ID, "threadId": "Y-OZamcSS4OYs0wYtzsggw"}
+        self.assertTrue(self.matches(frame))
+
+    def test_a_comment_frame_for_another_task_does_not_match(self):
+        frame = self._frame("someotherid999", ftype="comment.thread_added")
+        frame["payload"] = {"itemId": "someotherid999", "threadId": "t-1"}
+        self.assertFalse(self.matches(frame))
+
+
+class TestSubscriptionFilter(unittest.TestCase):
+    """
+    Which event types the sidecar subscribes to.
+
+    The stream used to be filtered to task.* only. NoteCove reports a new
+    comment as comment.thread_added, so the server dropped every comment frame
+    before the sidecar saw it, and comments, most of the conversation, were
+    only ever caught by the 60-second poll. Matching was never the problem: the
+    frames simply never arrived.
+    """
+
+    def subscribed_types(self) -> list:
+        m = re.search(r'^SSE_TYPES="([^"]+)"', SIDECAR.read_text(), re.M)
+        self.assertIsNotNone(m, "sidecar.sh must define SSE_TYPES")
+        return m.group(1).split(",")
+
+    def test_comment_events_are_subscribed(self):
+        self.assertIn("comment.*", self.subscribed_types())
+
+    def test_task_events_are_subscribed(self):
+        self.assertIn("task.*", self.subscribed_types())
+
+    def test_the_stream_uses_the_filter(self):
+        """Guards against the filter being hard-coded again at the call site."""
+        text = SIDECAR.read_text()
+        self.assertIn('events --types "$SSE_TYPES"', text)
+        self.assertNotIn('events --types "task.*" --json', text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
