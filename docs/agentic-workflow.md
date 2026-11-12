@@ -166,7 +166,7 @@ Two mechanisms, both funnelling into one diff step:
 
 ```mermaid
 flowchart LR
-    SSE["SSE push<br/>notecove events --types task.*"] --> Diff
+    SSE["SSE push<br/>notecove events --types task.*,comment.*"] --> Diff
     Poll["Safety-net poll<br/>every 60s"] --> Diff
     Diff["Diff step:<br/>task show --json<br/>compare comment IDs + stateId<br/>against baseline"]
     Diff -->|changed| Inbox["Append to signals/&lt;slug&gt;.inbox"]
@@ -183,7 +183,9 @@ A single `notecove task show "$TASK_REF" --json` call returns `stateId`, `commen
 
 There is no slug in it. The sidecar used to test each frame with `grep -qF "$SLUG"`, on the assumption that an id-only frame would still match as a substring — it cannot, because the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so **SSE never triggered a single diff** and every sidecar was silently poll-only from the day it was written. `nc_task_id` now resolves and caches the id in `signals/<slug>.task-id`, and frames are parsed as JSON and compared field-wise — a substring test would also match on a `projectId` that happens to contain the id. A sidecar that cannot resolve its id logs `task-id-unresolved` and stays poll-only rather than guessing.
 
-**The poll runs always, not only when SSE is unavailable.** The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference. The poll makes correctness independent of that inference. Duplicate triggers are harmless: the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
+**Comments arrive as `comment.*` frames, not `task.*`.** A new comment emits `comment.thread_added` with `item: {type: "task", id: <task id>}`, so the same `item.id` match covers it. The stream used to be filtered to `task.*` alone, which made the server drop every comment frame: state changes arrived by push, but every user reply waited for the 60-second poll. The sidecar now subscribes to `task.*,comment.*`.
+
+**The poll runs always, not only when SSE is unavailable.** It covers frames lost while the stream is down or reconnecting, which nothing replays. Duplicate triggers are harmless: the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
 **Baselines** live in `signals/<slug>.seen-comments` (comment IDs already reported) and `signals/<slug>.seen-state`. The first run establishes them without nudging — comments that exist before the sidecar starts are history the agent already has, not events to replay at it.
 

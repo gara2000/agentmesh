@@ -219,7 +219,7 @@ The sidecar is **completely generic** — it carries no task-type knowledge. It 
 Responsibilities:
 - Establish a baseline of comment IDs and task state at startup (pre-existing comments are history, not replayed at the agent)
 - Detect changes two ways, both funnelling into one diff step:
-  - **SSE push** — subscribe to `notecove events --types "task.*"` and run the diff on any frame whose `item.id` is this task's id
+  - **SSE push** — subscribe to `notecove events --types "task.*,comment.*"` and run the diff on any frame whose `item.id` is this task's id
   - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60)
 - On a change, append to `signals/<slug>.inbox` and deliver a nudge via `notify-worker.sh`
 - Retry any outstanding `.pending-delivery` on every poll
@@ -234,7 +234,9 @@ Responsibilities:
 
 The original check was `grep -qF "$SLUG"` on the raw frame, on the belief that an id-only frame would still match as a substring. It cannot: the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so SSE triggered no diff from the day the sidecar was written and the poll was silently the only detection path. The sidecar now resolves its task id via `nc_task_id` at subscribe time and parses each frame; if the id cannot be resolved it logs `task-id-unresolved` and stays poll-only rather than subscribing to a stream it could not match.
 
-The poll runs **always**, not only when SSE is unavailable. The documented NoteCove event types (`task.created`, `task.modified`, `task.deleted`) include nothing comment-specific, so whether adding a comment emits a frame is an inference; the poll makes correctness independent of it. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
+**Comments arrive as `comment.*` frames, not `task.*`.** A new comment emits `comment.thread_added`, whose `item` is the task it was posted on, so the `item.id` match covers it unchanged. The stream used to be filtered to `task.*` alone, so the server dropped every comment frame: state changes arrived by push, but every user reply waited for the 60-second poll. `events.log` showed it plainly — each `change-detected:comments=1` had no `sse-frame-matched` before it, only the agent's own `Doing` write a few seconds after.
+
+The poll runs **always**, not only when SSE is unavailable: it covers frames lost while the stream is down or reconnecting, which nothing replays. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
 SSE requires the `events:subscribe` permission, requested by `bootstrap.sh` via `notecove init --events`. Until it is granted the sidecar logs `sse-unavailable:no-permission` and relies on the poll; `agentmesh status` reports which mode is in effect.
 
