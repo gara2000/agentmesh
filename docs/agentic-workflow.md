@@ -533,6 +533,17 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 **The agent starts it**, via `watch_pr "$PR_URL"` immediately after creating the PR. Nothing else spawns it: the orchestrator used to, and that code is gone. Without the call a merge on GitHub is invisible and the task sits in `Attention` indefinitely, which is only correct if the user always responds by commenting `approve`.
 
+### Inline review comments
+
+Each poll that does not find a merge also lists the PR's **inline review comments** — the ones pinned to a diff line, with a reply thread (`gh api repos/<o>/<r>/pulls/<n>/comments`). Conversation comments and review summaries are deliberately out of scope for now.
+
+New ones are not delivered by the monitor. It posts **one NoteCove comment on the task**, authored `PR Monitor`, listing each new comment (id, thread, author, file:line, excerpt) followed by the complete instructions: read it in full, address it if relevant (commit and push), leave the code alone if not, and either way reply briefly in its thread, ending the reply with a hidden `<!-- agentmesh -->` marker. The sidecar reports that comment like any other the agent did not write, so it reaches the worker through the usual inbox and nudge — and because the comment carries the instructions, no skill has to know about PR comments.
+
+- **Baseline.** The first successful listing is stored in `signals/<slug>.pr-seen-comments` and not reported — comments that predate the monitor are history. The file survives a monitor restart, so nothing is replayed.
+- **The worker's own replies are skipped by marker, not author.** The worker posts under the same GitHub account as the user, so the author cannot tell them apart; any comment containing `<!-- agentmesh -->` is recorded as seen and never reported. Bot comments are reported — the worker judges their relevance.
+- **Nothing is lost on failure.** A failed `gh api` call (`pr-comments-fetch-failed`) or a failed NoteCove post (`pr-comments-post-failed`) leaves the baseline untouched, so the same comments are retried on the next poll.
+- **The comment stays under NoteCove's 996-character limit.** A long batch is cut to "+N more" with the command to list them all; the instructions are never truncated.
+
 ---
 
 ## Agent Spawner
@@ -653,6 +664,7 @@ Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
+| Reviewer leaves inline comments on the PR | `pr-monitor` posts them to the task as a `PR Monitor` comment; the sidecar wakes the worker |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |
 | A daemon window killed or never started | `agentmesh start` respawns it, workers untouched |

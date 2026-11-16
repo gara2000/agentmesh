@@ -100,6 +100,7 @@ rm -f "$AGENTMESH/signals/${SLUG}.inbox" \
       "$AGENTMESH/signals/${SLUG}.seen-comments" \
       "$AGENTMESH/signals/${SLUG}.seen-state" \
       "$AGENTMESH/signals/${SLUG}.merged" \
+      "$AGENTMESH/signals/${SLUG}.pr-seen-comments" \
       "$AGENTMESH/signals/${SLUG}.sidecar-handle" \
       "$AGENTMESH/signals/${SLUG}.backoff" \
       "$AGENTMESH/signals/${SLUG}.terminal-since" \

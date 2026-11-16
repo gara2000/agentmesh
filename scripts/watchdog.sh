@@ -51,6 +51,7 @@ cleanup_task() {
         "${SIGNALS}/${slug}.terminal-since" \
         "${SIGNALS}/${slug}.full-slug" \
         "${SIGNALS}/${slug}.task-id" \
+        "${SIGNALS}/${slug}.pr-seen-comments" \
         "${SIGNALS}/${slug}.summary-posted"
 }
 

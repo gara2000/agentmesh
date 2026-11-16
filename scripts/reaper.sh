@@ -150,6 +150,7 @@ reap() {
         "${SIGNALS}/${slug}.seen-comments" \
         "${SIGNALS}/${slug}.seen-state" \
         "${SIGNALS}/${slug}.merged" \
+        "${SIGNALS}/${slug}.pr-seen-comments" \
         "${SIGNALS}/${slug}.sidecar-handle" \
         "${SIGNALS}/${slug}.backoff" \
         "${SIGNALS}/${slug}.crash-count" \
