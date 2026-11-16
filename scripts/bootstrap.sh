@@ -116,6 +116,7 @@ if [[ $CLEAN -eq 1 ]] || ! _runtime_is_live; then
   : > "$SIGNALS/workers"
   : > "$LOG"
   rm -f "$SIGNALS/"*.merged
+  rm -f "$SIGNALS/"*.pr-seen-comments
   rm -f "$SIGNALS/"*.crash-count
   rm -f "$SIGNALS/"*.launching
   rm -f "$SIGNALS/"*.untyped

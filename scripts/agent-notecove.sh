@@ -619,6 +619,11 @@ Dependent tasks have been released and this task's sidecar stopped."
 # so a user who merges on GitHub instead of commenting `approve` still gets a
 # response.
 #
+# It also watches the PR's inline review comments. New ones are posted to the
+# task as a NoteCove comment by "PR Monitor", which the sidecar delivers like any
+# other; that comment says exactly what to do, including the marker your GitHub
+# replies must carry so they are not reported back to you.
+#
 # Call this right after creating the PR, before request_attention. Idempotent: a
 # second call while one is already running is a no-op.
 watch_pr() {
