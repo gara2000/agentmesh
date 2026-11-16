@@ -221,7 +221,7 @@ Responsibilities:
 - Establish a baseline of comment IDs and task state at startup (pre-existing comments are history, not replayed at the agent)
 - Detect changes two ways, both funnelling into one diff step:
   - **SSE push** — subscribe to `notecove events --types "task.*,comment.*"` and run the diff on any frame whose `item.id` is this task's id
-  - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60)
+  - **Safety-net poll** — run the same diff every `--poll-interval` seconds (default 60), or every 10s while the task is *hot* (see below)
 - On a change, append to `signals/<slug>.inbox` and deliver a nudge via `notify-worker.sh`
 - Retry any outstanding `.pending-delivery` on every poll
 
@@ -236,6 +236,8 @@ Responsibilities:
 The original check was `grep -qF "$SLUG"` on the raw frame, on the belief that an id-only frame would still match as a substring. It cannot: the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so SSE triggered no diff from the day the sidecar was written and the poll was silently the only detection path. The sidecar now resolves its task id via `nc_task_id` at subscribe time and parses each frame; if the id cannot be resolved it logs `task-id-unresolved` and stays poll-only rather than subscribing to a stream it could not match.
 
 **Comments arrive as `comment.*` frames, not `task.*`.** A new comment emits `comment.thread_added`, whose `item` is the task it was posted on, so the `item.id` match covers it unchanged. The stream used to be filtered to `task.*` alone, so the server dropped every comment frame: state changes arrived by push, but every user reply waited for the 60-second poll. `events.log` showed it plainly — each `change-detected:comments=1` had no `sse-frame-matched` before it, only the agent's own `Doing` write a few seconds after.
+
+**Comments posted from the NoteCove UI emit no event at all** — only CLI/API comments emit `comment.thread_added`, and those are the agent's own, which the diff ignores. So for the replies that matter push never fires and the poll is the detector (WORK-x52: the event buffer went straight from the user's `task.opened` to the next `task.modified`, with nothing for the comment between). To keep that from costing a full `--poll-interval`, the poll runs **hot** — every 10s (`HOT_INTERVAL`) — for 15 minutes (`HOT_WINDOW`) after any sign the task is being worked on: the sidecar starting, any frame for this task (the UI emits `task.opened` when the user opens it, and every state change emits `task.*`), or a change the poll itself found. Each sign resets the window, and its deadline lives in `signals/<slug>.hot-until` because the SSE loop arms it from a background subshell. The cold→hot transition is logged as `hot-poll-armed`. A task nobody touches for 15 minutes drops back to the normal poll. The main loop ticks at the shorter interval, so a window armed mid-wait takes effect within one tick. Remove this once NoteCove emits comment events for UI comments.
 
 The poll runs **always**, not only when SSE is unavailable: it covers frames lost while the stream is down or reconnecting, which nothing replays. Duplicate triggers are harmless — the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
@@ -277,7 +279,7 @@ Responsibilities:
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, and `.summary-posted` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.summary-posted`, and `.hot-until` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
@@ -460,6 +462,7 @@ agentmesh/
     ├── <slug>.full-slug        # the task's unambiguous full slug; written by the launcher at spawn, read by every CLI call
     ├── <slug>.task-id          # the task's internal id; what an SSE frame names, so what the sidecar matches on
     ├── <slug>.summary-posted   # set by a successful post_summary, cleared by resume_work; the per-turn summary guarantee
+    ├── <slug>.hot-until        # sidecar: epoch seconds until which the poll runs every 10s; reset by any activity on the task
     └── <slug>.description-backup # the task description as it was before ensure_task_folder prepended the folder link
 ```
 
@@ -490,6 +493,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  sidecar         started                         WORK-xyz
 2026-04-26T...  sidecar         sse-subscribed                  WORK-xyz
 2026-04-26T...  sidecar         sse-frame-matched                WORK-xyz
+2026-04-26T...  sidecar         hot-poll-armed                   WORK-xyz
 2026-04-26T...  sidecar         sse-reconnecting                 WORK-xyz
 2026-04-26T...  sidecar         task-id-unresolved               WORK-xyz
 2026-04-26T...  sidecar         slug-unresolved                  WORK-xyz

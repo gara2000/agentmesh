@@ -42,6 +42,17 @@
 # Frames are matched on the task's internal id, never on its slug: a frame
 # carries {"item":{"type":"task","id":"..."}} and no slug anywhere. See
 # notecove-ref.sh for why the previous slug-substring match could never fire.
+#
+# Comments posted from the NoteCove UI emit NO event at all — only CLI/API
+# comments emit comment.thread_added, and those are the agent's own, which the
+# diff ignores anyway. So for the replies that matter, push never fires and the
+# poll is the only detector. To keep that from costing a full --poll-interval,
+# the poll runs HOT: every $HOT_INTERVAL seconds for $HOT_WINDOW seconds after
+# any sign the task is being worked on — the sidecar starting, any frame for
+# this task (the UI does emit task.opened when the user opens it, and task.*
+# for every state change), or a change the poll itself found. Each sign resets
+# the window. A task nobody has touched for $HOT_WINDOW drops back to the
+# normal --poll-interval.
 set -uo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -65,6 +76,10 @@ NC_CALL_TIMEOUT="30"
 # Event types the SSE stream is filtered to. comment.* is what a new comment
 # emits; see the header.
 SSE_TYPES="task.*,comment.*"
+# Hot poll: interval and how long it lasts after the last sign of activity.
+# See the header for why UI comments need it.
+HOT_INTERVAL="10"
+HOT_WINDOW="900"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +99,9 @@ INBOX="$SIGNALS/${SLUG}.inbox"
 SEEN_COMMENTS="$SIGNALS/${SLUG}.seen-comments"
 SEEN_STATE="$SIGNALS/${SLUG}.seen-state"
 SELF_STATE="$SIGNALS/${SLUG}.self-state"
+# Epoch seconds until which the poll runs hot. A file rather than a variable
+# because sse_loop runs in a background subshell and arms it from there.
+HOT_UNTIL="$SIGNALS/${SLUG}.hot-until"
 
 # The slug actually handed to the CLI. SLUG itself stays the local identifier
 # for window names and signals/ files; TASK_REF is the unambiguous full slug.
@@ -92,6 +110,38 @@ TASK_REF=$(nc_ref "$SLUG")
 
 log_event() {
   printf '%s\tsidecar      \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-$SLUG}" >> "$LOG"
+}
+
+# ---------------------------------------------------------------------------
+# Hot poll window.
+#
+# arm_hot_window      keep the poll hot for another $HOT_WINDOW seconds
+# poll_interval_now   the interval the poll should be running at right now
+#
+# Logs hot-poll-armed only on a cold → hot transition; re-arming an already
+# hot window is silent, since it happens on nearly every frame.
+# ---------------------------------------------------------------------------
+hot_until() {
+  local deadline
+  deadline=$(cat "$HOT_UNTIL" 2>/dev/null) || deadline=0
+  [[ "$deadline" =~ ^[0-9]+$ ]] || deadline=0
+  echo "$deadline"
+}
+
+arm_hot_window() {
+  local now
+  now=$(date +%s)
+  (( now >= $(hot_until) )) && log_event "hot-poll-armed"
+  printf '%s\n' "$(( now + HOT_WINDOW ))" > "$HOT_UNTIL.tmp.$BASHPID" \
+    && mv -f "$HOT_UNTIL.tmp.$BASHPID" "$HOT_UNTIL"
+}
+
+poll_interval_now() {
+  if (( $(date +%s) < $(hot_until) && HOT_INTERVAL < POLL_INTERVAL )); then
+    echo "$HOT_INTERVAL"
+  else
+    echo "$POLL_INTERVAL"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -262,6 +312,9 @@ if entries and not first_run:
   n_state=$(echo "$result" | awk '{print $2}')
 
   log_event "change-detected:comments=${n_comments}:state=${n_state}"
+  # Most often a UI comment found by the poll: the user is in the conversation,
+  # so their next reply should be caught fast too.
+  arm_hot_window
   echo "[sidecar] $SLUG: ${n_comments} new comment(s), ${n_state} state change(s) — delivering"
   notify_worker "$SLUG"
 }
@@ -340,6 +393,10 @@ sse_loop() {
       [[ -z "$line" ]] && continue
       if frame_is_ours "$line" "$task_id"; then
         log_event "sse-frame-matched"
+        # Arm before diffing: a UI comment usually follows a task.opened frame
+        # and arrives with no frame of its own, so this diff will not see it —
+        # the hot poll will.
+        arm_hot_window
         check_for_changes
       fi
     done
@@ -394,12 +451,23 @@ log_event "started"
 # recorded as history rather than replayed at the agent.
 check_for_changes
 
+# A sidecar starts when its worker does: the task is being worked on.
+arm_hot_window
+
 sse_loop &
 SSE_PID=$!
 trap 'kill $SSE_PID 2>/dev/null || true' EXIT
 
+# Tick at the shorter of the two intervals and decide each tick whether a check
+# is due, so a window armed mid-wait takes effect within one tick rather than
+# after the remainder of a full --poll-interval sleep.
+TICK=$(( HOT_INTERVAL < POLL_INTERVAL ? HOT_INTERVAL : POLL_INTERVAL ))
+last_check=$(date +%s)
 while true; do
-  sleep "$POLL_INTERVAL"
-  check_for_changes
-  retry_pending_nudge "$SLUG"
+  sleep "$TICK"
+  if (( $(date +%s) - last_check >= $(poll_interval_now) )); then
+    check_for_changes
+    retry_pending_nudge "$SLUG"
+    last_check=$(date +%s)
+  fi
 done

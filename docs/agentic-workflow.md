@@ -167,7 +167,7 @@ Two mechanisms, both funnelling into one diff step:
 ```mermaid
 flowchart LR
     SSE["SSE push<br/>notecove events --types task.*,comment.*"] --> Diff
-    Poll["Safety-net poll<br/>every 60s"] --> Diff
+    Poll["Safety-net poll<br/>every 60s, 10s while hot"] --> Diff
     Diff["Diff step:<br/>task show --json<br/>compare comment IDs + stateId<br/>against baseline"]
     Diff -->|changed| Inbox["Append to signals/&lt;slug&gt;.inbox"]
     Inbox --> Nudge["send-keys a one-line nudge<br/>into workers:&lt;slug&gt;"]
@@ -184,6 +184,8 @@ A single `notecove task show "$TASK_REF" --json` call returns `stateId`, `commen
 There is no slug in it. The sidecar used to test each frame with `grep -qF "$SLUG"`, on the assumption that an id-only frame would still match as a substring — it cannot, because the short slug carries a project prefix and a hyphen the id does not (`WORK-7jp` vs `7jphatbqq77qtm4g4x76zz6de5`). That grep never matched once, so **SSE never triggered a single diff** and every sidecar was silently poll-only from the day it was written. `nc_task_id` now resolves and caches the id in `signals/<slug>.task-id`, and frames are parsed as JSON and compared field-wise — a substring test would also match on a `projectId` that happens to contain the id. A sidecar that cannot resolve its id logs `task-id-unresolved` and stays poll-only rather than guessing.
 
 **Comments arrive as `comment.*` frames, not `task.*`.** A new comment emits `comment.thread_added` with `item: {type: "task", id: <task id>}`, so the same `item.id` match covers it. The stream used to be filtered to `task.*` alone, which made the server drop every comment frame: state changes arrived by push, but every user reply waited for the 60-second poll. The sidecar now subscribes to `task.*,comment.*`.
+
+**Comments posted from the NoteCove UI emit no event at all** — only CLI/API comments emit `comment.thread_added`, and those are the agent's own, which the diff ignores. So for the replies that matter push never fires and the poll is the detector (WORK-x52: the event buffer went straight from the user's `task.opened` to the next `task.modified`, with nothing for the comment between). To keep that from costing a full `--poll-interval`, the poll runs **hot** — every 10s (`HOT_INTERVAL`) — for 15 minutes (`HOT_WINDOW`) after any sign the task is being worked on: the sidecar starting, any frame for this task (the UI emits `task.opened` when the user opens it, and every state change emits `task.*`), or a change the poll itself found. Each sign resets the window, and its deadline lives in `signals/<slug>.hot-until` because the SSE loop arms it from a background subshell. The cold→hot transition is logged as `hot-poll-armed`. A task nobody touches for 15 minutes drops back to the normal poll. The main loop ticks at the shorter interval, so a window armed mid-wait takes effect within one tick. Remove this once NoteCove emits comment events for UI comments.
 
 **The poll runs always, not only when SSE is unavailable.** It covers frames lost while the stream is down or reconnecting, which nothing replays. Duplicate triggers are harmless: the diff is against stored baseline state, so a change is reported exactly once however many times the check runs.
 
@@ -447,7 +449,7 @@ An `Attention` task whose window is gone is **not** a clean exit: the task is mi
 
 This path still **counts crashes**. Adoption respawns on a 30s cadence, so a worker that reproducibly dies right after `request_attention` would otherwise be respawned forever with no cap and nothing reported. At three the task is set `Blocked` with a comment warning that the user's reply may never have been read.
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, and `.summary-posted` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, `.summary-posted`, and `.hot-until` files.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 

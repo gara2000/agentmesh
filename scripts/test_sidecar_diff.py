@@ -359,5 +359,114 @@ class TestSubscriptionFilter(unittest.TestCase):
         self.assertNotIn('events --types "task.*" --json', text)
 
 
+def extract_bash_function(name: str) -> str:
+    """Pull one top-level bash function definition out of sidecar.sh."""
+    m = re.search(r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), SIDECAR.read_text(),
+                  re.S | re.M)
+    if not m:
+        raise AssertionError(f"could not find {name}() in sidecar.sh")
+    return m.group(0)
+
+
+class TestHotPoll(unittest.TestCase):
+    """
+    The hot poll: a short poll interval while the task is being worked on.
+
+    Comments posted from the NoteCove UI emit no event at all — only CLI
+    comments emit comment.thread_added, and those are the agent's own. So for
+    every reply that matters push never fires, and the poll is the detector.
+    On a plain 60-second poll that meant up to a minute of latency on the
+    whole conversation (WORK-x52). The UI does emit task.opened when the user
+    opens the task, and every state change emits task.*, so any frame for the
+    task arms a window in which the poll runs at HOT_INTERVAL instead.
+    """
+
+    FUNCS = ("hot_until", "arm_hot_window", "poll_interval_now")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.hot_until = self.tmp / "WORK-x.hot-until"
+        self.log = self.tmp / "events.log"
+        self.lib = "\n".join(extract_bash_function(f) for f in self.FUNCS)
+
+    def bash(self, body: str, poll=60, hot_interval=10, hot_window=900) -> str:
+        script = (
+            f'HOT_UNTIL="{self.hot_until}"; POLL_INTERVAL={poll}; '
+            f'HOT_INTERVAL={hot_interval}; HOT_WINDOW={hot_window}\n'
+            f'log_event() {{ echo "$1" >> "{self.log}"; }}\n'
+            f"{self.lib}\n{body}\n")
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def logged(self) -> list:
+        return self.log.read_text().split() if self.log.exists() else []
+
+    def test_cold_by_default(self):
+        self.assertEqual(self.bash("poll_interval_now"), "60")
+
+    def test_arming_switches_to_the_hot_interval(self):
+        self.assertEqual(self.bash("arm_hot_window; poll_interval_now"), "10")
+        self.assertEqual(self.logged(), ["hot-poll-armed"])
+
+    def test_window_lasts_hot_window_seconds(self):
+        out = self.bash('before=$(date +%s); arm_hot_window; echo $(( $(hot_until) - before ))')
+        self.assertIn(int(out), (900, 901))
+
+    def test_rearming_extends_silently(self):
+        """Every frame re-arms; logging each one would flood events.log."""
+        self.hot_until.write_text("1\n")   # long expired
+        self.bash("arm_hot_window; arm_hot_window; arm_hot_window")
+        self.assertEqual(self.logged(), ["hot-poll-armed"])
+
+    def test_rearming_resets_the_window(self):
+        """Activity on the task keeps it hot for another full window."""
+        out = self.bash('arm_hot_window; d1=$(hot_until); sleep 1.1; '
+                        'arm_hot_window; echo $(( $(hot_until) - d1 ))')
+        self.assertGreaterEqual(int(out), 1)
+
+    def test_expired_window_falls_back_to_the_normal_poll(self):
+        self.hot_until.write_text("1\n")
+        self.assertEqual(self.bash("poll_interval_now"), "60")
+
+    def test_rearming_after_expiry_logs_again(self):
+        self.hot_until.write_text("1\n")
+        self.bash("arm_hot_window")
+        self.assertEqual(self.logged(), ["hot-poll-armed"])
+
+    def test_garbage_file_is_read_as_cold(self):
+        self.hot_until.write_text("not a number\n")
+        self.assertEqual(self.bash("poll_interval_now"), "60")
+
+    def test_never_slower_than_the_normal_poll(self):
+        """A --poll-interval below HOT_INTERVAL must not be lengthened."""
+        self.assertEqual(self.bash("arm_hot_window; poll_interval_now", poll=5), "5")
+
+    def test_defaults(self):
+        text = SIDECAR.read_text()
+        self.assertRegex(text, r'(?m)^HOT_INTERVAL="10"$')
+        self.assertRegex(text, r'(?m)^HOT_WINDOW="900"$')
+
+    def test_matched_frames_arm_before_diffing(self):
+        """A UI comment has no frame of its own; the task.opened before it must arm."""
+        body = extract_bash_function("sse_loop")
+        self.assertRegex(body, r'sse-frame-matched"\s*\n(\s*#.*\n)*\s*arm_hot_window\s*\n\s*check_for_changes')
+
+    def test_detected_changes_arm(self):
+        """A change found by the poll is usually a UI comment: keep listening fast."""
+        body = extract_bash_function("check_for_changes")
+        self.assertIn("arm_hot_window", body.split("change-detected")[1])
+
+    def test_sidecar_start_arms(self):
+        main = SIDECAR.read_text().split("# Main\n", 1)[1]
+        self.assertLess(main.index("arm_hot_window"), main.index("sse_loop &"))
+
+    def test_main_loop_ticks_and_uses_the_current_interval(self):
+        main = SIDECAR.read_text().split("# Main\n", 1)[1]
+        self.assertIn('sleep "$TICK"', main)
+        self.assertIn("$(poll_interval_now)", main)
+        self.assertNotIn('sleep "$POLL_INTERVAL"', main)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
