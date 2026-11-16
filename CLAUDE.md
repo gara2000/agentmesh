@@ -258,7 +258,7 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 **Review comments travel as a NoteCove comment, not an inbox entry.** The sidecar already reports every comment the agent did not write, so posting one is enough to wake the worker, and the user sees it too. The comment carries the whole instruction set, so no skill needs to know about PR comments. Only inline review comments (pinned to a diff line, with a reply thread) are watched; conversation comments and review summaries are not, for now. Bot comments are passed through — the worker judges relevance.
 
-- **Baseline in `signals/<slug>.pr-seen-comments`.** The first successful listing is history, not work; the file survives a monitor restart so nothing is replayed.
+- **Baseline in `signals/<slug>.pr-seen-comments`.** It survives a monitor restart so nothing is replayed. It does *not* survive adoption or crash cleanup, so a fresh monitor's first listing is not history: only comments already answered in-thread by a marked worker reply are baselined, and every other one is reported. Treating the whole first listing as history hid an unanswered bot comment from two restarted workers (WORK-2mb).
 - **The worker's replies are skipped by marker, not author.** It replies under the same GitHub account as the user, so its replies end with a hidden `<!-- agentmesh -->` and the monitor ignores any comment containing it. Without the marker every reply would wake the worker to reply to itself.
 - **A failed `gh api` call or NoteCove post leaves the baseline untouched**, so the comments are retried next poll rather than lost.
 

@@ -5,7 +5,7 @@ New inline review comments are not delivered by the monitor itself. It posts a
 NoteCove comment on the task, as "PR Monitor", and the sidecar reports that like
 any other comment the agent did not write. So what matters here is: exactly one
 NoteCove comment per batch of new review comments, carrying everything the worker
-needs; nothing for comments that predate the monitor or that the worker wrote
+needs; nothing for comments the worker has already answered or that it wrote
 itself; and nothing lost when gh or NoteCove fails.
 
 Driven with --once against stub gh / notecove / tmux on PATH.
@@ -110,30 +110,84 @@ class PrMonitorHarness(unittest.TestCase):
     def events(self):
         return (self.signals / "events.log").read_text()
 
+    def seed_seen(self, *ids):
+        (self.signals / f"{self.SLUG}.pr-seen-comments").write_text(
+            "".join(i + "\n" for i in ids))
+
     def seen(self):
         p = self.signals / f"{self.SLUG}.pr-seen-comments"
         return p.read_text().split() if p.exists() else None
 
 
+MARKED = "Done.\n\n<!-- agentmesh -->"
+
+
 class TestBaseline(PrMonitorHarness):
-    def test_first_run_records_existing_comments_without_posting(self):
-        self.set_comments([_comment(1), _comment(2)])
+    """A fresh monitor (no .pr-seen-comments) must not hide unanswered comments.
+
+    The seen file is lost whenever a worker is adopted or crash-cleaned, so the
+    first listing is not "history" — only threads the worker has answered are.
+    """
+
+    def test_first_run_reports_unanswered_comments(self):
+        self.set_comments([_comment(1), _comment(2, login="autotest[bot]")])
+        self.run_once()
+        posts = self.posted()
+        self.assertEqual(len(posts), 1)
+        self.assertIn("2 new inline review comments", posts[0][-1])
+        self.assertIn("@autotest[bot]", posts[0][-1])
+        self.assertEqual(self.seen(), ["1", "2"])
+
+    def test_first_run_baselines_answered_threads(self):
+        self.set_comments([_comment(1), _comment(2, body=MARKED, reply_to=1)])
         self.run_once()
         self.assertEqual(self.posted(), [])
         self.assertEqual(self.seen(), ["1", "2"])
+
+    def test_first_run_reports_follow_up_after_an_answer(self):
+        self.set_comments([_comment(1), _comment(2, body=MARKED, reply_to=1),
+                           _comment(3, body="still wrong", reply_to=1)])
+        self.run_once()
+        text = self.posted()[0][-1]
+        self.assertIn("1 new inline review comment on", text)
+        self.assertIn("#3 (thread #1)", text)
+        self.assertEqual(self.seen(), ["1", "2", "3"])
+
+    def test_answer_in_one_thread_does_not_cover_another(self):
+        self.set_comments([_comment(1), _comment(2, body=MARKED, reply_to=1),
+                           _comment(3)])
+        self.run_once()
+        text = self.posted()[0][-1]
+        self.assertIn("#3", text)
+        self.assertNotIn("#1 ", text)
+
+    def test_first_run_with_no_comments_posts_nothing(self):
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+        self.assertEqual(self.seen(), [])
 
     def test_restart_does_not_replay(self):
         self.set_comments([_comment(1)])
         self.run_once()
         self.run_once()
-        self.assertEqual(self.posted(), [])
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_failed_first_post_is_retried(self):
+        self.set_comments([_comment(1)])
+        (self.stub / "nc-fail").touch()
+        self.run_once()
+        self.assertEqual(self.seen(), [])
+        (self.stub / "nc-fail").unlink()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+        self.assertEqual(self.seen(), ["1"])
 
 
 class TestNewComments(PrMonitorHarness):
     def setUp(self):
         super().setUp()
         self.set_comments([_comment(1)])
-        self.run_once()  # baseline
+        self.seed_seen("1")  # comment 1 already reported
 
     def test_new_comment_posts_one_notecove_comment_as_pr_monitor(self):
         self.set_comments([_comment(1), _comment(2, body="handle None here")])
@@ -196,7 +250,7 @@ class TestFailures(PrMonitorHarness):
     def setUp(self):
         super().setUp()
         self.set_comments([_comment(1)])
-        self.run_once()  # baseline
+        self.seed_seen("1")  # comment 1 already reported
 
     def test_gh_failure_leaves_baseline_untouched(self):
         self.set_comments([_comment(1), _comment(2)])
