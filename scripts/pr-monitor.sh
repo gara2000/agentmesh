@@ -66,8 +66,10 @@ PR_API=$(printf '%s' "$PR_URL" \
 # check_pr_comments
 #
 # Lists the PR's inline review comments and, if any are new, posts one NoteCove
-# comment describing them. The first successful listing is a baseline: comments
-# that predate the monitor are history, not work. A failed listing or a failed
+# comment describing them. The first successful listing seeds the baseline with
+# only the comments the worker has already answered (a later marked reply in the
+# same thread); every other comment on it is reported, so a monitor started fresh
+# after a restart never hides an unanswered comment. A failed listing or a failed
 # post leaves the baseline untouched, so the same comments are retried next poll
 # rather than lost.
 check_pr_comments() {
@@ -103,13 +105,32 @@ for line in sys.stdin:
 all_ids = [str(c["id"]) for c in comments]
 
 if not os.path.exists(seen_path):
-    # First run: everything already there is history.
+    # First run. Only what the worker has demonstrably answered is history: a
+    # comment followed, in its thread, by a reply carrying the marker. Anything
+    # else may never have been seen by any worker, because this file is lost
+    # whenever the monitor is started fresh (adoption, crash cleanup, a cold
+    # bootstrap). Baselining it all would silently swallow it; reporting it
+    # costs at most one repeat of a comment already dealt with.
+    def root(c):
+        return str(c.get("in_reply_to_id") or c["id"])
+    def order(c):
+        try:
+            return int(c["id"])
+        except (TypeError, ValueError):
+            return 0
+    last_answer = {}
+    for c in comments:
+        if marker in (c.get("body") or ""):
+            r = root(c)
+            last_answer[r] = max(last_answer.get(r, order(c)), order(c))
+    seen = {str(c["id"]) for c in comments
+            if marker in (c.get("body") or "")
+            or order(c) < last_answer.get(root(c), -1)}
     with open(seen_path, "w") as f:
-        f.writelines(i + "\n" for i in all_ids)
-    sys.exit(0)
-
-with open(seen_path) as f:
-    seen = {l.strip() for l in f if l.strip()}
+        f.writelines(i + "\n" for i in all_ids if i in seen)
+else:
+    with open(seen_path) as f:
+        seen = {l.strip() for l in f if l.strip()}
 
 new = [c for c in comments if str(c["id"]) not in seen]
 with open(pending_path, "w") as f:
