@@ -67,8 +67,8 @@ Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` 
 | Mechanism | Direction | Trigger |
 |---|---|---|
 | `tmux send-keys` into `workers:<slug>` | Sidecar → Agent | A new comment (not the agent's own) or a state change the agent did not make |
-| `tmux send-keys` into `workers:<slug>` | PR Monitor → Agent | The agent's PR was merged |
-| NoteCove comment by `PR Monitor` → sidecar | PR Monitor → Agent | New inline review comments on the agent's PR |
+| `tmux send-keys` into `workers:<slug>` | PR Monitor → Agent | Every one of the agent's PRs was merged |
+| NoteCove comment by `PR Monitor` → sidecar | PR Monitor → Agent | New inline review comments on any of the agent's PRs |
 
 **Why messages and not `tmux wait-for`.** The old protocol fired `<slug>-nudge-<seq>` at an agent blocked inside `tmux wait-for`. That could only ever reach an agent *already waiting*: anything the user said while the agent was working went unseen until the agent next chose to wait — which, mid-implementation, could be many minutes or never. Typing into the REPL reaches the agent in both states. Idle at its prompt it starts a new turn; mid-turn, Claude Code queues the input and picks it up when the current turn ends.
 
@@ -247,12 +247,17 @@ The `side-<slug>` window is **not** registered in `signals/workers` — it is no
 
 ### PR Monitor
 
-**One instance per active PR-ready task.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude.
+**One instance per active PR-ready task, watching all of that task's PRs.** Runs in the `orchestrator` session, window `pr-mon-<slug>`. Pure bash, no Claude.
 
-Responsibilities:
+The PRs to watch are listed in `signals/<slug>.prs`, one URL per line. The agent calls `watch_pr` for **every** PR it creates: that appends the URL and starts the monitor only if `pr-mon-<slug>` is absent. The monitor re-reads the list every poll, so a PR added while it runs is picked up without a restart. It used to watch only the URL it was started with — every later `watch_pr` was a no-op — so a second PR's review comments never reached the worker, and the first merge alone told it to set `Done` while the rest were still open.
+
+Responsibilities, for each watched PR not yet resolved:
 - Poll `gh pr view <pr-url>` every 60 seconds
-- When the PR state is `MERGED`: write `signals/<slug>.merged`, append a `pr-merged` entry to the worker's inbox, deliver the nudge, and exit
-- Otherwise, list the PR's **inline review comments** and, if any are new, post **one NoteCove task comment** as `PR Monitor` listing them with complete instructions (address if relevant, ignore if not, reply briefly in each thread)
+- `MERGED`: record the URL in `signals/<slug>.merged` (logged `pr-merged-seen`) and stop polling it
+- `CLOSED` without merging: record it in `signals/<slug>.pr-closed` (logged `pr-closed-unmerged`) and drop it from the set — it no longer holds the task open, and it does not count as merged
+- Otherwise, list the PR's **inline review comments** and, if any are new, post **one NoteCove task comment per PR** as `PR Monitor` listing them with complete instructions (address if relevant, ignore if not, reply briefly in each thread)
+
+**Only when every watched PR is resolved and at least one merged** does it append a single `pr-merged` inbox entry (`urls` lists every merged PR; `url` is kept for older readers), deliver the nudge, and exit. An earlier merge wakes nobody — there is nothing for the worker to do yet. Before exiting it re-reads the list, so a `watch_pr` racing with that last poll is not lost. If every PR was closed unmerged it says nothing and keeps waiting for a new one.
 
 It will not exit on an undelivered nudge: unlike the sidecar it has no further poll to retry from, so it retries for up to ten cycles itself and logs `merge-nudge-undelivered` if the worker never became reachable.
 
@@ -260,7 +265,7 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 **Review comments travel as a NoteCove comment, not an inbox entry.** The sidecar already reports every comment the agent did not write, so posting one is enough to wake the worker, and the user sees it too. The comment carries the whole instruction set, so no skill needs to know about PR comments. Only inline review comments (pinned to a diff line, with a reply thread) are watched; conversation comments and review summaries are not, for now. Bot comments are passed through — the worker judges relevance.
 
-- **Baseline in `signals/<slug>.pr-seen-comments`.** It survives a monitor restart so nothing is replayed. It does *not* survive adoption or crash cleanup, so a fresh monitor's first listing is not history: only comments already answered in-thread by a marked worker reply are baselined, and every other one is reported. Treating the whole first listing as history hid an unanswered bot comment from two restarted workers (WORK-2mb).
+- **Baseline in `signals/<slug>.pr-seen-comments`**, shared by all the task's PRs (GitHub comment ids are global), with a `baseline <pulls-api-path>` line recording each PR's first listing — so a PR added later gets a first listing of its own. It survives a monitor restart so nothing is replayed. It does *not* survive adoption or crash cleanup, so a fresh monitor's first listing is not history: only comments already answered in-thread by a marked worker reply are baselined, and every other one is reported. Treating the whole first listing as history hid an unanswered bot comment from two restarted workers (WORK-2mb).
 - **The worker's replies are skipped by marker, not author.** It replies under the same GitHub account as the user, so its replies end with a hidden `<!-- agentmesh -->` and the monitor ignores any comment containing it. Without the marker every reply would wake the worker to reply to itself.
 - **A failed `gh api` call or NoteCove post leaves the baseline untouched**, so the comments are retried next poll rather than lost.
 
@@ -279,7 +284,7 @@ Responsibilities:
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.summary-posted`, and `.hot-until` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, and `.hot-until` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
@@ -438,7 +443,7 @@ agentmesh/
 │   ├── test_agent_notecove.py  # unit tests for the agent helper: TASK_REF addressing, the summary guarantee
 │   ├── test_task_folder_link.py # unit tests for ensure_task_folder: never writing on a failed read, idempotence, verification
 │   ├── test_create_note.py     # unit tests for create_note: the title line, title verification, no stdin to the CLI
-│   ├── test_pr_monitor.py      # unit tests for pr-monitor.sh: review-comment baseline, marker filter, retry on failure, merge path
+│   ├── test_pr_monitor.py      # unit tests for pr-monitor.sh: review-comment baseline, marker filter, retry on failure, multi-PR merge path
 │   └── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
@@ -455,7 +460,9 @@ agentmesh/
     ├── <slug>.sidecar-handle   # comment-author name the running sidecar filters on; checked before reusing it
     ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
     ├── <slug>.seen-state       # sidecar baseline: last observed task state ID
-    ├── <slug>.merged           # flag file written by pr-monitor when the PR is merged
+    ├── <slug>.prs              # the PR URLs pr-monitor watches, one per line; appended by watch_pr
+    ├── <slug>.merged           # pr-monitor: URLs of the task's PRs seen merged
+    ├── <slug>.pr-closed        # pr-monitor: URLs of the task's PRs closed without merging; no longer watched
     ├── <slug>.pr-seen-comments # pr-monitor baseline: inline review comment ids already reported or ignored
     ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
     ├── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
@@ -529,6 +536,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  watchdog        worker-stranded-attention        WORK-xyz
 2026-04-26T...  watchdog        backoff-aborted-adopted          WORK-xyz
 2026-04-26T...  task-done       cleanup-complete                 WORK-xyz
+2026-04-26T...  pr-monitor      pr-merged-seen                   WORK-xyz
+2026-04-26T...  pr-monitor      pr-closed-unmerged               WORK-xyz
 2026-04-26T...  pr-monitor      pr-merged-detected              WORK-xyz
 2026-04-26T...  pr-monitor      merge-nudge-undelivered          WORK-xyz
 2026-04-26T...  pr-monitor      pr-comments-detected             WORK-xyz
@@ -674,7 +683,7 @@ This covers every way a worker can disappear, not just a deliberate restart:
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
 | A nudge could not be delivered (worker mid-boot, tmux unreachable) | `.pending-delivery`, retried from the sidecar's poll loop |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
-| PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
+| PRs merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` (once per PR); fires when all are merged |
 | Reviewer leaves inline comments on the PR | `pr-monitor` posts them to the task; the sidecar wakes the worker |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |

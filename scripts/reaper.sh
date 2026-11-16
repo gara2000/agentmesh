@@ -151,6 +151,8 @@ reap() {
         "${SIGNALS}/${slug}.seen-state" \
         "${SIGNALS}/${slug}.merged" \
         "${SIGNALS}/${slug}.pr-seen-comments" \
+        "${SIGNALS}/${slug}.prs" \
+        "${SIGNALS}/${slug}.pr-closed" \
         "${SIGNALS}/${slug}.sidecar-handle" \
         "${SIGNALS}/${slug}.backoff" \
         "${SIGNALS}/${slug}.crash-count" \

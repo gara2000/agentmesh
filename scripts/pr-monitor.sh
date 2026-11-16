@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
-# pr-monitor.sh — polls a PR and tells the worker when it is reviewed or merged
-# Usage: pr-monitor.sh <slug> <pr-url> [<interval-seconds>] [--once]
+# pr-monitor.sh — polls a task's PRs and tells the worker when they are reviewed or merged
+# Usage: pr-monitor.sh <slug> [<pr-url>] [<interval-seconds>] [--once]
 # Runs in a background orchestrator window (orchestrator:pr-mon-<slug>).
 # Exits automatically after reporting the merge. --once runs a single poll and
 # exits, for tests.
+#
+# One monitor watches every PR of its task. The list lives in signals/<slug>.prs,
+# one URL per line: watch_pr appends to it and starts this monitor only if it is
+# not already running, and the monitor re-reads it on every poll, so a PR the
+# agent opens later is picked up without a restart. A <pr-url> argument is added
+# to the list too. A task with several PRs used to be watched on the first one
+# only: the others' review comments were never reported, and the first merge
+# alone told the worker to set Done.
+#
+# The worker is told to set Done only once every watched PR has merged. An
+# earlier merge is logged and otherwise silent — there is nothing for the worker
+# to do yet. A PR closed without merging drops out of the set, so it cannot hold
+# the task open forever; it does not count as merged.
 #
 # It does NOT change task state. Only the worker agent and the user do that, so
 # this writes the merge into the worker's inbox and delivers a message to the
@@ -33,16 +46,24 @@ done
 set -- "${_args[@]+"${_args[@]}"}"
 
 SLUG="${1:?slug required}"
-PR_URL="${2:?pr-url required}"
+ARG_URL="${2:-}"
 INTERVAL="${3:-60}"
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SIGNALS="$AGENTMESH/signals"
 LOG="$SIGNALS/events.log"
 INBOX="$SIGNALS/${SLUG}.inbox"
-MERGED_FLAG="$SIGNALS/${SLUG}.merged"
-# Review comment ids already reported (or deliberately ignored). Survives a
-# monitor restart, so a respawned monitor does not replay old comments.
+# The PRs to watch, one URL per line; appended to by watch_pr.
+PRS="$SIGNALS/${SLUG}.prs"
+# PRs seen merged / closed unmerged, one URL per line. Both survive a monitor
+# restart, so an already-resolved PR is not polled again.
+MERGED="$SIGNALS/${SLUG}.merged"
+CLOSED="$SIGNALS/${SLUG}.pr-closed"
+# Review comment ids already reported (or deliberately ignored), across all of
+# the task's PRs — GitHub comment ids are global, so one file serves them all.
+# A "baseline <pulls-api-path>" line records that the PR's first listing has
+# been taken. Survives a monitor restart, so a respawned monitor does not
+# replay old comments.
 PR_SEEN="$SIGNALS/${SLUG}.pr-seen-comments"
 
 MONITOR_AUTHOR="PR Monitor"
@@ -59,20 +80,38 @@ log_event() {
   printf '%s\tpr-monitor   \t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$SLUG" >> "$LOG"
 }
 
+# pr_api <pr-url>
+#
 # repos/<owner>/<repo>/pulls/<n>, or empty if the URL is not a GitHub PR URL.
-PR_API=$(printf '%s' "$PR_URL" \
-  | sed -nE 's#^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*$#repos/\1/\2/pulls/\3#p')
+pr_api() {
+  printf '%s' "$1" \
+    | sed -nE 's#^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*$#repos/\1/\2/pulls/\3#p'
+}
 
-# check_pr_comments
+# in_list <file> <line> — is <line> one of <file>'s lines?
+in_list() {
+  [ -f "$1" ] && grep -qxF -- "$2" "$1"
+}
+
+# watched_urls — the watch list, minus blank lines.
+watched_urls() {
+  [ -f "$PRS" ] && grep -v '^[[:space:]]*$' "$PRS"
+  return 0
+}
+
+# check_pr_comments <pr-url>
 #
 # Lists the PR's inline review comments and, if any are new, posts one NoteCove
-# comment describing them. The first successful listing seeds the baseline with
+# comment describing them. Each PR is checked, and posted about, separately.
+# The first successful listing of a PR seeds the baseline with
 # only the comments the worker has already answered (a later marked reply in the
 # same thread); every other comment on it is reported, so a monitor started fresh
 # after a restart never hides an unanswered comment. A failed listing or a failed
 # post leaves the baseline untouched, so the same comments are retried next poll
 # rather than lost.
 check_pr_comments() {
+  local PR_URL="$1" PR_API
+  PR_API=$(pr_api "$PR_URL")
   [ -n "$PR_API" ] || return 0
 
   local comments
@@ -102,15 +141,23 @@ for line in sys.stdin:
     if c.get("id") is not None:
         comments.append(c)
 
-all_ids = [str(c["id"]) for c in comments]
+seen, baselined = set(), False
+if os.path.exists(seen_path):
+    with open(seen_path) as f:
+        for l in f:
+            l = l.strip()
+            if l == "baseline " + api:
+                baselined = True
+            elif l and " " not in l:
+                seen.add(l)
 
-if not os.path.exists(seen_path):
-    # First run. Only what the worker has demonstrably answered is history: a
-    # comment followed, in its thread, by a reply carrying the marker. Anything
-    # else may never have been seen by any worker, because this file is lost
-    # whenever the monitor is started fresh (adoption, crash cleanup, a cold
-    # bootstrap). Baselining it all would silently swallow it; reporting it
-    # costs at most one repeat of a comment already dealt with.
+if not baselined:
+    # First listing of this PR. Only what the worker has demonstrably answered
+    # is history: a comment followed, in its thread, by a reply carrying the
+    # marker. Anything else may never have been seen by any worker, because
+    # this file is lost whenever the monitor is started fresh (adoption, crash
+    # cleanup, a cold bootstrap). Baselining it all would silently swallow it;
+    # reporting it costs at most one repeat of a comment already dealt with.
     def root(c):
         return str(c.get("in_reply_to_id") or c["id"])
     def order(c):
@@ -123,14 +170,13 @@ if not os.path.exists(seen_path):
         if marker in (c.get("body") or ""):
             r = root(c)
             last_answer[r] = max(last_answer.get(r, order(c)), order(c))
-    seen = {str(c["id"]) for c in comments
-            if marker in (c.get("body") or "")
-            or order(c) < last_answer.get(root(c), -1)}
-    with open(seen_path, "w") as f:
-        f.writelines(i + "\n" for i in all_ids if i in seen)
-else:
-    with open(seen_path) as f:
-        seen = {l.strip() for l in f if l.strip()}
+    answered = [str(c["id"]) for c in comments
+                if marker in (c.get("body") or "")
+                or order(c) < last_answer.get(root(c), -1)]
+    seen.update(answered)
+    with open(seen_path, "a") as f:
+        f.write("baseline " + api + "\n")
+        f.writelines(i + "\n" for i in answered)
 
 new = [c for c in comments if str(c["id"]) not in seen]
 with open(pending_path, "w") as f:
@@ -200,45 +246,97 @@ print(header + "\n" + "\n".join(lines) + "\n\n" + footer)
   rm -f "$pending"
 }
 
-echo "[pr-monitor] started for $SLUG ($PR_URL), polling every ${INTERVAL}s"
+if [ -n "$ARG_URL" ] && ! in_list "$PRS" "$ARG_URL"; then
+  printf '%s\n' "$ARG_URL" >> "$PRS"
+fi
+
+echo "[pr-monitor] started for $SLUG, polling every ${INTERVAL}s"
 log_event "started"
-[ -n "$PR_API" ] || log_event "pr-url-unparsed"
 
-while true; do
-  state=$(gh pr view "$PR_URL" --json state --jq '.state' 2>/dev/null || echo "")
+# report_merged
+#
+# Every watched PR is resolved and at least one merged: write the pr-merged
+# entry and deliver it. Unlike the sidecar this process exits after reporting,
+# so there is no later poll to retry a failed delivery. Keep trying for a few
+# minutes to cover a worker that is mid-boot or mid-respawn; .pending-delivery
+# is left behind either way, so a sidecar that is still running picks up the
+# retry.
+report_merged() {
+  echo "[pr-monitor] all PRs merged for $SLUG — notifying worker"
+  log_event "pr-merged-detected"
 
-  if [ "$state" = "MERGED" ]; then
-    echo "[pr-monitor] PR merged for $SLUG — notifying worker"
-    log_event "pr-merged-detected"
-    touch "$MERGED_FLAG"
-
-    PR_URL="$PR_URL" python3 -c '
+  MERGED="$MERGED" python3 -c '
 import json, os, sys
+urls = [l.strip() for l in open(os.environ["MERGED"]) if l.strip()]
+n = len(urls)
+note = ("PR was merged." if n == 1 else f"All {n} PRs were merged.") + " Set the task to Done."
 sys.stdout.write(json.dumps({
     "kind": "pr-merged",
-    "url": os.environ["PR_URL"],
-    "note": "PR was merged. Set the task to Done.",
+    "url": urls[-1],
+    "urls": urls,
+    "note": note,
 }) + "\n")
 ' >> "$INBOX"
 
-    # Unlike the sidecar this process exits after reporting, so there is no
-    # later poll to retry a failed delivery. Keep trying for a few minutes to
-    # cover a worker that is mid-boot or mid-respawn; .pending-delivery is left
-    # behind either way, so a sidecar that is still running picks up the retry.
-    notify_worker "$SLUG"
-    _tries=0
-    while [ -f "$SIGNALS/${SLUG}.pending-delivery" ] && [ $_tries -lt 10 ]; do
-      _tries=$((_tries + 1))
-      sleep "$MERGE_RETRY_SLEEP"
-      retry_pending_nudge "$SLUG"
-    done
-    if [ -f "$SIGNALS/${SLUG}.pending-delivery" ]; then
-      log_event "merge-nudge-undelivered"
-    fi
-    exit 0
+  notify_worker "$SLUG"
+  local tries=0
+  while [ -f "$SIGNALS/${SLUG}.pending-delivery" ] && [ $tries -lt 10 ]; do
+    tries=$((tries + 1))
+    sleep "$MERGE_RETRY_SLEEP"
+    retry_pending_nudge "$SLUG"
+  done
+  if [ -f "$SIGNALS/${SLUG}.pending-delivery" ]; then
+    log_event "merge-nudge-undelivered"
   fi
+}
 
-  check_pr_comments
+# URLs already logged as unparsable, so the event is written once per PR rather
+# than once per poll.
+UNPARSED=" "
+
+while true; do
+  open=0
+  while IFS= read -r url; do
+    in_list "$MERGED" "$url" && continue
+    in_list "$CLOSED" "$url" && continue
+
+    if [ -z "$(pr_api "$url")" ] && [ "${UNPARSED#* "$url" }" = "$UNPARSED" ]; then
+      UNPARSED="$UNPARSED$url "
+      log_event "pr-url-unparsed"
+    fi
+
+    state=$(gh pr view "$url" --json state --jq '.state' 2>/dev/null </dev/null || echo "")
+    case "$state" in
+      MERGED)
+        printf '%s\n' "$url" >> "$MERGED"
+        log_event "pr-merged-seen"
+        echo "[pr-monitor] $url merged"
+        ;;
+      CLOSED)
+        printf '%s\n' "$url" >> "$CLOSED"
+        log_event "pr-closed-unmerged"
+        echo "[pr-monitor] $url closed without merging — no longer watched"
+        ;;
+      *)
+        # OPEN, or unknown because gh failed: still outstanding either way.
+        open=$((open + 1))
+        check_pr_comments "$url" </dev/null
+        ;;
+    esac
+  done < <(watched_urls)
+
+  if [ "$open" -eq 0 ] && [ -s "$MERGED" ]; then
+    # Re-read the list: a watch_pr racing with this poll may have just added a
+    # PR this pass never saw, and exiting now would leave it unwatched.
+    pending=0
+    while IFS= read -r url; do
+      in_list "$MERGED" "$url" || in_list "$CLOSED" "$url" || pending=1
+    done < <(watched_urls)
+    if [ "$pending" -eq 0 ]; then
+      report_merged
+      exit 0
+    fi
+  fi
 
   [ "$ONCE" = 1 ] && exit 0
   sleep "$INTERVAL"
