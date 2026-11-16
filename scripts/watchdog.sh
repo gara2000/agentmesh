@@ -52,7 +52,8 @@ cleanup_task() {
         "${SIGNALS}/${slug}.full-slug" \
         "${SIGNALS}/${slug}.task-id" \
         "${SIGNALS}/${slug}.pr-seen-comments" \
-        "${SIGNALS}/${slug}.summary-posted"
+        "${SIGNALS}/${slug}.summary-posted" \
+        "${SIGNALS}/${slug}.hot-until"
 }
 
 echo "[watchdog] started"

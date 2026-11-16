@@ -157,7 +157,8 @@ reap() {
         "${SIGNALS}/${slug}.terminal-since" \
         "${SIGNALS}/${slug}.full-slug" \
         "${SIGNALS}/${slug}.task-id" \
-        "${SIGNALS}/${slug}.summary-posted"
+        "${SIGNALS}/${slug}.summary-posted" \
+        "${SIGNALS}/${slug}.hot-until"
 
   log_event "worker-reaped" "$slug"
   echo "[reaper] $slug: terminal — killed worker, sidecar and pr-monitor"
