@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agentmesh — AgentMesh lifecycle CLI
-# Usage: agentmesh <start|stop|switch|status|attach|task> [options]
+# Usage: agentmesh <start|stop|clean|switch|status|attach|task> [options]
 #
 # There is no user-interaction process to start: agents talk to the user through
 # NoteCove task comments, so `start` brings up daemons and returns.
@@ -46,7 +46,7 @@ _heartbeat_age() {
 
 cmd_start() {
   local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
-  local MAX_WORKERS="30" POLL_INTERVAL="30" CLEAN=""
+  local MAX_WORKERS="30" POLL_INTERVAL="30"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,7 +54,11 @@ cmd_start() {
       --profile)       PROFILE="$2";       shift 2 ;;
       --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
       --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
-      --clean)         CLEAN="--clean";    shift ;;
+      --clean)
+        # start only ever adds what is missing. Wiping is its own, explicit,
+        # confirmed command, so a routine start can never lose a pending reply.
+        echo "Error: start never cleans. Run 'agentmesh clean' first, then start." >&2
+        exit 1 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -64,22 +68,12 @@ cmd_start() {
     exit 1
   fi
 
-  # 1. Create tmux sessions
-  if ! _session_exists orchestrator; then
-    tmux new-session -d -s orchestrator
-    echo "  ✓ orchestrator session created"
-  else
-    echo "  · orchestrator session already running"
-  fi
-
-  if ! _session_exists workers; then
-    tmux new-session -d -s workers
-    echo "  ✓ workers session created"
-  else
-    echo "  · workers session already running"
-  fi
-
-  # 2. Bootstrap. Always run it: it is idempotent and self-repairing, so this is
+  # Bootstrap creates the tmux sessions itself, and has to be the one to: it
+  # reads a missing `workers` session as "no worker can be alive" (a reboot, a
+  # killed tmux server) and clears the stale registry and delivery gates. Making
+  # the session here first hid that from it.
+  #
+  # Always run it: it is idempotent and self-repairing, so this is
   #    also how a missing or crashed daemon is brought back without a stop.
   #
   #    This used to be skipped whenever the heartbeat was under 60s old, which
@@ -90,8 +84,7 @@ cmd_start() {
     --project "$PROJECT" \
     --profile "$PROFILE" \
     --max-workers "$MAX_WORKERS" \
-    --poll-interval "$POLL_INTERVAL" \
-    ${CLEAN:+$CLEAN}
+    --poll-interval "$POLL_INTERVAL"
 
   echo ""
   echo "agentmesh started. Project: ${PROJECT}."
@@ -100,31 +93,183 @@ cmd_start() {
 
 # ── stop ───────────────────────────────────────────────────────────────────────
 
+# Four cumulative levels; each also does everything below it.
+#
+#   1  supervisory daemons — launcher, watchdog, reaper, folder-cleanup.
+#      Workers keep their sidecars and pr-monitors, so the user's replies are
+#      still delivered; nothing new is picked up, crashed or reaped.
+#   2  + every sidecar and pr-monitor. Workers stay alive but deaf. Their
+#      baselines are kept, so the replacements the launcher spawns on the next
+#      start report everything that arrived in between.
+#   3  + every worker. Also clears the registry and the per-process flags, so the
+#      next start reads this as a stop rather than a crash of every worker (the
+#      watchdog would otherwise bump each crash count, delete each inbox and
+#      re-queue the task to Ready). Inboxes, baselines and PR state stay: the
+#      launcher's adoption resumes each task with its unread replies.
+#   4  + all runtime state in signals/ — a blank slate. Tasks stay in
+#      Doing/Attention and are re-adopted from their notes and comments, but any
+#      reply nobody has read yet is gone. *.description-backup is kept: it is the
+#      only copy of a task description ensure_task_folder rewrote.
+
+_STOP_LEVELS=(
+  ""
+  "daemons    — launcher, watchdog, reaper, folder-cleanup; workers keep talking to you"
+  "+ sidecars and pr-monitors — workers stay alive but get no replies until start"
+  "+ workers  — start re-adopts every task with its pending replies"
+  "+ all signal files — blank slate; unread replies are lost"
+)
+
+# Window names in the workers session that are workers, as opposed to the
+# session's default shell window: the launcher recorded a registry line or a
+# full slug for each one it spawned.
+_worker_windows() {
+  local w
+  tmux list-windows -t workers -F "#{window_name}" 2>/dev/null | while read -r w; do
+    grep -q "^${w} " "$SIGNALS/workers" 2>/dev/null \
+      || [[ -f "$SIGNALS/${w}.full-slug" ]] && echo "$w"
+  done
+  return 0
+}
+
+_orchestrator_windows() {
+  tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null || true
+}
+
+_print_running() {
+  local orch daemons=() d
+  orch=$(_orchestrator_windows)
+  for d in launcher watchdog reaper folder-cleanup; do
+    grep -qx "$d" <<<"$orch" && daemons+=("$d")
+  done
+  echo "Currently running:"
+  printf "  %-14s %s\n" "daemons" "${daemons[*]:-none}"
+  printf "  %-14s %s\n" "workers" "$(_worker_windows | awk 'END {print NR}')"
+  printf "  %-14s %s\n" "sidecars" "$(awk '/^side-/ {n++} END {print n+0}' <<<"$orch")"
+  printf "  %-14s %s\n" "pr-monitors" "$(awk '/^pr-mon-/ {n++} END {print n+0}' <<<"$orch")"
+}
+
+_kill_windows_named() {
+  # Loop: tmux kill-window removes only the first window matching a name.
+  local name="$1"
+  while _window_exists "$name"; do
+    tmux kill-window -t "orchestrator:$name" 2>/dev/null || break
+  done
+}
+
+_stop_daemons() {
+  local d
+  for d in launcher watchdog reaper folder-cleanup; do
+    _kill_windows_named "$d"
+  done
+  # The heartbeat means "a scan completed recently"; with the launcher gone it
+  # no longer does, and status must not report a dead launcher as running.
+  rm -f "$SIGNALS/launcher.heartbeat"
+  echo "  ✓ daemons stopped (launcher, watchdog, reaper, folder-cleanup)"
+}
+
+_stop_task_daemons() {
+  # side-* and pr-mon-* are not in signals/workers, so nothing else would ever
+  # collect them.
+  local w n=0
+  for w in $(_orchestrator_windows | grep -E '^(side-|pr-mon-)' || true); do
+    tmux kill-window -t "orchestrator:$w" 2>/dev/null || true
+    n=$((n + 1))
+  done
+  echo "  ✓ $n sidecar/pr-monitor window(s) stopped"
+}
+
+_stop_workers() {
+  tmux kill-session -t workers 2>/dev/null || true
+  # Keep the format comment, drop every entry: none of them is running now, and
+  # an entry whose window is gone is what the watchdog reads as a crash.
+  if [[ -f "$SIGNALS/workers" ]]; then
+    grep '^#' "$SIGNALS/workers" > "$SIGNALS/workers.tmp" || true
+    mv "$SIGNALS/workers.tmp" "$SIGNALS/workers"
+  fi
+  # Flags that describe a process, not a task. A stale .ready lets a sidecar
+  # type into the respawned window while spawn-agent.sh is typing the skill; a
+  # stale .backoff (watchdog gone mid-sleep) or .launching (launcher gone
+  # mid-spawn) makes adoption skip the task.
+  rm -f "$SIGNALS/"*.ready "$SIGNALS/"*.pending-delivery \
+        "$SIGNALS/"*.launching "$SIGNALS/"*.backoff
+  echo "  ✓ workers stopped (their tasks are re-adopted on the next start)"
+}
+
+_stop_signals() {
+  [[ -d "$SIGNALS" ]] || return 0
+  find "$SIGNALS" -maxdepth 1 -type f ! -name '*.description-backup' -delete
+  echo "  ✓ runtime state cleared (signals/, keeping description backups)"
+}
+
 cmd_stop() {
-  # 1. Kill known windows in the orchestrator session
-  for win in folder-cleanup watchdog reaper launcher; do
-    tmux kill-window -t "orchestrator:$win" 2>/dev/null || true
+  local LEVEL="" YES=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --level) LEVEL="${2:-}"; shift 2 ;;
+      --yes|-y) YES=1; shift ;;
+      *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
   done
 
-  # 2. Kill per-task windows. side-* and pr-mon-* are not tracked in
-  #    signals/workers, so nothing else would ever reap them — kill explicitly.
-  tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null \
-    | grep -E "^(pr-mon-|side-)" \
-    | while read -r w; do
-        tmux kill-window -t "orchestrator:$w" 2>/dev/null || true
-      done || true
+  local tty=0 asked=0
+  [[ -t 0 && -t 1 ]] && tty=1
 
-  # 3. Kill workers session
-  tmux kill-session -t workers 2>/dev/null || true
+  if [[ -z "$LEVEL" ]]; then
+    if [[ $tty -eq 0 ]]; then
+      # Never guess how much to destroy on someone's behalf.
+      echo "Error: no terminal to ask on — pass --level <1-4>:" >&2
+      local n
+      for n in 1 2 3 4; do echo "  $n  ${_STOP_LEVELS[$n]}" >&2; done
+      exit 1
+    fi
+    _print_running
+    echo ""
+    echo "How much should be stopped? Each level includes the ones above it."
+    local n
+    for n in 1 2 3 4; do echo "  $n  ${_STOP_LEVELS[$n]}"; done
+    asked=1
+    read -r -p "Level [1-4, anything else cancels]: " LEVEL || LEVEL=""
+  fi
 
-  # 4. Invalidate the heartbeat.
-  #    cmd_start skips bootstrap entirely when the heartbeat is under 60s old,
-  #    and launcher.py refreshes it every 30s — so without this, a stop followed
-  #    by a start inside a minute brings up nothing at all and reports
-  #    "launcher already running". Nothing would then adopt the stopped tasks.
-  rm -f "$SIGNALS/launcher.heartbeat"
+  case "$LEVEL" in
+    1|2|3|4) ;;
+    *)
+      if [[ $asked -eq 0 ]]; then
+        echo "Error: --level must be 1, 2, 3 or 4" >&2
+        exit 1
+      fi
+      echo "Cancelled — nothing stopped."
+      return 0
+      ;;
+  esac
 
-  echo "agentmesh stopped."
+  if [[ "$LEVEL" -eq 4 && $YES -eq 0 ]]; then
+    if [[ $tty -eq 0 ]]; then
+      echo "Error: level 4 deletes every pending reply and baseline — pass --yes to confirm" >&2
+      exit 1
+    fi
+    local answer=""
+    read -r -p "Level 4 deletes every unread reply and all runtime state. Type 'yes' to continue: " answer || true
+    if [[ "$answer" != "yes" ]]; then
+      echo "Cancelled — nothing stopped."
+      return 0
+    fi
+  fi
+
+  _stop_daemons
+  [[ "$LEVEL" -ge 2 ]] && _stop_task_daemons
+  [[ "$LEVEL" -ge 3 ]] && _stop_workers
+  [[ "$LEVEL" -ge 4 ]] && _stop_signals
+
+  echo "agentmesh stopped (level $LEVEL). 'agentmesh start' brings back whatever is missing."
+}
+
+# ── clean ──────────────────────────────────────────────────────────────────────
+
+# Everything, signal files included: the one way to start fresh, since start
+# itself never removes anything.
+cmd_clean() {
+  cmd_stop --level 4 "$@"
 }
 
 # ── status ─────────────────────────────────────────────────────────────────────
@@ -368,18 +513,20 @@ shift || true
 case "$COMMAND" in
   start)         cmd_start         "$@" ;;
   stop)          cmd_stop          "$@" ;;
+  clean)         cmd_clean         "$@" ;;
   switch)        cmd_switch        "$@" ;;
   status)        cmd_status        "$@" ;;
   attach)        cmd_attach        "$@" ;;
   task)          cmd_task          "$@" ;;
   *)
-    echo "Usage: agentmesh <start|stop|switch|status|attach|task> [options]" >&2
+    echo "Usage: agentmesh <start|stop|clean|switch|status|attach|task> [options]" >&2
     echo "" >&2
     echo "Commands:" >&2
     echo "  start          Start the agentmesh system, or repair a running one" >&2
-    echo "                 (idempotent: creates what is missing, touches nothing else;" >&2
-    echo "                  --clean forces a full runtime reset)" >&2
-    echo "  stop           Stop the agentmesh system" >&2
+    echo "                 (idempotent: creates what is missing, never removes anything)" >&2
+    echo "  stop           Stop the system, choosing how much from a menu" >&2
+    echo "                 (--level 1-4 to skip it; 4 needs --yes without a terminal)" >&2
+    echo "  clean          stop --level 4: everything, runtime state included" >&2
     echo "  switch         Switch to a different project (preserves running workers)" >&2
     echo "  status         Show component health" >&2
     echo "  attach         Attach to the orchestrator tmux session" >&2

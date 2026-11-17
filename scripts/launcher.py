@@ -156,6 +156,7 @@ class Launcher:
         while not self._stop.is_set():
             with self._lock:
                 self.reconcile_sidecars()
+                self.reconcile_pr_monitors()
                 self.adopt_orphaned_tasks()
                 self.pick_up_ready_tasks()
             # Stamped only after a full scan completes. A launcher that dies
@@ -437,8 +438,8 @@ class Launcher:
           - **Missing sidecar** → spawn one. Covers a crashed sidecar, a failed
             `_spawn_sidecar` (which only logs and returns), and the window being
             killed by cleanup while the worker survived.
-          - **Missing registry entry** → re-register. `bootstrap.sh` truncates the
-            registry, so a launcher restart while workers survive leaves them
+          - **Missing registry entry** → re-register. A cleared registry (stop
+            level 3, or a start with no workers session) while workers survive leaves them
             invisible to the watchdog and uncounted against max-workers, causing
             the launcher to over-subscribe.
         """
@@ -463,7 +464,7 @@ class Launcher:
             agent_type = registry.get(slug)
 
             if agent_type is None:
-                # Live worker absent from the registry (truncated by bootstrap).
+                # Live worker absent from the registry (it was cleared).
                 agent_type = self._agent_type_for(slug)
                 if agent_type is None:
                     log("launcher     ", "reconcile-skipped-untyped", slug)
@@ -482,6 +483,57 @@ class Launcher:
                 _print(f"{slug} has no sidecar — spawning one")
                 self._spawn_sidecar(slug, agent_type)
 
+    def _unresolved_prs(self, slug: str) -> list[str]:
+        """PR URLs in signals/<slug>.prs not yet seen merged or closed."""
+        def lines(suffix: str) -> list[str]:
+            try:
+                text = (SIGNALS / f"{slug}{suffix}").read_text()
+            except OSError:
+                return []
+            return [l.strip() for l in text.splitlines() if l.strip()]
+
+        resolved = set(lines(".merged")) | set(lines(".pr-closed"))
+        return [url for url in lines(".prs") if url not in resolved]
+
+    def reconcile_pr_monitors(self) -> None:
+        """Give every live worker with an open PR a pr-monitor.
+
+        `watch_pr` starts the monitor once, when the agent creates the PR. If
+        that window dies — killed by `agentmesh stop --level 2`, or a crash —
+        nothing starts it again: the merge never reaches the worker and the
+        task sits in `Attention` forever. The PR list in signals/<slug>.prs and
+        the monitor's baselines survive, so a respawned monitor carries on from
+        where the old one stopped.
+
+        A task whose PRs are all resolved needs none: the monitor exits on
+        purpose after reporting the merge, and one that saw every PR closed
+        unmerged has nothing left to watch.
+        """
+        live_windows = self._live_worker_windows()
+        if not live_windows:
+            return
+
+        result = run_bash(
+            "tmux list-windows -t orchestrator -F '#{window_name}' 2>/dev/null"
+        )
+        if result.returncode != 0:
+            return
+        orchestrator = {w.strip() for w in result.stdout.splitlines() if w.strip()}
+
+        for slug in sorted(live_windows):
+            window = f"pr-mon-{slug}"
+            if window in orchestrator or not self._unresolved_prs(slug):
+                continue
+            spawned = tmux(
+                f"new-window -d -t 'orchestrator:' -n {window} "
+                f"'bash {SCRIPTS}/pr-monitor.sh {slug}'"
+            )
+            if spawned.returncode != 0:
+                log("launcher     ", "pr-monitor-reconcile-failed", slug)
+                continue
+            log("launcher     ", "pr-monitor-reconciled", slug)
+            _print(f"{slug} has open PRs but no pr-monitor — spawned one")
+
     # -----------------------------------------------------------------------
     # Adoption — re-attach workers to mid-flight tasks that lost theirs
     # -----------------------------------------------------------------------
@@ -494,8 +546,8 @@ class Launcher:
         task again:
 
           - the normal scan only queries Ready (pick_up_ready_tasks)
-          - bootstrap.sh truncates signals/workers, so after a restart the
-            watchdog has no record of the task to notice it died
+          - `agentmesh stop --level 3` clears signals/workers, so after a restart
+            the watchdog has no record of the task to notice it died
           - the watchdog only treats state 'doing' as a crash; a task stranded in
             Attention is logged as a clean exit
 

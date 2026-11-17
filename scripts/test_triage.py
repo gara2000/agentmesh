@@ -404,6 +404,64 @@ class TestReconcileSidecars(unittest.TestCase):
         self.assertEqual(spawned, [], "its sidecar is alive — only the registry needed fixing")
 
 
+class TestReconcilePrMonitors(unittest.TestCase):
+    """A live worker with an open PR must have a pr-monitor, or a merge is never seen."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.signals = Path(self._tmp.name)
+        self._signals_patch = patch.object(lnch, "SIGNALS", self.signals)
+        self._signals_patch.start()
+        self.addCleanup(self._signals_patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _run(self, worker_windows, orchestrator_windows):
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        fake = MagicMock(returncode=0, stdout="\n".join(orchestrator_windows))
+        with (
+            patch.object(l, "_live_worker_windows", return_value=set(worker_windows)),
+            patch.object(lnch, "run_bash", return_value=fake),
+            patch.object(lnch, "tmux", return_value=MagicMock(returncode=0)) as mock_tmux,
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l.reconcile_pr_monitors()
+        return [c.args[0] for c in mock_tmux.call_args_list]
+
+    def test_respawns_a_missing_monitor_for_an_open_pr(self):
+        (self.signals / "WORK-abc.prs").write_text("https://github.com/o/r/pull/1\n")
+        calls = self._run(["WORK-abc"], ["side-WORK-abc"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("-n pr-mon-WORK-abc", calls[0])
+        self.assertIn("pr-monitor.sh WORK-abc", calls[0])
+
+    def test_leaves_a_running_monitor_alone(self):
+        (self.signals / "WORK-abc.prs").write_text("https://github.com/o/r/pull/1\n")
+        self.assertEqual(self._run(["WORK-abc"], ["pr-mon-WORK-abc"]), [])
+
+    def test_no_monitor_without_prs(self):
+        self.assertEqual(self._run(["WORK-abc"], []), [])
+
+    def test_no_monitor_once_every_pr_is_resolved(self):
+        """The monitor exits on purpose after the merge; respawning it would re-report."""
+        (self.signals / "WORK-abc.prs").write_text(
+            "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2\n")
+        (self.signals / "WORK-abc.merged").write_text("https://github.com/o/r/pull/1\n")
+        (self.signals / "WORK-abc.pr-closed").write_text("https://github.com/o/r/pull/2\n")
+        self.assertEqual(self._run(["WORK-abc"], []), [])
+
+    def test_partially_merged_still_needs_a_monitor(self):
+        (self.signals / "WORK-abc.prs").write_text(
+            "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2\n")
+        (self.signals / "WORK-abc.merged").write_text("https://github.com/o/r/pull/1\n")
+        self.assertEqual(len(self._run(["WORK-abc"], [])), 1)
+
+    def test_no_monitor_for_a_dead_worker(self):
+        """Adoption brings the worker back first; the next scan pairs it."""
+        (self.signals / "WORK-abc.prs").write_text("https://github.com/o/r/pull/1\n")
+        self.assertEqual(self._run([], []), [])
+
+
 class TestSidecarHandleReconciliation(unittest.TestCase):
     """A reused sidecar must be filtering on the current agent's author name.
 
