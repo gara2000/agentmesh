@@ -8,6 +8,12 @@ NoteCove comment per batch of new review comments, carrying everything the worke
 needs; nothing for comments the worker has already answered or that it wrote
 itself; and nothing lost when gh or NoteCove fails.
 
+One monitor watches every PR of its task (signals/<slug>.prs). The worker is told
+to set Done only once all of them have merged; a PR closed unmerged drops out.
+
+PR number <n> can be given its own state / comments via stub files state-<n> /
+comments-<n>.jsonl; without them every PR shares state / comments.jsonl.
+
 Driven with --once against stub gh / notecove / tmux on PATH.
 """
 import json
@@ -23,11 +29,15 @@ SCRIPTS = Path(__file__).parent
 GH_STUB = r"""#!/usr/bin/env bash
 STUB="$STUB_DIR"
 echo "$*" >> "$STUB/gh.log"
+# The PR number: the last /<n> component of the URL or API path in $3.
+n=$(printf '%s' "$3" | sed -nE 's#.*/(pull|pulls)/([0-9]+).*#\2#p')
 case "$1 $2" in
-  "pr view") cat "$STUB/state" 2>/dev/null ;;
+  "pr view")
+    if [ -f "$STUB/state-$n" ]; then cat "$STUB/state-$n"; else cat "$STUB/state" 2>/dev/null; fi ;;
   "api "*)
     [ -f "$STUB/gh-api-fail" ] && exit 1
-    cat "$STUB/comments.jsonl" 2>/dev/null ;;
+    if [ -f "$STUB/comments-$n.jsonl" ]; then cat "$STUB/comments-$n.jsonl"
+    else cat "$STUB/comments.jsonl" 2>/dev/null; fi ;;
 esac
 exit 0
 """
@@ -46,6 +56,7 @@ TMUX_STUB = "#!/usr/bin/env bash\nexit 1\n"
 
 PR_URL = "https://github.com/acme/widgets/pull/7"
 API = "repos/acme/widgets/pulls/7"
+PR_URL_2 = "https://github.com/acme/gadgets/pull/9"
 
 
 def _comment(cid, body="please rename this", login="alice", path="src/x.py",
@@ -86,9 +97,21 @@ class PrMonitorHarness(unittest.TestCase):
     def set_state(self, state):
         (self.stub / "state").write_text(state + "\n")
 
-    def set_comments(self, comments):
-        (self.stub / "comments.jsonl").write_text(
+    def set_comments(self, comments, pr=None):
+        name = f"comments-{pr}.jsonl" if pr else "comments.jsonl"
+        (self.stub / name).write_text(
             "".join(json.dumps(c) + "\n" for c in comments))
+
+    def set_pr_state(self, pr, state):
+        (self.stub / f"state-{pr}").write_text(state + "\n")
+
+    def watch(self, *urls):
+        with open(self.signals / f"{self.SLUG}.prs", "a") as f:
+            f.writelines(u + "\n" for u in urls)
+
+    def inbox(self):
+        p = self.signals / f"{self.SLUG}.inbox"
+        return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
 
     def run_once(self):
         env = dict(os.environ,
@@ -115,8 +138,12 @@ class PrMonitorHarness(unittest.TestCase):
             "".join(i + "\n" for i in ids))
 
     def seen(self):
+        """The comment ids recorded as seen, without the per-PR baseline lines."""
         p = self.signals / f"{self.SLUG}.pr-seen-comments"
-        return p.read_text().split() if p.exists() else None
+        if not p.exists():
+            return None
+        return [l for l in p.read_text().split("\n")
+                if l and not l.startswith("baseline ")]
 
 
 MARKED = "Done.\n\n<!-- agentmesh -->"
@@ -291,6 +318,108 @@ class TestMerge(PrMonitorHarness):
         self.assertTrue((self.signals / f"{self.SLUG}.merged").exists())
         self.assertIsNone(self.seen())
         self.assertEqual(self.posted(), [])
+
+
+class TestMultiplePrs(PrMonitorHarness):
+    """Every PR in signals/<slug>.prs is watched; Done waits for all of them."""
+
+    def setUp(self):
+        super().setUp()
+        self.watch(PR_URL_2)  # PR_URL arrives on the command line, as before
+
+    def test_command_line_url_joins_the_watch_list(self):
+        self.run_once()
+        prs = (self.signals / f"{self.SLUG}.prs").read_text().split()
+        self.assertEqual(sorted(prs), sorted([PR_URL, PR_URL_2]))
+        self.run_once()
+        prs = (self.signals / f"{self.SLUG}.prs").read_text().split()
+        self.assertEqual(len(prs), 2, "the argument must not be appended twice")
+
+    def test_one_merge_of_two_does_not_tell_the_worker(self):
+        self.set_pr_state(7, "MERGED")
+        r = self.run_once()
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.inbox(), [])
+        self.assertIn("pr-merged-seen", self.events())
+        self.assertNotIn("pr-merged-detected", self.events())
+        self.assertEqual((self.signals / f"{self.SLUG}.merged").read_text().split(),
+                         [PR_URL])
+
+    def test_merged_pr_is_not_polled_again(self):
+        self.set_pr_state(7, "MERGED")
+        self.run_once()
+        (self.stub / "gh.log").unlink()
+        self.run_once()
+        self.assertNotIn("/pull/7", (self.stub / "gh.log").read_text())
+
+    def test_all_merged_tells_the_worker_once_with_every_url(self):
+        self.set_pr_state(7, "MERGED")
+        self.run_once()
+        self.set_pr_state(9, "MERGED")
+        self.run_once()
+        entries = self.inbox()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "pr-merged")
+        self.assertEqual(sorted(entries[0]["urls"]), sorted([PR_URL, PR_URL_2]))
+        self.assertIn("All 2 PRs were merged", entries[0]["note"])
+        self.assertIn("pr-merged-detected", self.events())
+
+    def test_closed_pr_drops_out_of_the_set(self):
+        self.set_pr_state(9, "CLOSED")
+        self.run_once()
+        self.assertEqual(self.inbox(), [])
+        self.assertIn("pr-closed-unmerged", self.events())
+        self.set_pr_state(7, "MERGED")
+        self.run_once()
+        entries = self.inbox()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["urls"], [PR_URL])
+        self.assertEqual(entries[0]["note"], "PR was merged. Set the task to Done.")
+
+    def test_all_closed_tells_the_worker_nothing(self):
+        self.set_pr_state(7, "CLOSED")
+        self.set_pr_state(9, "CLOSED")
+        self.run_once()
+        self.run_once()
+        self.assertEqual(self.inbox(), [])
+
+    def test_comments_on_each_pr_are_reported_separately(self):
+        self.set_comments([_comment(1)], pr=7)
+        self.set_comments([_comment(50, body="typo in gadgets")], pr=9)
+        self.run_once()
+        posts = [p[-1] for p in self.posted()]
+        self.assertEqual(len(posts), 2)
+        self.assertTrue(any(PR_URL in t and "#1 " in t for t in posts))
+        self.assertTrue(any(PR_URL_2 in t and "typo in gadgets" in t
+                            and "repos/acme/gadgets/pulls/9" in t for t in posts))
+        self.run_once()
+        self.assertEqual(len(self.posted()), 2, "each reported once")
+
+    def test_pr_added_later_gets_its_own_first_listing(self):
+        self.run_once()  # both PRs baselined with no comments
+        url3 = "https://github.com/acme/widgets/pull/11"
+        self.set_comments([_comment(70), _comment(71, body=MARKED, reply_to=70)],
+                          pr=11)
+        self.watch(url3)
+        self.run_once()
+        # 70 is answered by the worker's marked reply: first-listing history.
+        self.assertEqual(self.posted(), [])
+        self.assertIn("baseline repos/acme/widgets/pulls/11",
+                      (self.signals / f"{self.SLUG}.pr-seen-comments").read_text())
+        self.set_comments([_comment(70), _comment(71, body=MARKED, reply_to=70),
+                           _comment(72, body="one more")], pr=11)
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+        self.assertIn("one more", self.posted()[0][-1])
+
+    def test_unmerged_pr_added_after_a_merge_keeps_the_task_open(self):
+        self.set_pr_state(7, "MERGED")
+        self.set_pr_state(9, "MERGED")
+        url3 = "https://github.com/acme/widgets/pull/11"
+        self.watch(url3)
+        self.set_pr_state(11, "OPEN")
+        self.run_once()
+        self.assertEqual(self.inbox(), [])
 
 
 class TestUnparsableUrl(PrMonitorHarness):

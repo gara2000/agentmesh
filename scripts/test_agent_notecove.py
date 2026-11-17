@@ -457,5 +457,62 @@ class TestSourcedFromZsh(AgentHarness):
         self.assertNotIn("x" * 901, self.bodies()[0])
 
 
+# tmux stub for watch_pr: list-windows prints stub/windows, new-window is logged.
+TMUX_STUB = r"""#!/usr/bin/env bash
+case "$1" in
+  list-windows) cat "$STUB_DIR/windows" 2>/dev/null ;;
+  new-window) printf '%s\n' "$*" >> "$STUB_DIR/new-window.log" ;;
+esac
+exit 0
+"""
+
+
+class TestWatchPr(AgentHarness):
+    """watch_pr records every PR and starts at most one monitor per task."""
+
+    URL1 = "https://github.com/acme/widgets/pull/7"
+    URL2 = "https://github.com/acme/gadgets/pull/9"
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "tmux").write_text(TMUX_STUB)
+        (bin_dir / "tmux").chmod(0o755)
+        self.path = f"{bin_dir}:{os.environ['PATH']}"
+
+    def watch(self, url):
+        r = self.run_snippet(f'export PATH="{self.path}"\nwatch_pr "{url}"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        if (self.stub_dir / "new-window.log").exists():
+            # The window now exists, as it would after a real new-window.
+            (self.stub_dir / "windows").write_text(f"pr-mon-{self.SLUG}\n")
+
+    def prs(self):
+        return (self.signals / f"{self.SLUG}.prs").read_text().split()
+
+    def spawns(self):
+        f = self.stub_dir / "new-window.log"
+        return f.read_text().splitlines() if f.exists() else []
+
+    def test_second_pr_is_recorded_without_a_second_monitor(self):
+        self.watch(self.URL1)
+        self.watch(self.URL2)
+        self.assertEqual(self.prs(), [self.URL1, self.URL2])
+        self.assertEqual(len(self.spawns()), 1)
+        self.assertIn(f"pr-mon-{self.SLUG}", self.spawns()[0])
+
+    def test_same_pr_twice_is_recorded_once(self):
+        self.watch(self.URL1)
+        self.watch(self.URL1)
+        self.assertEqual(self.prs(), [self.URL1])
+
+    def test_pr_is_recorded_when_the_monitor_is_already_running(self):
+        (self.stub_dir / "windows").write_text(f"pr-mon-{self.SLUG}\n")
+        self.watch(self.URL2)
+        self.assertEqual(self.prs(), [self.URL2])
+        self.assertEqual(self.spawns(), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

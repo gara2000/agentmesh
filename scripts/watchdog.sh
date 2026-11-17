@@ -52,6 +52,9 @@ cleanup_task() {
         "${SIGNALS}/${slug}.full-slug" \
         "${SIGNALS}/${slug}.task-id" \
         "${SIGNALS}/${slug}.pr-seen-comments" \
+        "${SIGNALS}/${slug}.prs" \
+        "${SIGNALS}/${slug}.merged" \
+        "${SIGNALS}/${slug}.pr-closed" \
         "${SIGNALS}/${slug}.summary-posted" \
         "${SIGNALS}/${slug}.hot-until"
 }

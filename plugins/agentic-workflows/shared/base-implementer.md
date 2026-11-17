@@ -125,13 +125,13 @@ The cleanup is still required even though you did not set the state: nothing els
 
 ### If you create a PR
 
-Call `watch_pr "$PR_URL"` right after creating it, before `request_attention`:
+Call `watch_pr "$PR_URL"` right after creating it, before `request_attention` — **once for every PR**, if the task needs more than one:
 
 ```bash
 watch_pr "$PR_URL"
 ```
 
-That starts a monitor which delivers a message to you when the PR is merged, so a user who merges on GitHub instead of commenting `approve` still gets a response. Without it, a merge is invisible to you and the task sits in `Attention` indefinitely.
+That adds the PR to your task's monitor (starting it if needed). It reports new review comments on any watched PR, and delivers a `pr-merged` message only once **all** of them are merged — so a user who merges on GitHub instead of commenting `approve` still gets a response, and the task is not closed while one PR is still open. A PR closed without merging drops out. Without the call, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
 ### Writing the PR description
 
@@ -212,7 +212,7 @@ The handle passed to `agent_init` **must** match the `--user` value your comment
 - **An empty `read_inbox` is not an error.** It means nothing new; carry on.
 - **Always finish with `finish_task "<state>" "<project>"`** — never a bare `notecove task change --state Done`. It is what releases blocked dependents and stops your sidecar; nothing else does.
 - **If the user set the terminal state**, call `finish_cleanup "<project>"` instead — their state stands, but the cleanup is still owed.
-- **Call `watch_pr "$PR_URL"` after creating a PR** — otherwise a merge on GitHub never reaches you.
+- **Call `watch_pr "$PR_URL"` after creating each PR** — otherwise a merge on GitHub never reaches you, and an unwatched PR does not hold the task open.
 - **Keep PR descriptions to one screen** — 🎯 Motivation, 📝 Summary, 🔧 Changes, 💥 Blast radius, 🧪 Testing; detail goes in the COMPLETION note. See *Writing the PR description*.
 - **Check your task folder for existing notes at startup** — you may be a restarted worker, and repeating finished work wastes the user's time.
 <!-- BASE-AGENT:END -->

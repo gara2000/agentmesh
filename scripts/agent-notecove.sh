@@ -614,24 +614,33 @@ Dependent tasks have been released and this task's sidecar stopped."
 
 # watch_pr <pr-url>
 #
-# Start a pr-monitor for this task. It polls the PR and, when it is merged,
-# writes a `pr-merged` entry to your inbox and delivers a message to your REPL —
+# Add a PR to this task's pr-monitor, starting the monitor if it is not running.
+# Call it for EVERY PR you create, right after creating it and before
+# request_attention. The monitor watches all of them: it reports each one's
+# inline review comments, and only when every watched PR has merged does it
+# write a `pr-merged` entry to your inbox and deliver a message to your REPL —
 # so a user who merges on GitHub instead of commenting `approve` still gets a
-# response.
+# response, and the task is not closed while one of its PRs is still open. A PR
+# closed without merging drops out of the set.
 #
-# It also watches the PR's inline review comments. New ones are posted to the
-# task as a NoteCove comment by "PR Monitor", which the sidecar delivers like any
-# other; that comment says exactly what to do, including the marker your GitHub
-# replies must carry so they are not reported back to you.
+# New review comments are posted to the task as a NoteCove comment by
+# "PR Monitor", which the sidecar delivers like any other; that comment says
+# exactly what to do, including the marker your GitHub replies must carry so
+# they are not reported back to you.
 #
-# Call this right after creating the PR, before request_attention. Idempotent: a
-# second call while one is already running is a no-op.
+# The list is signals/<slug>.prs, which the running monitor re-reads every poll,
+# so a PR added while it runs is picked up without a restart. Idempotent: the
+# same URL twice is recorded once, and at most one monitor runs per task.
 watch_pr() {
     local pr_url="${1:?watch_pr: pr-url required}"
-    local window="pr-mon-${SLUG}"
+    local window="pr-mon-${SLUG}" prs="${SIGNALS}/${SLUG}.prs"
+    # Recorded before the window check, so a monitor already running sees it.
+    if ! { [ -f "$prs" ] && grep -qxF -- "$pr_url" "$prs"; }; then
+        printf '%s\n' "$pr_url" >> "$prs"
+    fi
     if tmux list-windows -t orchestrator -F '#{window_name}' 2>/dev/null | grep -qxF "$window"; then
         return 0
     fi
     tmux new-window -d -t 'orchestrator:' -n "$window" \
-        "bash ~/agentmesh/scripts/pr-monitor.sh '$SLUG' '$pr_url'" 2>/dev/null || true
+        "bash ~/agentmesh/scripts/pr-monitor.sh '$SLUG'" 2>/dev/null || true
 }

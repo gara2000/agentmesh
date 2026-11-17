@@ -244,7 +244,7 @@ Agents source `scripts/agent-notecove.sh`:
 | `create_note <title> [<folder-id>]` | Create a note titled exactly `<title>` (body on stdin, folder defaults to the task folder); prints and exports `NOTE_ID` |
 | `finish_task <state> <project>` | Set the terminal state **and** run the cleanup that must go with it |
 | `finish_cleanup <project>` | The cleanup alone, for when the *user* set the terminal state |
-| `watch_pr <pr-url>` | Start the merge monitor for this task |
+| `watch_pr <pr-url>` | Add a PR to this task's monitor (starting it if needed); call once per PR |
 
 `finish_task` is not optional sugar over `notecove task change --state Done`. It is the only thing that releases tasks blocked on this one and stops this task's sidecar and pr-monitor — before the refactor the orchestrator's event handlers did that, and they are gone. A bare state change leaves dependents blocked forever and leaks two processes.
 
@@ -449,7 +449,7 @@ An `Attention` task whose window is gone is **not** a clean exit: the task is mi
 
 This path still **counts crashes**. Adoption respawns on a 30s cadence, so a worker that reproducibly dies right after `request_attention` would otherwise be respawned forever with no cap and nothing reported. At three the task is set `Blocked` with a comment warning that the user's reply may never have been read.
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, `.summary-posted`, and `.hot-until` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, and `.hot-until` files.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
@@ -513,7 +513,13 @@ After creating a PR, the worker polls required CI checks before telling the user
 
 ## PR Monitor
 
-One per PR-ready task, in window `pr-mon-<slug>`. Polls `gh pr view <pr-url>` every 60 seconds.
+One per PR-ready task, in window `pr-mon-<slug>`, watching **every** PR of that task. Polls `gh pr view` on each unresolved one every 60 seconds.
+
+The PRs are listed in `signals/<slug>.prs`, one URL per line. `watch_pr` appends to it and starts the monitor only if its window is absent; the monitor re-reads the list every poll, so a PR added later is picked up without a restart. (It used to watch only the PR it was started with, so a task's second PR had its review comments ignored and the first merge alone told the worker to set `Done`.)
+
+- A merged PR is recorded in `signals/<slug>.merged` and no longer polled. That alone wakes nobody.
+- A PR closed without merging is recorded in `signals/<slug>.pr-closed` and drops out of the set: it no longer holds the task open, and does not count as merged.
+- Once every watched PR is resolved and at least one merged, it writes **one** `pr-merged` inbox entry (`urls` lists them all), delivers the nudge and exits — re-reading the list first, so a racing `watch_pr` is not lost.
 
 ```mermaid
 sequenceDiagram
@@ -523,7 +529,7 @@ sequenceDiagram
 
     W->>W: post_summary + request_attention, then end the turn
     PM->>GH: gh pr view (every 60s)
-    GH-->>PM: state = MERGED
+    GH-->>PM: every watched PR MERGED (or closed)
     PM->>PM: Write pr-merged to <slug>.inbox
     PM->>W: send-keys nudge into workers:<slug>
     PM->>PM: exit
@@ -533,15 +539,15 @@ sequenceDiagram
 
 It does **not** set task state — the worker wakes, sees the merge, and sets `Done` itself. Merge detection lives here rather than in the sidecar so the sidecar stays generic, with no notion of PRs.
 
-**The agent starts it**, via `watch_pr "$PR_URL"` immediately after creating the PR. Nothing else spawns it: the orchestrator used to, and that code is gone. Without the call a merge on GitHub is invisible and the task sits in `Attention` indefinitely, which is only correct if the user always responds by commenting `approve`.
+**The agent starts it**, via `watch_pr "$PR_URL"` immediately after creating each PR. Nothing else spawns it: the orchestrator used to, and that code is gone. Without the call a merge on GitHub is invisible and the task sits in `Attention` indefinitely, which is only correct if the user always responds by commenting `approve`.
 
 ### Inline review comments
 
 Each poll that does not find a merge also lists the PR's **inline review comments** — the ones pinned to a diff line, with a reply thread (`gh api repos/<o>/<r>/pulls/<n>/comments`). Conversation comments and review summaries are deliberately out of scope for now.
 
-New ones are not delivered by the monitor. It posts **one NoteCove comment on the task**, authored `PR Monitor`, listing each new comment (id, thread, author, file:line, excerpt) followed by the complete instructions: read it in full, address it if relevant (commit and push), leave the code alone if not, and either way reply briefly in its thread, ending the reply with a hidden `<!-- agentmesh -->` marker. The sidecar reports that comment like any other the agent did not write, so it reaches the worker through the usual inbox and nudge — and because the comment carries the instructions, no skill has to know about PR comments.
+New ones are not delivered by the monitor. It posts **one NoteCove comment on the task per PR**, authored `PR Monitor`, listing each new comment (id, thread, author, file:line, excerpt) followed by the complete instructions: read it in full, address it if relevant (commit and push), leave the code alone if not, and either way reply briefly in its thread, ending the reply with a hidden `<!-- agentmesh -->` marker. The sidecar reports that comment like any other the agent did not write, so it reaches the worker through the usual inbox and nudge — and because the comment carries the instructions, no skill has to know about PR comments.
 
-- **Baseline.** Comment ids already reported are stored in `signals/<slug>.pr-seen-comments`, which survives a monitor restart so nothing is replayed. With no file, the first successful listing is **not** treated as history: only comments the worker has already answered — followed in their thread by a reply carrying the marker — are baselined, and everything else is reported. The file is lost whenever a worker is adopted or crash-cleaned, and treating a fresh listing as history once let two restarted workers report "nothing new" over an unanswered bot comment. The cost of the rule is at most one repeat of a thread someone settled without a marked reply.
+- **Baseline.** Comment ids already reported are stored in `signals/<slug>.pr-seen-comments` — one file for all the task's PRs, with a `baseline <pulls-api-path>` line marking each PR's first listing, so a PR added later gets a first listing of its own. It survives a monitor restart so nothing is replayed. A PR's first successful listing (no baseline line yet) is **not** treated as history: only comments the worker has already answered — followed in their thread by a reply carrying the marker — are baselined, and everything else is reported. The file is lost whenever a worker is adopted or crash-cleaned, and treating a fresh listing as history once let two restarted workers report "nothing new" over an unanswered bot comment. The cost of the rule is at most one repeat of a thread someone settled without a marked reply.
 - **The worker's own replies are skipped by marker, not author.** The worker posts under the same GitHub account as the user, so the author cannot tell them apart; any comment containing `<!-- agentmesh -->` is recorded as seen and never reported. Bot comments are reported — the worker judges their relevance.
 - **Nothing is lost on failure.** A failed `gh api` call (`pr-comments-fetch-failed`) or a failed NoteCove post (`pr-comments-post-failed`) leaves the baseline untouched, so the same comments are retried on the next poll.
 - **The comment stays under NoteCove's 996-character limit.** A long batch is cut to "+N more" with the command to list them all; the instructions are never truncated.
@@ -665,7 +671,7 @@ Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one
 | Worker killed while `Attention` | Launcher adoption, next scan |
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
-| PR merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` |
+| PRs merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` (once per PR); fires when all are merged |
 | Reviewer leaves inline comments on the PR | `pr-monitor` posts them to the task as a `PR Monitor` comment; the sidecar wakes the worker |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |
