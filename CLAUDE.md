@@ -175,6 +175,7 @@ Its entire job is picking up work and starting workers. It does not route events
 
 Responsibilities, in order, every `--poll-interval` seconds (default 30):
 - **Reconcile sidecars** — spawn a sidecar for any live worker missing one, and re-register live workers absent from `signals/workers`
+- **Reconcile pr-monitors** — spawn `pr-mon-<slug>` for any live worker with an unresolved PR in `signals/<slug>.prs` and no monitor running
 - **Adopt orphaned tasks** — spawn a worker for any `Doing`/`Attention` task with no live worker window (see below)
 - **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
@@ -184,7 +185,7 @@ Adoption runs first: finishing work already in flight takes priority over starti
 
 **Untyped tasks are refused, not guessed.** A task is only picked up when its type maps through `TYPE_MAP`. Anything else — no type at all, or a type like `chore` that maps to nothing — is left in `Ready` with no default agent. The refusal posts exactly one comment, deduped via `signals/<slug>.untyped`, and is logged on every scan. Setting a supported type makes the task eligible again on the next scan.
 
-**Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `bootstrap.sh` truncates `signals/workers`, so after a restart the watchdog has no record of it either.
+**Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `agentmesh stop --level 3` (or a start that finds no `workers` session) clears `signals/workers`, so after a restart the watchdog has no record of it either.
 
 Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker + sidecar for any whose window is missing. It skips:
 
@@ -209,7 +210,9 @@ The launcher window runs inside a restart loop (`while true; do python3 launcher
 
 A sidecar is the only thing that delivers the user's replies into a worker's REPL, so a worker whose sidecar died sits in `Attention` forever — silently, because its own window is still alive and its last turn ended normally. Adoption cannot cover this: it skips any slug with a live worker window, which is exactly this case.
 
-The launcher therefore reconciles before adopting. For each live worker window it spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it (which happens whenever `bootstrap.sh` truncates the registry while workers survive — otherwise they stay invisible to the watchdog and uncounted against `max-workers`).
+The launcher therefore reconciles before adopting. For each live worker window it spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it (which happens whenever the registry is cleared while workers survive — otherwise they stay invisible to the watchdog and uncounted against `max-workers`).
+
+**pr-monitors are reconciled the same way.** `watch_pr` starts a monitor once, when the PR is created; if that window dies (`agentmesh stop --level 2`, a crash) nothing would ever start it again, so a merge would never reach the worker. Each scan the launcher spawns `pr-mon-<slug>` for every live worker whose `signals/<slug>.prs` lists a URL that is in neither `.merged` nor `.pr-closed`, logged `pr-monitor-reconciled`. A task whose PRs are all resolved gets none — the monitor exits on purpose after reporting the merge. The PR list and baselines survive the gap, so the new monitor carries on from where the old one stopped.
 
 ### Sidecar
 
@@ -432,10 +435,11 @@ agentmesh/
 │   ├── pr-monitor.sh       # PR merge + review-comment detector; merge → inbox, new inline comments → NoteCove task comment
 │   ├── spawn-agent.sh      # launches a Claude agent in a new tmux window
 │   ├── task-done.sh        # terminal-state cleanup, called by the worker via finish_task: unblocks dependents, stops sidecar/pr-monitor
-│   ├── agentmesh.sh        # lifecycle CLI: start / stop / switch / status / attach / task
+│   ├── agentmesh.sh        # lifecycle CLI: start / stop (levels 1–4) / clean / switch / status / attach / task
 │   ├── test_triage.py      # unit tests for launcher triage and the .launching guard
 │   ├── test_reaper.py      # unit tests for reaper.sh, driven with --once against stub tmux/notecove
-│   ├── test_bootstrap.py   # unit tests for idempotent start: cold vs warm, daemon revival, wedged launcher
+│   ├── test_bootstrap.py   # unit tests for idempotent start: never wiping, stale-registry repair, missing-piece report, daemon revival, wedged launcher
+│   ├── test_agentmesh_stop.py # unit tests for stop levels 1–4 and clean: what each kills, removes and keeps; no guessing without a terminal
 │   ├── test_notify_worker.py # unit tests for nudge delivery: the .ready gate, retry sentinel, what gets typed
 │   ├── test_spawn_agent.py   # unit tests for spawn-agent.sh: literal typing, separate Enter, draft verification and retry
 │   ├── test_sidecar_diff.py  # unit tests for the sidecar's diff step: comment-author/self-state filtering, SSE frame matching
@@ -464,7 +468,7 @@ agentmesh/
     ├── <slug>.merged           # pr-monitor: URLs of the task's PRs seen merged
     ├── <slug>.pr-closed        # pr-monitor: URLs of the task's PRs closed without merging; no longer watched
     ├── <slug>.pr-seen-comments # pr-monitor baseline: inline review comment ids already reported or ignored
-    ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or bootstrap
+    ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or `agentmesh clean`
     ├── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
     ├── <slug>.full-slug        # the task's unambiguous full slug; written by the launcher at spawn, read by every CLI call
     ├── <slug>.task-id          # the task's internal id; what an SSE frame names, so what the sidecar matches on
@@ -473,7 +477,7 @@ agentmesh/
     └── <slug>.description-backup # the task description as it was before ensure_task_folder prepended the folder link
 ```
 
-The `signals/` directory and its contents are runtime artifacts. They are wiped on a **cold** bootstrap — one where nothing is running — and deliberately left alone on a warm one, so `agentmesh start` can repair a live system without discarding the reply a waiting worker has yet to read. `agentmesh start --clean` forces the wipe.
+The `signals/` directory and its contents are runtime artifacts. **`agentmesh start` never wipes them** — not even when nothing is running — so a start can never discard the reply a waiting worker has yet to read. They are removed only by `agentmesh clean` (= `agentmesh stop --level 4`), which keeps `*.description-backup`.
 
 ### Event log format
 
@@ -482,8 +486,8 @@ The `signals/` directory and its contents are runtime artifacts. They are wiped 
 ```
 timestamp       component       event_type                      slug
 2026-04-26T...  launcher        bootstrap-complete              -
-2026-04-26T...  launcher        cold-start-reset                 -
-2026-04-26T...  launcher        warm-start-ensure                -
+2026-04-26T...  launcher        start-ensure                     -
+2026-04-26T...  launcher        stale-workers-cleared            -
 2026-04-26T...  launcher        daemon-started:reaper            -
 2026-04-26T...  launcher        launcher-wedged-restarting       -
 2026-04-26T...  launcher        task-picked-up                  WORK-xyz
@@ -494,6 +498,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        adoption-skipped-untyped         WORK-abc
 2026-04-26T...  launcher        adoption-skipped-tmux-unavailable -
 2026-04-26T...  launcher        sidecar-reconciled               WORK-xyz
+2026-04-26T...  launcher        pr-monitor-reconciled            WORK-xyz
+2026-04-26T...  launcher        pr-monitor-reconcile-failed      WORK-xyz
 2026-04-26T...  launcher        worker-reregistered              WORK-xyz
 2026-04-26T...  launcher        implementer-spawn-failed         WORK-xyz
 2026-04-26T...  launcher        launching-flag-expired          WORK-xyz
@@ -595,8 +601,9 @@ agentmesh start --project <key>
                 [--profile <id>]
                 [--max-workers <n>]        # default: 30
                 [--poll-interval <secs>]   # default: 30 — Ready-task scan interval
-                [--clean]                  # force the full runtime reset
 ```
+
+Every start prints *"this operation is idempotent and non destructive — if you expect to start fresh, run 'agentmesh clean' before start"*. `--clean` is gone: it is refused with a pointer to `agentmesh clean`.
 
 ### `start` is also `repair`
 
@@ -606,22 +613,37 @@ agentmesh start --project <key>
 agentmesh start --project WORK      # reaper window gone? it comes back. Workers keep running.
 ```
 
-This is the only way to do that. `agentmesh stop && agentmesh start` would work too, but it destroys every running worker — and while adoption respawns them, each one starts over from its notes and comments.
+This is the only way to do that without touching workers. `agentmesh stop --level 1` then `start` also leaves them running; level 3 or 4 destroys every worker — and while adoption respawns them, each one starts over from its notes and comments.
 
 What "idempotent" means concretely:
 
-- **The destructive init runs only on a cold start** — one where nothing is running. On a warm start, truncating `signals/workers` would hide live workers from the watchdog, and deleting `*.inbox` would throw away the reply a worker in `Attention` has yet to read — and deleting `*.ready` would shut the delivery gate on a worker whose skill is already running, so the next reply is recorded but never typed to it. A sidecar that outlived such a wipe is worse still: with its baseline files gone, its next diff computes `first_run=true`, absorbs the pending reply into history, and never writes it to the inbox.
-- **The liveness test errs towards "live".** A non-empty registry, *or* a surviving `side-*`/`pr-mon-*` window, *or* a `claude` pane in the `workers` session is enough. Wrongly skipping the wipe costs a few stale files; wrongly running it loses work.
+- **Nothing is ever wiped.** There used to be a "cold start" — no registry, no sidecar, no `claude` pane — that truncated the registry and deleted every inbox and baseline, and a `--clean` that forced it. Both are gone; a fresh start is `agentmesh clean` followed by `start`, asked for explicitly.
+- **Only provably dead bookkeeping is cleared.** With no `workers` session (a reboot, a killed tmux server) no worker can be alive, so the registry entries and `.ready`/`.pending-delivery` gates are dropped (`stale-workers-cleared`) — left in place, the watchdog would read each entry as a crash, delete its inbox and re-queue it to `Ready` instead of letting adoption resume it. With no `watchdog` window `.backoff` is stale; with no `launcher` window `.launching` is. Inboxes, baselines and PR state always stay. If tmux cannot be queried, nothing is touched.
+- **Missing per-worker pieces are reported.** Each live worker without a sidecar, or with an open PR but no pr-monitor, is listed; the launcher spawns them on its first scan. `start` deliberately does not spawn them itself — it could race the launcher into a second sidecar for one worker.
 - **Daemons are spawned only if their window is absent**, and as the window's command — see the tmux Layout note above for why that makes the check trustworthy.
 - **The launcher is the exception**, because its window can be up while it is wedged. Its heartbeat measures exactly that (it is stamped after each *completed scan*), so a launcher window with a heartbeat older than 90s is replaced; a healthy one is left strictly alone.
 - **The heartbeat is never pre-stamped**, not by `bootstrap.sh` and not by `switch`. Stamping on spawn makes a launcher that dies on startup — a bad `--project`, say — report healthy for a full minute.
 
-`--clean` forces the reset on a live system. Use it when you actually want a blank slate.
+### `stop` has levels
+
+`agentmesh stop` shows what is running and asks how much to stop. Each level includes the ones before it:
+
+| Level | Stops | Keeps | Next `start` |
+|---|---|---|---|
+| 1 | launcher, watchdog, reaper, folder-cleanup | workers, sidecars, pr-monitors, every signal file | Daemons come back. Workers kept receiving replies throughout. |
+| 2 | + every `side-*` and `pr-mon-*` | workers, every signal file | Launcher respawns them; baselines kept, so replies posted in between are still reported. |
+| 3 | + the `workers` session; clears the registry and `.ready`, `.pending-delivery`, `.launching`, `.backoff` | inboxes, baselines, PR state, crash counts | Adoption resumes every task with its pending replies. |
+| 4 | + every file in `signals/` except `*.description-backup` | description backups | Adoption restarts every task from its notes and comments; unread replies are lost. |
+
+Level 3 clears the registry because a deliberate stop is not a crash: with entries left behind, the watchdog on the next start saw every window gone, counted a crash for each worker, deleted its inbox and re-queued it to `Ready`.
+
+`--level N` skips the menu. Without a terminal, `stop` refuses to guess a level, and level 4 needs `--yes`. **`agentmesh clean`** is `stop --level 4`.
 
 **Other commands:**
 
 ```bash
-agentmesh stop                    # graceful shutdown: kills all windows and the workers session
+agentmesh stop [--level 1-4]      # interactive by default; see "stop has levels" above
+agentmesh clean [--yes]           # stop --level 4: everything, runtime state included
 agentmesh status                  # health report: launcher heartbeat, daemons, workers, sidecars, SSE availability
 agentmesh switch --project <key>  # switch projects, preserving running workers and their sidecars
 agentmesh attach                  # attach to the orchestrator tmux session
@@ -663,10 +685,10 @@ notecove events        ✓ available (push)
 
 ## Recovery
 
-Nothing needs doing by hand. `agentmesh stop` kills every worker, but the tasks they were on stay in `Doing` or `Attention`, and the launcher's **adoption pass** spawns a fresh worker + sidecar for each of them within one scan of the next `agentmesh start`.
+Nothing needs doing by hand. `agentmesh stop --level 3` kills every worker, but the tasks they were on stay in `Doing` or `Attention`, and the launcher's **adoption pass** spawns a fresh worker + sidecar for each of them within one scan of the next `agentmesh start`.
 
 ```bash
-agentmesh stop
+agentmesh stop --level 3
 agentmesh start --project WORK
 grep task-adopted signals/events.log      # one line per recovered task
 ```
@@ -677,10 +699,11 @@ This covers every way a worker can disappear, not just a deliberate restart:
 
 | Cause | Recovered by |
 |---|---|
-| `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan |
+| `agentmesh stop` / `start`, machine reboot | Launcher adoption, next scan (a start with no `workers` session clears the stale registry first) |
 | Worker crash while `Doing` | Watchdog → back to `Ready` → normal pickup (with backoff, 3 attempts) |
 | Worker killed while `Attention` | Launcher adoption, next scan |
 | Sidecar dies, worker still alive | Launcher sidecar reconciliation, next scan |
+| pr-monitor dies while a PR is open | Launcher pr-monitor reconciliation, next scan |
 | A nudge could not be delivered (worker mid-boot, tmux unreachable) | `.pending-delivery`, retried from the sidecar's poll loop |
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PRs merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` (once per PR); fires when all are merged |
@@ -703,7 +726,7 @@ Daemons and skills have to cross this change together. A pre-3.5.0 worker blocks
 So this one is a full restart, not a repair:
 
 ```bash
-agentmesh stop                      # every worker; adoption brings their tasks back
+agentmesh stop --level 3            # every worker; adoption brings their tasks back
 cd ~/agentmesh && git pull
 claude plugin update agentic-workflows@agentmesh
 agentmesh start --project WORK
@@ -718,7 +741,7 @@ Adoption respawns every in-flight task on the new skills within one scan. `await
 The Spokesman-based architecture (plugin ≤ 2.x) is gone, not deprecated. The two cannot coexist — once a worker stops writing to `signals/queue`, the whole event layer is dead code.
 
 ```bash
-agentmesh stop                      # kills every running agent
+agentmesh clean                     # kills every running agent and clears signals/
 cd ~/agentmesh && git pull
 claude plugin update agentic-workflows@agentmesh
 agentmesh start --project WORK
@@ -738,7 +761,7 @@ On the first bootstrap, `notecove init --events` may raise an approval prompt in
 | `--interface slack`, `--channel`, `--verbosity` | Removed — NoteCove only |
 | `agentmesh pause-poller` / `resume-poller` | Removed with the Slack poller |
 
-Nothing in `signals/` persists across a bootstrap, so there is no migration state to unwind — `bootstrap.sh` clears it on every start.
+`agentmesh clean` clears `signals/`, so there is no migration state to unwind.
 
 ### Testing a branch before merging
 
@@ -747,7 +770,7 @@ The `agentmesh` plugin marketplace is a **local directory** pointing at `~/agent
 Running daemons out of a feature worktree while the installed plugin still serves the old skills therefore gives you new daemons driving old agents, which block forever. Check the branch out in the main worktree instead:
 
 ```bash
-agentmesh stop
+agentmesh stop --level 3
 cd ~/agentmesh
 git fetch origin <branch>
 git checkout --detach origin/<branch>    # detached: the branch is already checked out in its worktree

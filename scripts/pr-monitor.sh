@@ -156,7 +156,7 @@ if not baselined:
     # is history: a comment followed, in its thread, by a reply carrying the
     # marker. Anything else may never have been seen by any worker, because
     # this file is lost whenever the monitor is started fresh (adoption, crash
-    # cleanup, a cold bootstrap). Baselining it all would silently swallow it;
+    # cleanup, `agentmesh clean`). Baselining it all would silently swallow it;
     # reporting it costs at most one repeat of a comment already dealt with.
     def root(c):
         return str(c.get("in_reply_to_id") or c["id"])

@@ -78,11 +78,13 @@ Each scan does three passes: **reconcile** sidecars, **adopt** orphaned work, th
 
 A sidecar is the only thing that delivers the user's replies into a worker's REPL, so a worker whose sidecar died sits in `Attention` forever — silently, since its own window is still alive, its last turn ended normally, and nothing reports it. **Adoption cannot cover this**: it skips any slug with a live worker window, which is precisely this case.
 
-For each live worker window the launcher spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it. The second repair matters after any bootstrap that runs while workers survive: `bootstrap.sh` truncates the registry, leaving those workers invisible to the watchdog and uncounted against `max-workers`, so the launcher over-subscribes.
+For each live worker window the launcher spawns a sidecar if `side-<slug>` is missing, and re-registers the worker if `signals/workers` has no entry for it. The second repair matters whenever the registry is cleared while workers survive, which would leave them invisible to the watchdog and uncounted against `max-workers`, so the launcher over-subscribes.
+
+pr-monitors are reconciled the same way: a live worker whose `signals/<slug>.prs` lists a PR in neither `.merged` nor `.pr-closed`, with no `pr-mon-<slug>` window, gets one (`pr-monitor-reconciled`). `watch_pr` only starts the monitor once, so without this a monitor killed by `agentmesh stop --level 2` or a crash was never replaced and a merge never reached the worker.
 
 ### Adoption — recovering orphaned work
 
-A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died, and nothing else would ever look at the task again: the pickup scan only queries `Ready`, and `bootstrap.sh` truncates `signals/workers`, so after a restart the watchdog has no record of it either.
+A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died, and nothing else would ever look at the task again: the pickup scan only queries `Ready`, and `agentmesh stop --level 3` clears `signals/workers`, so after a restart the watchdog has no record of it either.
 
 ```mermaid
 flowchart TD
@@ -375,7 +377,8 @@ A missing or mismatched `AGENT_AUTHOR` entry makes the agent wake itself on ever
 
 ```bash
 agentmesh start --project WORK    # bootstrap daemons and return
-agentmesh stop                    # kill all windows and the workers session
+agentmesh stop [--level 1-4]      # interactive: choose how much to stop
+agentmesh clean [--yes]           # stop --level 4: everything, signals/ included
 agentmesh switch --project OTHER  # switch projects, preserving running workers
 agentmesh status                  # health report
 agentmesh attach                  # attach to the orchestrator tmux session
@@ -383,6 +386,17 @@ agentmesh task create <title> --project WORK --type feature
 ```
 
 `start` has no user-interaction process to launch: it brings up the daemons and returns.
+
+`stop` shows what is running and asks for a level; each includes the ones before it:
+
+| Level | Stops | Next `start` |
+|---|---|---|
+| 1 | launcher, watchdog, reaper, folder-cleanup | Daemons return; workers kept receiving replies throughout |
+| 2 | + every sidecar and pr-monitor (baselines kept) | Launcher respawns them; replies posted meanwhile are still reported |
+| 3 | + every worker; clears the registry and `.ready`/`.pending-delivery`/`.launching`/`.backoff` | Adoption resumes each task with its pending replies |
+| 4 | + every file in `signals/` except `*.description-backup` | Adoption restarts each task from its notes; unread replies are lost |
+
+Level 3 clears the registry because a deliberate stop is not a crash: left behind, the watchdog read every vanished window as one, deleting its inbox and re-queuing it to `Ready`. Without a terminal `stop` refuses to guess a level, and level 4 needs `--yes`.
 
 `status` reports the launcher heartbeat, the daemons, active workers, **sidecar count** (warning if fewer sidecars than workers — those workers get no user replies), **SSE availability**, and the count of tasks refused for a missing type.
 
@@ -394,12 +408,13 @@ agentmesh task create <title> --project WORK --type feature
 
 `scripts/bootstrap.sh` initializes the runtime:
 
-1. `notecove init --profile … --tasks-project … --notes --events`
-2. **Cold start only** — clear `signals/`: truncate the registry and event log, kill stray sidecars, delete every per-task flag
+1. Print the notice: *this operation is idempotent and non destructive — if you expect to start fresh, run `agentmesh clean` before start*
+2. `notecove init --profile … --tasks-project … --notes --events`
 3. Resolve and persist the Triage folder ID
-4. Create the `orchestrator` and `workers` tmux sessions
+4. Create the `orchestrator` session; if there is no `workers` session, clear the stale registry and delivery gates; then create `workers`
 5. Ensure `watchdog`, `folder-cleanup` and `reaper` — spawn each only if its window is absent
 6. Ensure `launcher` inside a restart loop — spawn if absent, replace if its heartbeat is stale
+7. Report each live worker missing a sidecar, or a pr-monitor while it has an open PR
 
 ```bash
 agentmesh start --project WORK
@@ -407,18 +422,17 @@ agentmesh start --project WORK
 
 The launcher runs as `while true; do python3 launcher.py …; sleep 5; done` — nothing supervises it, and it has no Claude dependency, so respawning in place is the simplest form of supervision.
 
-### Idempotent, self-repairing start
+### Idempotent, additive start
 
-**`agentmesh start` is safe to run against a live system**, and that is the only way to bring back a daemon that died or to pick up a newly added one. Stopping first would work, but it destroys every running worker.
+**`agentmesh start` is safe to run against a live system**, and that is the only way to bring back a daemon that died or to pick up a newly added one without touching workers.
 
-The script creates what is missing and touches nothing else:
+The script creates what is missing and never removes state:
 
-- **Step 2 runs only on a cold start** — one where nothing is running. On a warm start, truncating `signals/workers` hides live workers from the watchdog and deleting `*.inbox` throws away the reply a worker in `Attention` has yet to read, and deleting `*.ready` shuts the delivery gate on a worker whose skill is already running. A sidecar that outlived such a wipe is worse still: with its baseline files gone its next diff computes `first_run=true`, absorbs the pending reply into history, and never writes it to the inbox. Hence sidecars are killed inside that same branch, not outside it.
-- **Liveness errs towards "live"**: a non-empty registry, *or* a surviving `side-*`/`pr-mon-*` window, *or* a `claude` pane in the `workers` session. Wrongly skipping the wipe costs a few stale files; wrongly running it loses work.
+- **Nothing is wiped, ever.** The old "cold start" (nothing looked live) truncated the registry and deleted every inbox and baseline, and `--clean` forced it. Both are gone — `start --clean` is refused with a pointer to `agentmesh clean`. A fresh start is `clean` followed by `start`, asked for explicitly.
+- **Only provably dead bookkeeping is cleared.** No `workers` session means no worker can be alive, so registry entries and `.ready`/`.pending-delivery` go (`stale-workers-cleared`); left in place, the watchdog would treat each as a crash. No `watchdog` window makes `.backoff` stale, no `launcher` window `.launching`. If tmux cannot be queried, nothing is touched.
+- **Missing pieces are reported, not spawned.** The launcher spawns sidecars and pr-monitors on its first scan; spawning them here as well could race it into duplicates.
 - **The launcher is the one daemon whose window is not proof of life** — it can be up and wedged. Its heartbeat measures exactly that, being stamped after each *completed scan*, so a launcher window whose heartbeat is older than 90s is replaced and a healthy one is left alone.
 - **The heartbeat is never pre-stamped**, by bootstrap or by `switch`. Stamping on spawn makes a launcher that dies on startup look healthy for a full minute.
-
-`agentmesh start --clean` forces the reset on a live system, for when a blank slate is actually what you want.
 
 > A healthy launcher is left running even if `launcher.py` changed on disk. To pick up new daemon code without a reset, kill the window and re-run `agentmesh start`.
 
@@ -662,7 +676,7 @@ Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one
 
 **Launching-flag expiry.** A worker that dies before claiming its task leaves a `.launching` flag behind. The flag expires after 5 minutes, after which the next scan retries the task rather than leaving it stranded in `Ready`.
 
-**Recovery requires nothing from the user.** `agentmesh stop` kills every worker, but their tasks stay in `Doing`/`Attention` and the launcher's adoption pass respawns a worker for each within one scan of the next start. Do **not** set tasks back to `Ready` — that loses context, because an adopted worker resumes from its notes whereas a re-queued one starts over.
+**Recovery requires nothing from the user.** `agentmesh stop --level 3` kills every worker, but their tasks stay in `Doing`/`Attention` and the launcher's adoption pass respawns a worker for each within one scan of the next start. Do **not** set tasks back to `Ready` — that loses context, because an adopted worker resumes from its notes whereas a re-queued one starts over.
 
 | Cause | Recovered by |
 |---|---|

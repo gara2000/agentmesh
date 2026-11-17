@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize the AgentMesh runtime: notecove init, signals dir, daemons
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--max-workers <n>]
-#                     [--poll-interval <seconds>] [--clean]
+#                     [--poll-interval <seconds>]
 #
-# This is idempotent and self-repairing. Running it against a live system brings
-# up whatever daemon is missing and touches nothing else: no worker is killed, no
-# sidecar is restarted, no inbox is cleared. That is what lets a newly added
-# daemon — or one that crashed — be started without an `agentmesh stop`, which
-# would destroy every running worker.
+# This is idempotent, additive and never destructive. Running it against a live
+# system brings up whatever daemon is missing and touches nothing else: no worker
+# is killed, no sidecar is restarted, no inbox is cleared. That is what lets a
+# newly added daemon — or one that crashed — be started without an
+# `agentmesh stop`, which would destroy every running worker.
 #
-# The destructive init — truncating the registry, wiping the signal files,
-# killing stray sidecars — runs only on a COLD start, i.e. when there is nothing
-# running for it to destroy. `--clean` forces it.
+# It never wipes runtime state, not even when nothing is running. It used to, on
+# a "cold" start and on --clean, which made every start a judgement call about
+# whether something was live enough to be worth keeping. Wiping is now only ever
+# asked for explicitly: `agentmesh clean` (= `agentmesh stop --level 4`).
 set -euo pipefail
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -27,7 +28,6 @@ PROJECT=""
 PROFILE="kmq9h71tepf95rac2b59xdbsq2"
 MAX_WORKERS="30"
 POLL_INTERVAL="30"
-CLEAN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,7 +35,9 @@ while [[ $# -gt 0 ]]; do
     --profile)       PROFILE="$2";       shift 2 ;;
     --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
     --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
-    --clean)         CLEAN=1;            shift ;;
+    --clean)
+      echo "Error: start never cleans. Run 'agentmesh clean' first, then start." >&2
+      exit 1 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -62,18 +64,9 @@ _heartbeat_age() {
   python3 -c "import os,time; print(int(time.time() - os.path.getmtime('$hb')))"
 }
 
-# Is there live runtime state that the cold-start wipe would destroy?
-#
-# Any one of these is enough, and the test deliberately errs towards "yes":
-# wrongly skipping the wipe costs a few stale files, while wrongly running it
-# deletes an inbox holding the reply a worker is blocked on.
-_runtime_is_live() {
-  [[ -s "$SIGNALS/workers" ]] && return 0
-  tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null \
-    | grep -qE '^(side-|pr-mon-)' && return 0
-  tmux list-panes -s -t workers -F "#{pane_current_command}" 2>/dev/null \
-    | grep -qx claude && return 0
-  return 1
+# Window names in a session, one per line; fails if tmux cannot list them.
+_windows() {
+  tmux list-windows -t "$1" -F "#{window_name}" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -85,60 +78,15 @@ _runtime_is_live() {
 #     Idempotent, and safe against live workers — `agentmesh switch` does exactly
 #     this while they run.
 # ---------------------------------------------------------------------------
+echo "[bootstrap] this operation is idempotent and non destructive — if you expect to start fresh, run 'agentmesh clean' before start"
+
 cd "$AGENTMESH"
 $NOTECOVE init --profile "$PROFILE" --tasks-project "$PROJECT" --notes --events
 
 mkdir -p "$SIGNALS"
 touch "$LOG"
 
-# ---------------------------------------------------------------------------
-# 0b. Cold-start reset — only when nothing is running.
-#
-#     On a warm start every one of these steps is actively harmful:
-#       - killing sidecars strands the workers they serve
-#       - truncating signals/workers hides live workers from the watchdog
-#       - deleting *.inbox throws away replies workers have yet to read
-#       - truncating events.log loses the running system's history
-#
-#     A sidecar that outlives the wipe is worse still: with its baseline files
-#     gone its next diff computes first_run=true, so it absorbs everything new —
-#     including a reply the user is waiting on — into history and never writes it
-#     to the inbox. Hence killing them first, inside the same branch.
-# ---------------------------------------------------------------------------
-if [[ $CLEAN -eq 1 ]] || ! _runtime_is_live; then
-  echo "[bootstrap] cold start — resetting runtime state"
-  log_event "cold-start-reset"
-
-  for _w in $(tmux list-windows -t orchestrator -F "#{window_name}" 2>/dev/null | grep -E '^(side-|pr-mon-)' || true); do
-    tmux kill-window -t "orchestrator:${_w}" 2>/dev/null || true
-  done
-
-  : > "$SIGNALS/workers"
-  : > "$LOG"
-  rm -f "$SIGNALS/"*.merged
-  rm -f "$SIGNALS/"*.pr-seen-comments
-  rm -f "$SIGNALS/"*.prs
-  rm -f "$SIGNALS/"*.pr-closed
-  rm -f "$SIGNALS/"*.crash-count
-  rm -f "$SIGNALS/"*.launching
-  rm -f "$SIGNALS/"*.untyped
-  rm -f "$SIGNALS/"*.inbox
-  rm -f "$SIGNALS/"*.ready
-  rm -f "$SIGNALS/"*.pending-delivery
-  rm -f "$SIGNALS/"*.self-state
-  rm -f "$SIGNALS/"*.seen-comments
-  rm -f "$SIGNALS/"*.seen-state
-  rm -f "$SIGNALS/"*.backoff
-  rm -f "$SIGNALS/"*.sidecar-handle
-  rm -f "$SIGNALS/"*.terminal-since
-  # Deliberately NOT stamping launcher.heartbeat here. The heartbeat means "a scan
-  # completed", not "a process was started" — pre-stamping makes a launcher that
-  # dies on startup report healthy. launcher.py writes it after each scan.
-  rm -f "$SIGNALS/launcher.heartbeat"
-else
-  echo "[bootstrap] warm start — preserving running workers and their state"
-  log_event "warm-start-ensure"
-fi
+log_event "start-ensure"
 
 # Resolve and persist Triage folder ID so agents can use it without re-querying
 TRIAGE_FOLDER=$($NOTECOVE folder list --json | python3 -c "
@@ -151,6 +99,44 @@ log_event "bootstrap-complete"
 
 # 0e. Create orchestrator and workers tmux sessions (if not already running)
 tmux new-session -d -s orchestrator 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 0e'. Clear what describes a process that cannot be running.
+#
+#      Not a wipe: inboxes, sidecar baselines and PR state are what let the
+#      launcher's adoption pick a task up where it stopped, and all of them stay.
+#      What goes is only the bookkeeping of processes that are provably gone:
+#
+#        - no `workers` session (machine reboot, tmux server killed): nothing in
+#          the registry is alive, and the watchdog would read every entry as a
+#          crash — bumping its count, deleting its inbox and re-queuing it to
+#          Ready instead of letting adoption resume it. Each `.ready` gate is
+#          stale too, and a stale one lets the sidecar type a nudge into the
+#          respawned window while spawn-agent.sh is still typing the skill.
+#        - no `watchdog` window: a `.backoff` sentinel belongs to a sleep that is
+#          not happening, and adoption skips the task for as long as it exists.
+#        - no `launcher` window: no spawn is in flight, so `.launching` is stale.
+#
+#      "Provably" needs tmux to answer: the orchestrator session was just
+#      ensured above, so a failed list-sessions means tmux itself is not
+#      answering, and nothing is touched.
+# ---------------------------------------------------------------------------
+if _sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null); then
+  if ! grep -qx workers <<<"$_sessions"; then
+    if [[ -s "$SIGNALS/workers" ]] || compgen -G "$SIGNALS/*.ready" >/dev/null; then
+      echo "[bootstrap] no workers session — clearing the stale worker registry and delivery gates"
+      log_event "stale-workers-cleared"
+    fi
+    grep '^#' "$SIGNALS/workers" > "$SIGNALS/workers.tmp" 2>/dev/null || true
+    mv "$SIGNALS/workers.tmp" "$SIGNALS/workers"
+    rm -f "$SIGNALS/"*.ready "$SIGNALS/"*.pending-delivery
+  fi
+  if _orch=$(_windows orchestrator); then
+    grep -qx watchdog <<<"$_orch" || rm -f "$SIGNALS/"*.backoff
+    grep -qx launcher <<<"$_orch" || rm -f "$SIGNALS/"*.launching
+  fi
+fi
+
 tmux new-session -d -s workers 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
@@ -218,6 +204,42 @@ else
   tmux new-window -d -t 'orchestrator:' -n launcher "$LAUNCHER_CMD"
   log_event "daemon-started:launcher"
   echo "[bootstrap] launcher started"
+fi
+
+# ---------------------------------------------------------------------------
+# 0h. Report what each live worker is missing.
+#
+#     A worker needs a sidecar (or the user's replies never reach it) and, while
+#     any of its PRs is unresolved, a pr-monitor (or a merge never does). The
+#     launcher repairs both on every scan — the first one runs as soon as it
+#     starts — so this only reports; spawning here as well could race the
+#     launcher into two sidecars for one worker.
+#
+#     Worker windows are told apart from the session's default shell window by
+#     what the launcher recorded for them: a registry line or a .full-slug.
+# ---------------------------------------------------------------------------
+_unresolved_prs() {
+  local slug="$1" url
+  [[ -f "$SIGNALS/${slug}.prs" ]] || return 1
+  while IFS= read -r url; do
+    [[ -n "$url" ]] || continue
+    grep -qxF -- "$url" "$SIGNALS/${slug}.merged" "$SIGNALS/${slug}.pr-closed" 2>/dev/null \
+      || return 0
+  done < "$SIGNALS/${slug}.prs"
+  return 1
+}
+
+if _orch=$(_windows orchestrator) && _live=$(_windows workers); then
+  for _slug in $_live; do
+    grep -q "^${_slug} " "$SIGNALS/workers" 2>/dev/null \
+      || [[ -f "$SIGNALS/${_slug}.full-slug" ]] || continue
+    if ! grep -qx "side-${_slug}" <<<"$_orch"; then
+      echo "[bootstrap] $_slug has no sidecar — the launcher spawns one on its next scan"
+    fi
+    if ! grep -qx "pr-mon-${_slug}" <<<"$_orch" && _unresolved_prs "$_slug"; then
+      echo "[bootstrap] $_slug has open PRs but no pr-monitor — the launcher spawns one on its next scan"
+    fi
+  done
 fi
 
 echo "[bootstrap] complete — watchdog, folder-cleanup, reaper, and launcher running"
