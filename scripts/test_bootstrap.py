@@ -140,6 +140,7 @@ class BootstrapHarness(unittest.TestCase):
             d.mkdir()
 
         shutil.copy(SCRIPTS / "bootstrap.sh", self.scripts / "bootstrap.sh")
+        shutil.copy(SCRIPTS / "notecove-ref.sh", self.scripts / "notecove-ref.sh")
         for name, body in (("tmux", TMUX_STUB), ("notecove", NOTECOVE_STUB)):
             p = self.stub / name
             p.write_text(body)

@@ -598,10 +598,12 @@ This bootstraps the daemons and returns. There is no user-interaction process to
 
 ```
 agentmesh start --project <key>
-                [--profile <id>]
+                [--profile <id>]           # else $AGENTMESH_PROFILE, else $AGENTMESH_PROFILE_NAME
                 [--max-workers <n>]        # default: 30
                 [--poll-interval <secs>]   # default: 30 — Ready-task scan interval
 ```
+
+**Profile resolution** (`nc_resolve_profile` in `notecove-ref.sh`), first match wins: `--profile <id>`; `$AGENTMESH_PROFILE` (an id); `$AGENTMESH_PROFILE_NAME` (looked up via `notecove profiles`, case-insensitive, no default name — set but unmatched or ambiguous is an error, never a silent fall-through); finally the historical id. Put `export AGENTMESH_PROFILE_NAME=Work` in your shell profile instead of editing the scripts.
 
 Every start prints *"this operation is idempotent and non destructive — if you expect to start fresh, run 'agentmesh clean' before start"*. `--clean` is gone: it is refused with a pointer to `agentmesh clean`.
 
