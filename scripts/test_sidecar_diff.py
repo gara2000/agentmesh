@@ -390,7 +390,12 @@ class TestHotPoll(unittest.TestCase):
         self.lib = "\n".join(extract_bash_function(f) for f in self.FUNCS)
 
     def bash(self, body: str, poll=60, hot_interval=10, hot_window=900) -> str:
+        # The same shell options sidecar.sh runs under. Without `set -u` an
+        # unbound variable expands to nothing and the test passes while the real
+        # sidecar aborts: $BASHPID in arm_hot_window did exactly that on macOS's
+        # bash 3.2, and this harness never noticed.
         script = (
+            "set -uo pipefail\n"
             f'HOT_UNTIL="{self.hot_until}"; POLL_INTERVAL={poll}; '
             f'HOT_INTERVAL={hot_interval}; HOT_WINDOW={hot_window}\n'
             f'log_event() {{ echo "$1" >> "{self.log}"; }}\n'
@@ -437,6 +442,33 @@ class TestHotPoll(unittest.TestCase):
     def test_garbage_file_is_read_as_cold(self):
         self.hot_until.write_text("not a number\n")
         self.assertEqual(self.bash("poll_interval_now"), "60")
+
+    def test_arming_uses_no_bash4_only_variables(self):
+        """
+        Regression for WORK-dd1: arm_hot_window referenced $BASHPID, which bash
+        3.2 (macOS /bin/bash) does not define, so under `set -u` the sidecar
+        aborted on its first arm and was respawned by the launcher every scan.
+        The harness now runs under `set -u`; this test also pins the functions
+        to the POSIX-era variable set by running them with BASHPID unset where
+        the shell allows it, and checks no temp file is left behind.
+        """
+        out = self.bash('unset BASHPID 2>/dev/null; arm_hot_window; poll_interval_now; '
+                        f'ls "{self.tmp}"')
+        lines = out.split("\n")
+        self.assertEqual(lines[0], "10")
+        self.assertEqual(sorted(lines[1:]), ["WORK-x.hot-until", "events.log"])
+
+    def test_concurrent_arming_from_two_shells_leaves_one_file(self):
+        """
+        The SSE subshell and the main loop both arm; each must write through its
+        own temp file (the reason the code used $BASHPID) so neither can rename
+        the other's half-written file away.
+        """
+        out = self.bash('( arm_hot_window ) & arm_hot_window; wait; '
+                        f'poll_interval_now; ls "{self.tmp}"')
+        lines = out.split("\n")
+        self.assertEqual(lines[0], "10")
+        self.assertEqual(sorted(lines[1:]), ["WORK-x.hot-until", "events.log"])
 
     def test_never_slower_than_the_normal_poll(self):
         """A --poll-interval below HOT_INTERVAL must not be lengthened."""

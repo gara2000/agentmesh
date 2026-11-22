@@ -573,6 +573,12 @@ All documentation, scripts, and skill files refer to the repo root as `~/agentme
 
 Do not add hardcoded absolute paths anywhere.
 
+## Shell Conventions
+
+**Every script must run under bash 3.2**, because the daemons are started as `bash scripts/<name>.sh` and `/bin/bash` on macOS is 3.2.57 — there is no other bash on a stock machine. Nothing bash-4-only: no `$BASHPID`, `${var,,}`, `${var^^}`, `declare -A`, `mapfile`/`readarray`, `|&`, `&>>`, `coproc`, negative array indices. For a unique temp file use `mktemp`, not a pid.
+
+This is not theoretical. `arm_hot_window` in `sidecar.sh` used `$BASHPID` for its temp file; under `set -u` that aborted every sidecar seconds after it started, and the launcher respawned it on every scan, logged only as `sidecar-reconciled` — so WORK-dd1 ran for twenty minutes with no sidecar at all and no reply could have reached it. The function tests did not catch it because the harness ran the extracted functions without `set -u`. **Test harnesses that extract functions from a script must run them under the same `set` options as the script** (`test_sidecar_diff.py` now does).
+
 ---
 
 ## First-time Setup (new machine)
