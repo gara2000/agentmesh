@@ -129,11 +129,17 @@ hot_until() {
 }
 
 arm_hot_window() {
-  local now
+  local now tmp
   now=$(date +%s)
   (( now >= $(hot_until) )) && log_event "hot-poll-armed"
-  printf '%s\n' "$(( now + HOT_WINDOW ))" > "$HOT_UNTIL.tmp.$BASHPID" \
-    && mv -f "$HOT_UNTIL.tmp.$BASHPID" "$HOT_UNTIL"
+  # Written through a unique temp file because this runs both in the main loop
+  # and in the SSE background subshell, which share $$. mktemp rather than
+  # $BASHPID: that variable does not exist in bash 3.2 (macOS /bin/bash), and
+  # under `set -u` the reference aborted the sidecar on its first arm — every
+  # sidecar died seconds after starting and the launcher respawned it every
+  # scan, logged only as sidecar-reconciled (WORK-dd1).
+  tmp=$(mktemp "$HOT_UNTIL.tmp.XXXXXX") || return 1
+  printf '%s\n' "$(( now + HOT_WINDOW ))" > "$tmp" && mv -f "$tmp" "$HOT_UNTIL"
 }
 
 poll_interval_now() {
