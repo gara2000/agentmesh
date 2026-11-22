@@ -16,6 +16,7 @@ Usage: python3 launcher.py --project <key> [--max-workers <n>] [--profile <id>]
 import argparse
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -731,10 +732,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AgentMesh Worker Launcher")
     parser.add_argument("--project", required=True, help="NoteCove project key")
     parser.add_argument("--max-workers", type=int, default=30)
-    parser.add_argument("--profile", default="kmq9h71tepf95rac2b59xdbsq2")
+    parser.add_argument("--profile", default=None,
+                        help="NoteCove profile id (default: $AGENTMESH_PROFILE, "
+                             "then $AGENTMESH_PROFILE_NAME, then the historical id)")
     parser.add_argument("--poll-interval", type=int, default=30,
                         help="Seconds between Ready-task scans (default: 30)")
     args = parser.parse_args()
+
+    if not args.profile:
+        # One implementation of the resolution order: the shell helper.
+        res = subprocess.run(
+            ["bash", "-c", 'source "$1/notecove-ref.sh" && nc_resolve_profile', "_", str(Path(__file__).parent)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+        if res.returncode != 0 or not res.stdout.strip():
+            sys.exit(res.stderr.strip() or "could not resolve NoteCove profile")
+        args.profile = res.stdout.strip()
 
     Launcher(
         project=args.project,

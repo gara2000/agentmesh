@@ -10,6 +10,9 @@ AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPTS="$AGENTMESH/scripts"
 SIGNALS="$AGENTMESH/signals"
 
+# shellcheck source=notecove-ref.sh
+source "$SCRIPTS/notecove-ref.sh"
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 _window_exists() {
@@ -45,7 +48,7 @@ _heartbeat_age() {
 # ── start ──────────────────────────────────────────────────────────────────────
 
 cmd_start() {
-  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+  local PROJECT="" PROFILE=""
   local MAX_WORKERS="30" POLL_INTERVAL="30"
 
   while [[ $# -gt 0 ]]; do
@@ -82,7 +85,7 @@ cmd_start() {
   #    started by stopping the system, which destroys every running worker.
   bash "$SCRIPTS/bootstrap.sh" \
     --project "$PROJECT" \
-    --profile "$PROFILE" \
+    ${PROFILE:+--profile "$PROFILE"} \
     --max-workers "$MAX_WORKERS" \
     --poll-interval "$POLL_INTERVAL"
 
@@ -429,7 +432,7 @@ cmd_task() {
 # ── switch ─────────────────────────────────────────────────────────────────
 
 cmd_switch() {
-  local PROJECT="" PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+  local PROJECT="" PROFILE=""
   local MAX_WORKERS="30" POLL_INTERVAL="30"
 
   while [[ $# -gt 0 ]]; do
@@ -446,6 +449,8 @@ cmd_switch() {
     echo "Error: --project is required" >&2
     exit 1
   fi
+
+  PROFILE=$(nc_resolve_profile "$PROFILE") || exit 1
 
   # 1. Verify orchestrator session exists (agentmesh must be running)
   if ! _session_exists orchestrator; then

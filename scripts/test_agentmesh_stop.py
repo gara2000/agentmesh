@@ -39,6 +39,7 @@ class StopHarness(unittest.TestCase):
         for d in (self.scripts, self.signals, self.stub):
             d.mkdir()
         shutil.copy(SCRIPTS / "agentmesh.sh", self.scripts / "agentmesh.sh")
+        shutil.copy(SCRIPTS / "notecove-ref.sh", self.scripts / "notecove-ref.sh")
         tmux = self.stub / "tmux"
         tmux.write_text(TMUX_STUB)
         tmux.chmod(0o755)

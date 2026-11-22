@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize the AgentMesh runtime: notecove init, signals dir, daemons
-# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>] [--max-workers <n>]
+# Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>]   # else $AGENTMESH_PROFILE / $AGENTMESH_PROFILE_NAME [--max-workers <n>]
 #                     [--poll-interval <seconds>]
 #
 # This is idempotent, additive and never destructive. Running it against a live
@@ -23,9 +23,12 @@ SIGNALS=$AGENTMESH/signals
 # Overridable so the tests can point it at a stub; nothing else sets it.
 NOTECOVE="${AGENTMESH_NOTECOVE:-node /Applications/NoteCove.app/Contents/Resources/cli/cli.cjs}"
 
+# shellcheck source=notecove-ref.sh
+source "$SCRIPTS/notecove-ref.sh"
+
 # Parse arguments
 PROJECT=""
-PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+PROFILE=""
 MAX_WORKERS="30"
 POLL_INTERVAL="30"
 
@@ -46,6 +49,9 @@ if [[ -z "$PROJECT" ]]; then
   echo "Error: --project is required" >&2
   exit 1
 fi
+
+# --profile > $AGENTMESH_PROFILE > $AGENTMESH_PROFILE_NAME > historical default.
+PROFILE=$(nc_resolve_profile "$PROFILE") || exit 1
 
 LOG="$SIGNALS/events.log"
 

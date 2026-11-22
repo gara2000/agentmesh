@@ -5,6 +5,7 @@
 #   nc_run <args...>        run the CLI: stdin closed, bounded by a timeout
 #   nc_ref <short-slug>     a slug that is safe to hand to the CLI
 #   nc_task_id <short-slug> the task internal id, for matching event frames
+#   nc_resolve_profile [<id>] the NoteCove profile id to use (see below)
 #
 # ---------------------------------------------------------------------------
 # Why stdin must be closed
@@ -218,6 +219,63 @@ except (json.JSONDecodeError, ValueError):
     [[ -z "$task_id" ]] && return 1
     printf '%s' "$task_id" > "$cached" 2>/dev/null || true
     printf '%s' "$task_id"
+}
+
+# nc_resolve_profile [<explicit-id>]
+#
+# Print the NoteCove profile id to use. The id is machine-specific, so it must
+# not be a hardcoded default that every other checkout silently inherits.
+# First match wins:
+#
+#   a. the explicit id passed as $1 (the caller's --profile)
+#   b. $AGENTMESH_PROFILE       a profile id, used verbatim
+#   c. $AGENTMESH_PROFILE_NAME  a profile name, looked up via `notecove profiles`
+#                               (case-insensitive). No default name. If it is set
+#                               but matches zero or several profiles this FAILS
+#                               rather than falling through to (d): the user
+#                               asked for a specific profile, and quietly using a
+#                               different one would act on the wrong data.
+#   d. the historical id, so existing setups keep working unchanged
+#
+# Returns 1 (message on stderr) when (c) cannot be resolved.
+_NC_FALLBACK_PROFILE="kmq9h71tepf95rac2b59xdbsq2"
+
+nc_resolve_profile() {
+    local explicit="${1:-}"
+
+    if [[ -n "$explicit" ]]; then
+        printf '%s' "$explicit"; return 0
+    fi
+    if [[ -n "${AGENTMESH_PROFILE:-}" ]]; then
+        printf '%s' "$AGENTMESH_PROFILE"; return 0
+    fi
+    if [[ -n "${AGENTMESH_PROFILE_NAME:-}" ]]; then
+        local listing id
+        listing=$(nc_run profiles 2>/dev/null) || {
+            echo "Error: 'notecove profiles' failed; cannot resolve AGENTMESH_PROFILE_NAME='$AGENTMESH_PROFILE_NAME'" >&2
+            return 1
+        }
+        id=$(printf '%s' "$listing" | WANT="$AGENTMESH_PROFILE_NAME" python3 -c '
+import os, re, sys
+
+want = os.environ["WANT"].strip().casefold()
+ids, cur = [], None
+for line in sys.stdin:
+    if re.match(r"^\s+[A-Za-z0-9]+\s*$", line) and ":" not in line:
+        cur = line.strip()
+    else:
+        m = re.match(r"^\s+Name:\s*(.*?)\s*$", line)
+        if m and cur and m.group(1).casefold() == want:
+            ids.append(cur)
+if len(ids) == 1:
+    print(ids[0], end="")
+else:
+    sys.exit(2 if not ids else 3)
+') && [[ -n "$id" ]] && { printf '%s' "$id"; return 0; }
+        echo "Error: AGENTMESH_PROFILE_NAME='$AGENTMESH_PROFILE_NAME' did not match exactly one NoteCove profile (see 'notecove profiles'); set AGENTMESH_PROFILE to an id instead" >&2
+        return 1
+    fi
+    printf '%s' "$_NC_FALLBACK_PROFILE"
 }
 
 fi  # _NOTECOVE_REF_SOURCED
