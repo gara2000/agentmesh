@@ -15,6 +15,9 @@ Usage: python3 launcher.py --project <key> [--max-workers <n>] [--profile <id>]
 """
 import argparse
 import json
+import os
+import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -60,6 +63,44 @@ UNTYPED_COMMENT = (
     "Set a supported type and it will be picked up on the next scan. "
     "Supported types: " + ", ".join(sorted(TYPE_MAP)) + "."
 )
+
+
+# ---------------------------------------------------------------------------
+# Per-task repository.
+#
+# A task description may carry a line `Repo: <path>` naming the repository its
+# worker should start in. It may sit anywhere in the description, not only on
+# the first line: ensure_task_folder prepends a folder link above everything
+# else. Matched against the CLI's `contentText`, which has markdown stripped, so
+# `**Repo:** ~/x` matches too. Without the line the worker starts in AGENTMESH,
+# as before.
+# ---------------------------------------------------------------------------
+
+REPO_LINE = re.compile(r"^[ \t]*Repo:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+
+REPO_MISSING_COMMENT = (
+    "Cannot pick up this task: its `Repo:` line resolves to `{path}`, which is "
+    "not an existing directory. Fix or remove the line and it will be picked up "
+    "on the next scan."
+)
+
+
+def parse_repo_line(text: str) -> str | None:
+    """The raw value of the first `Repo:` line in text, or None."""
+    m = REPO_LINE.search(text or "")
+    return m.group(1) if m else None
+
+
+def resolve_repo(raw: str) -> Path:
+    """Expand ~ and make a relative path absolute against $HOME.
+
+    $HOME rather than the cwd: the launcher's working directory is whatever
+    bootstrap.sh happened to be run from, which says nothing about the task.
+    """
+    p = Path(os.path.expanduser(raw))
+    if not p.is_absolute():
+        p = Path.home() / p
+    return p.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +252,8 @@ class Launcher:
     # Spawning
     # -----------------------------------------------------------------------
 
-    def _spawn_worker(self, slug: str, agent_type: str, full_slug: str = "") -> None:
+    def _spawn_worker(self, slug: str, agent_type: str, full_slug: str = "",
+                      repo: Path | None = None) -> None:
         """Launch the worker agent and its sidecar, and register the worker.
 
         `full_slug` is cached to signals/<slug>.full-slug before anything is
@@ -220,13 +262,20 @@ class Launcher:
         for free; every other component (sidecar, watchdog, reaper, the agent
         itself) reads that file first and only falls back to resolving the slug
         itself. See nc_ref in notecove-ref.sh.
+
+        `repo` is the worker's working directory (the task's `Repo:` line,
+        resolved), defaulting to AGENTMESH. It is recorded in signals/<slug>.repo
+        so the agent's worktree step branches from the same repository however
+        far it has cd'd away from it — agent_init exports it as TASK_REPO.
         """
+        repo = Path(repo) if repo else AGENTMESH.resolve()
         self._write_full_slug(slug, full_slug)
+        self._write_repo(slug, repo)
         self._launching_flag(slug).touch()
 
         result = subprocess.run([
             "bash", str(SCRIPTS / "spawn-agent.sh"),
-            "workers", slug, f"/{agent_type}", slug, self.project,
+            "workers", slug, f"/{agent_type}", slug, self.project, str(repo),
         ], capture_output=True, text=True)
 
         # Check the return code: spawn-agent.sh refuses duplicate window names and
@@ -252,6 +301,12 @@ class Launcher:
             return
         try:
             (SIGNALS / f"{slug}.full-slug").write_text(full_slug + "\n")
+        except OSError:
+            pass
+
+    def _write_repo(self, slug: str, repo: Path) -> None:
+        try:
+            (SIGNALS / f"{slug}.repo").write_text(f"{repo}\n")
         except OSError:
             pass
 
@@ -610,9 +665,21 @@ class Launcher:
                     _print(f"cannot adopt {slug}: type no longer maps to an agent")
                     continue
 
+                # A respawned worker must land in the same repository as the
+                # one it replaces, so the Repo: line is honoured here too.
+                status, repo = self._task_repo(slug, full_slug)
+                if status == "read-failed":
+                    log("launcher     ", "adoption-skipped-repo-unread", slug)
+                    continue
+                if status == "missing":
+                    log("launcher     ", "adoption-skipped-repo-missing", slug)
+                    self._refuse_repo_missing(slug, full_slug, repo)
+                    continue
+
                 log("launcher     ", f"task-adopted:{state.lower()}", slug)
                 _print(f"adopting {slug} (was {state}, worker gone) -> {agent_type}")
-                self._spawn_worker(slug, agent_type, full_slug)
+                (SIGNALS / f"{slug}.repo-missing").unlink(missing_ok=True)
+                self._spawn_worker(slug, agent_type, full_slug, repo)
                 live_windows.add(slug)
 
     # -----------------------------------------------------------------------
@@ -669,12 +736,24 @@ class Launcher:
                 self._refuse_untyped(slug, full_slug, task)
                 continue
 
-            title = task.get("title", "")
-            log("launcher     ", "task-picked-up", slug)
-            _print(f"picked up {slug}: {title} -> {agent_type}")
             (SIGNALS / f"{slug}.untyped").unlink(missing_ok=True)
 
-            self._spawn_worker(slug, agent_type, full_slug)
+            status, repo = self._task_repo(slug, full_slug)
+            if status == "read-failed":
+                # Never fall back to AGENTMESH on doubt: that would start the
+                # worker in the wrong repository. The next scan retries.
+                log("launcher     ", "task-skipped-repo-unread", slug)
+                continue
+            if status == "missing":
+                self._refuse_repo_missing(slug, full_slug, repo)
+                continue
+
+            title = task.get("title", "")
+            log("launcher     ", "task-picked-up", slug)
+            _print(f"picked up {slug}: {title} -> {agent_type} in {repo}")
+            (SIGNALS / f"{slug}.repo-missing").unlink(missing_ok=True)
+
+            self._spawn_worker(slug, agent_type, full_slug, repo)
             slots -= 1
 
     def _triage(self, task: dict) -> str | None:
@@ -690,6 +769,48 @@ class Launcher:
                 if mapped:
                     return mapped
         return None
+
+    def _task_repo(self, slug: str, full_slug: str) -> tuple[str, Path | None]:
+        """Where this task's worker should start, read from its description.
+
+        Returns (status, path):
+          ("default", AGENTMESH)  — no `Repo:` line
+          ("ok", <dir>)           — the line, resolved, names a directory
+          ("missing", <path>)     — the line resolves to no directory
+          ("read-failed", None)   — the description could not be read
+
+        `task list` carries only a truncated `contentPreview`, so the full text
+        is fetched with `task show`. That costs one CLI call per task actually
+        about to be spawned — triage has already passed by the time this runs.
+        """
+        result = run_bash(f"{NOTECOVE_BIN} task show {shlex.quote(full_slug or slug)} --json")
+        try:
+            task = json.loads(result.stdout) if result.returncode == 0 else None
+        except (json.JSONDecodeError, ValueError):
+            task = None
+        if not isinstance(task, dict):
+            return "read-failed", None
+        text = task.get("contentText")
+        if text is None:
+            text = task.get("contentPreview") or ""
+        raw = parse_repo_line(text)
+        if raw is None:
+            return "default", AGENTMESH.resolve()
+        path = resolve_repo(raw)
+        if not path.is_dir():
+            return "missing", path
+        return "ok", path
+
+    def _refuse_repo_missing(self, slug: str, full_slug: str, path: Path | None) -> None:
+        """Leave the task where it is, commenting at most once (like untyped)."""
+        log("launcher     ", "task-refused-repo-missing", slug)
+        flag = SIGNALS / f"{slug}.repo-missing"
+        if flag.exists():
+            return
+        _print(f"refusing {slug}: Repo: {path} is not a directory — left in place")
+        body = REPO_MISSING_COMMENT.format(path=path)
+        notecove(f'task comments add {shlex.quote(full_slug or slug)} --user "Launcher" {shlex.quote(body)}')
+        flag.touch()
 
     def _refuse_untyped(self, slug: str, full_slug: str, task: dict) -> None:
         """Leave an untriageable task in Ready, commenting at most once.

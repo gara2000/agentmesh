@@ -109,7 +109,8 @@ rm -f "$AGENTMESH/signals/${SLUG}.inbox" \
       "$AGENTMESH/signals/${SLUG}.full-slug" \
       "$AGENTMESH/signals/${SLUG}.task-id" \
       "$AGENTMESH/signals/${SLUG}.summary-posted" \
-      "$AGENTMESH/signals/${SLUG}.hot-until"
+      "$AGENTMESH/signals/${SLUG}.hot-until" \
+      "$AGENTMESH/signals/${SLUG}.repo"
 # Clearing .terminal-since restarts the reaper's grace clock, which is what we
 # want: this script is the cleanup the grace period exists to protect, so the
 # worker gets a fresh window rather than whatever was left of the first one.

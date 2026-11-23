@@ -170,7 +170,7 @@ class TestCleanup(TaskDoneHarness):
     def test_signal_files_are_removed(self):
         self.set_blocked([])
         for suffix in ("inbox", "ready", "self-state", "seen-comments", "seen-state",
-                       "full-slug", "task-id", "summary-posted", "hot-until"):
+                       "full-slug", "task-id", "summary-posted", "hot-until", "repo"):
             (self.signals / f"{self.SLUG}.{suffix}").write_text("x")
         self.run_task_done()
         leftover = sorted(p.name for p in self.signals.glob(f"{self.SLUG}.*"))

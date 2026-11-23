@@ -175,6 +175,33 @@ class TestTaskRef(AgentHarness):
         self.assertEqual(self.comments(), [f"{self.FULL}|x"])
 
 
+class TestTaskRepo(AgentHarness):
+    """agent_init exports TASK_REPO — where the worktree step branches from."""
+
+    def test_task_repo_comes_from_the_launchers_file(self):
+        repo = self.root / "other-repo"
+        repo.mkdir()
+        (self.signals / f"{self.SLUG}.repo").write_text(f"{repo}\n")
+        r = self.run_snippet('printf "[%s]" "$TASK_REPO"')
+        self.assertEqual(r.stdout, f"[{repo}]")
+
+    def test_task_repo_defaults_to_agentmesh(self):
+        r = self.run_snippet('printf "[%s]" "$TASK_REPO"')
+        self.assertEqual(r.stdout, f"[{self.mesh.resolve()}]")
+
+    def test_vanished_repo_falls_back_to_agentmesh(self):
+        (self.signals / f"{self.SLUG}.repo").write_text(f"{self.root / 'gone'}\n")
+        r = self.run_snippet('printf "[%s]" "$TASK_REPO"')
+        self.assertEqual(r.stdout, f"[{self.mesh.resolve()}]")
+
+    def test_zsh_exports_it_too(self):
+        repo = self.root / "other-repo"
+        repo.mkdir()
+        (self.signals / f"{self.SLUG}.repo").write_text(f"{repo}\n")
+        r = self.run_snippet('printf "[%s]" "$TASK_REPO"', shell="zsh")
+        self.assertEqual(r.stdout, f"[{repo}]", r.stderr)
+
+
 class TestResumeWorkGuard(AgentHarness):
     """
     The nudge and every skill run resume_work before read_inbox. When the change

@@ -575,10 +575,16 @@ After unblocking:
 ### 4b-1. Pull latest main and create git worktree
 
 ```bash
-git fetch origin main
-REPO_ROOT=$(git rev-parse --show-toplevel)
-WORKTREE_PATH="${REPO_ROOT}/agentmesh-<slug>"
-git worktree add "$WORKTREE_PATH" -b <slug>-impl origin/main
+# The task's repository — its `Repo:` line, else ~/agentmesh. agent_init
+# exports it as TASK_REPO; -C keeps this right wherever the shell has cd'd.
+REPO_ROOT="${TASK_REPO:-$(git rev-parse --show-toplevel)}"
+git -C "$REPO_ROOT" fetch origin
+# Branch from the remote's default branch: not every repo calls it main.
+BASE=$(git -C "$REPO_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+# Beside the repo, not inside it: <parent>/<repo-name>-<slug>
+WORKTREE_PATH="$(dirname "$REPO_ROOT")/$(basename "$REPO_ROOT")-<slug>"
+# A restarted worker finds its predecessor's worktree already there — reuse it.
+[ -d "$WORKTREE_PATH" ] || git -C "$REPO_ROOT" worktree add "$WORKTREE_PATH" -b <slug>-impl "$BASE"
 cd "$WORKTREE_PATH"
 ```
 

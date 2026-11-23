@@ -120,7 +120,9 @@ flowchart TD
     Triage -->|no| Refuse["Leave in Ready<br/>Comment once (deduped)"]
     Triage -->|yes| Launching{"\.launching flag live?"}
     Launching -->|yes| Skip["Skip — worker still booting"]
-    Launching -->|no| Spawn["Write .launching<br/>Spawn worker + sidecar"]
+    Launching -->|no| Repo{"Repo: line?"}
+    Repo -->|"names no directory"| RefuseRepo["Leave in Ready<br/>Comment once (deduped)"]
+    Repo -->|"none / valid"| Spawn["Write .launching<br/>Spawn worker + sidecar<br/>in that repo (default ~/agentmesh)"]
     Spawn --> Claim["Worker sets Doing<br/>and clears .launching"]
 ```
 
@@ -131,6 +133,17 @@ Tasks are sorted by priority ascending (P1 before P4; no priority sorts last).
 A task is only picked up when its `typeIds` or `typeNames` resolve through `TYPE_MAP`. Anything else — no type at all, or a type like `chore` that maps to nothing — is **left in `Ready`** with no default agent. There is no LLM triage fallback.
 
 The refusal posts exactly one comment, deduped via `signals/<slug>.untyped`, and is logged on every scan. Setting a supported type makes the task eligible again on the next scan. `agentmesh status` reports how many tasks are currently refused.
+
+### Per-task repository: the `Repo:` line
+
+A task description may carry a line `Repo: <path>` — anywhere in it, since `ensure_task_folder` prepends a folder link above everything else. Its worker then starts in that directory instead of `~/agentmesh`, and the implementer family's worktree step branches from it. Without the line nothing changes.
+
+- **Read from the full description.** `task list` carries only a 200-character preview, so the launcher runs `task show --json` for each task about to be spawned and matches `contentText` (markdown stripped, so `**Repo:**` works too). First match wins.
+- **`~` is expanded and a relative path resolves against `$HOME`**, not the launcher's working directory, which says nothing about the task.
+- **A missing directory refuses the task**, exactly like an untyped one: left where it is, one comment deduped via `signals/<slug>.repo-missing`, `task-refused-repo-missing` on every scan. Fixing the line makes it eligible on the next scan.
+- **A failed read skips the task for this scan** (`task-skipped-repo-unread`) rather than defaulting to `~/agentmesh` — a worker started in the wrong repository is worse than one started 30 seconds late.
+- **Adoption honours it too**, so a respawned worker lands where its predecessor worked (`adoption-skipped-repo-missing` / `adoption-skipped-repo-unread` otherwise).
+- **The resolved path goes to `spawn-agent.sh` as its 6th argument** and into `signals/<slug>.repo`; `agent_init` exports it as `$TASK_REPO`. Phase 4a runs `git -C "$TASK_REPO"`, branches from the remote's default branch (`origin/HEAD`, else `origin/main`), and puts the worktree **beside** the repository as `<parent>/<repo-name>-<slug>` — agentmesh's own worktrees included. The agentmesh doc-sync step (4c) runs only when the repository is agentmesh.
 
 ### The launcher does not set task state
 
@@ -570,7 +583,9 @@ New ones are not delivered by the monitor. It posts **one NoteCove comment on th
 
 ## Agent Spawner
 
-`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project>` creates a tmux window, starts `claude --dangerously-skip-permissions`, waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then types the skill invocation.
+`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project> [<workdir>]` creates a tmux window, starts `claude --dangerously-skip-permissions`, waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then types the skill invocation. `<workdir>` is the task's `Repo:` directory, resolved by the launcher (default: the agentmesh repo); a directory that does not exist fails before any window is created.
+
+**A new directory's trust dialog is accepted.** The first Claude started in a directory — the first worker in any new `Repo:` — asks whether you trust the folder, with "No, exit" highlighted. Left alone, the Enter pressed after the prompt timeout would quit Claude and the launcher would retry that every scan. While waiting for the prompt `spawn-agent.sh` moves to "Yes, I trust this folder" and presses Enter only once the cursor is verified there, logged `spawn-trust-accepted`. Naming the repository in the task is the trust decision; the worker runs with `--dangerously-skip-permissions` either way.
 
 The invocation is typed and submitted as **two separate sends** — the text with `send-keys -l`, then `Enter` after a short pause — after a one-second settle that lets startup rendering finish. A single send carrying both reaches the pty as one burst, which Claude Code can read as a paste: the Enter is inserted into the draft rather than submitting it, and the worker sits at its prompt with the command unsent. That happened only intermittently, because it depends on how the burst is split across reads.
 

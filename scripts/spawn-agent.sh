@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # spawn-agent.sh — launch a Claude agent in a new tmux window
-# Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>
+# Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir>]
+#   <workdir> — the worker's working directory: the task's `Repo:` line, resolved
+#               by the launcher. Defaults to the agentmesh repo.
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-  echo "Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project>" >&2
+if [[ $# -lt 5 || $# -gt 6 ]]; then
+  echo "Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir>]" >&2
   exit 1
 fi
 
@@ -15,6 +17,14 @@ SLUG=$4
 PROJECT=$5
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+WORKDIR="${6:-$AGENTMESH}"
+
+# Checked before any window exists: a `cd` that fails inside the window kills it
+# straight away, which would surface only as "died before the REPL appeared".
+if [[ ! -d "$WORKDIR" ]]; then
+  echo "spawn-agent.sh: working directory '$WORKDIR' does not exist" >&2
+  exit 1
+fi
 
 # A window with this name must not already exist. tmux happily creates a second
 # window with a duplicate name, after which every name-addressed operation
@@ -40,8 +50,10 @@ rm -f "$AGENTMESH/signals/${SLUG}.ready"
 #
 # Use "${SESSION}:" (trailing colon) to always append at the end of the window
 # list, avoiding index collisions when several windows are created at once.
+# %q, not hand-written single quotes: the directory comes from a task
+# description and may hold spaces or quotes of its own.
 tmux new-window -t "${SESSION}:" -n "$WINDOW" \
-  "cd '$AGENTMESH' && exec claude --dangerously-skip-permissions"
+  "cd $(printf '%q' "$WORKDIR") && exec claude --dangerously-skip-permissions"
 
 # Pacing knobs, overridable so tests need not wait them out.
 #   SPAWN_SETTLE         — pause after the prompt first appears, before typing
@@ -69,6 +81,34 @@ window_alive() {
   tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$WINDOW"
 }
 
+# accept_trust_dialog <pane-text>
+#
+# Claude asks "Is this a project you … trust?" the first time it starts in a
+# directory — which, with a task's `Repo:` line, is the first worker in any new
+# repository. The highlighted default is "No, exit", so the blind Enter that
+# follows a prompt timeout would quit Claude, kill the window, and have the
+# launcher retry that every scan forever.
+#
+# The user named this directory in the task, which is the trust decision; the
+# worker runs with --dangerously-skip-permissions regardless. So: move to
+# "Yes, I trust this folder" and press Enter ONLY once the cursor is verified on
+# it — never an Enter that could land on "No, exit".
+_trust_tries=0
+accept_trust_dialog() {
+  printf '%s' "$1" | grep -qF "Yes, I trust this folder" || return 0
+  [ "$_trust_tries" -lt 5 ] || return 0
+  _trust_tries=$((_trust_tries + 1))
+  if ! printf '%s' "$1" | grep -qE '❯.{0,3}Yes, I trust this folder'; then
+    tmux send-keys -t "$SESSION:$WINDOW" Down 2>/dev/null || true
+    sleep "$SPAWN_SUBMIT_SETTLE"
+  fi
+  if tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null \
+      | grep -qE '❯.{0,3}Yes, I trust this folder'; then
+    tmux send-keys -t "$SESSION:$WINDOW" Enter 2>/dev/null || true
+    _log "spawn-trust-accepted"
+  fi
+}
+
 # Wait for Claude REPL prompt to appear before sending the skill command.
 # Match that specific byte sequence to avoid false-positive on banner text.
 # _timeout=300 × sleep 0.2 s = 60 s real-time fallback.
@@ -82,10 +122,12 @@ while [ $_elapsed -lt $_timeout ]; do
     echo "spawn-agent.sh: window '$SESSION:$WINDOW' died before the REPL appeared" >&2
     exit 1
   fi
-  if tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null | grep -qF "$PROMPT"; then
+  _pane=$(tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null || true)
+  if printf '%s' "$_pane" | grep -qF "$PROMPT"; then
     _prompt_seen=true
     break
   fi
+  accept_trust_dialog "$_pane"
   sleep 0.2
   _elapsed=$((_elapsed + 1))
 done

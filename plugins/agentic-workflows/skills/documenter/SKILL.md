@@ -404,10 +404,16 @@ If the task mentions both, or is ambiguous, use Phase 2 (Questions) to clarify b
 ### 3a-1. Pull latest main and create git worktree
 
 ```bash
-git fetch origin main
-REPO_ROOT=$(git rev-parse --show-toplevel)
-WORKTREE_PATH="${REPO_ROOT}/agentmesh-<slug>"
-git worktree add "$WORKTREE_PATH" -b <slug>-impl origin/main
+# The task's repository — its `Repo:` line, else ~/agentmesh. agent_init
+# exports it as TASK_REPO; -C keeps this right wherever the shell has cd'd.
+REPO_ROOT="${TASK_REPO:-$(git rev-parse --show-toplevel)}"
+git -C "$REPO_ROOT" fetch origin
+# Branch from the remote's default branch: not every repo calls it main.
+BASE=$(git -C "$REPO_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+# Beside the repo, not inside it: <parent>/<repo-name>-<slug>
+WORKTREE_PATH="$(dirname "$REPO_ROOT")/$(basename "$REPO_ROOT")-<slug>"
+# A restarted worker finds its predecessor's worktree already there — reuse it.
+[ -d "$WORKTREE_PATH" ] || git -C "$REPO_ROOT" worktree add "$WORKTREE_PATH" -b <slug>-impl "$BASE"
 cd "$WORKTREE_PATH"
 ```
 
@@ -454,7 +460,10 @@ After writing documentation, check whether the changes touch workflow-defining f
 - `plugins/agentic-workflows/shared/base-agent.md` — base agent
 
 ```bash
-WORKTREE_CHANGES=$(git diff --name-only origin/main -- scripts/ CLAUDE.md plugins/agentic-workflows/ 2>/dev/null || true)
+# Only the agentmesh repository carries these files — skip for any other Repo:
+WORKTREE_CHANGES=""
+[ "$REPO_ROOT" -ef ~/agentmesh ] && \
+  WORKTREE_CHANGES=$(git diff --name-only "$BASE" -- scripts/ CLAUDE.md plugins/agentic-workflows/ 2>/dev/null || true)
 if [ -n "$WORKTREE_CHANGES" ]; then
   notecove note edit 69727mvfcq15fp9v9db2pv8mec --content-file docs/agentic-workflow.md
 fi

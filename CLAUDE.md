@@ -179,11 +179,21 @@ Responsibilities, in order, every `--poll-interval` seconds (default 30):
 - **Adopt orphaned tasks** — spawn a worker for any `Doing`/`Attention` task with no live worker window (see below)
 - **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
+- Start each worker in the repository named by the task's `Repo:` line, if it has one (see below)
 - Write `signals/launcher.heartbeat` **after each completed scan** for `agentmesh status`
 
 Adoption runs first: finishing work already in flight takes priority over starting more of it, and both draw from the same slot budget.
 
 **Untyped tasks are refused, not guessed.** A task is only picked up when its type maps through `TYPE_MAP`. Anything else — no type at all, or a type like `chore` that maps to nothing — is left in `Ready` with no default agent. The refusal posts exactly one comment, deduped via `signals/<slug>.untyped`, and is logged on every scan. Setting a supported type makes the task eligible again on the next scan.
+
+**Per-task repository: the `Repo:` line.** A task description may carry a line `Repo: <path>` — anywhere in it, since `ensure_task_folder` prepends a folder link above everything else. Its worker then starts in that directory instead of `~/agentmesh`, and the implementer family's worktree step branches from it. Without the line nothing changes.
+
+- **Read from the full description.** `task list` carries only a 200-character preview, so the launcher runs `task show --json` for each task about to be spawned and matches `contentText` (markdown stripped, so `**Repo:**` works too). First match wins.
+- **`~` is expanded and a relative path resolves against `$HOME`**, not the launcher's working directory, which says nothing about the task.
+- **A missing directory refuses the task**, exactly like an untyped one: left where it is, one comment deduped via `signals/<slug>.repo-missing`, `task-refused-repo-missing` on every scan. Fixing the line makes it eligible on the next scan.
+- **A failed read skips the task for this scan** (`task-skipped-repo-unread`) rather than defaulting to `~/agentmesh` — a worker started in the wrong repository is worse than one started 30 seconds late.
+- **Adoption honours it too**, so a respawned worker lands where its predecessor worked (`adoption-skipped-repo-missing` / `adoption-skipped-repo-unread` otherwise).
+- **The resolved path goes to `spawn-agent.sh` as its 6th argument** and into `signals/<slug>.repo`; `agent_init` exports it as `$TASK_REPO`. Phase 4a runs `git -C "$TASK_REPO"`, branches from the remote's default branch (`origin/HEAD`, else `origin/main`), and puts the worktree **beside** the repository as `<parent>/<repo-name>-<slug>` — agentmesh's own worktrees included. The agentmesh doc-sync step (4c) runs only when the repository is agentmesh.
 
 **Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `agentmesh stop --level 3` (or a start that finds no `workers` session) clears `signals/workers`, so after a restart the watchdog has no record of it either.
 
@@ -193,6 +203,7 @@ Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker 
 - tasks holding a live `.launching` flag — a worker mid-boot has no window yet
 - tasks holding a `.backoff` sentinel — the watchdog is sleeping out a crash backoff and will re-queue the task itself; adopting here would have it tear down the worker we just made
 - tasks whose type no longer maps to an agent — there is no way to know which agent owned the work
+- tasks whose `Repo:` line names a missing directory, or whose description cannot be read this scan
 
 If `tmux list-windows` cannot be queried at all, the whole pass is skipped rather than treating an empty result as "every worker is dead".
 
@@ -287,7 +298,7 @@ Responsibilities:
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, and `.hot-until` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, `.hot-until`, and `.repo` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
@@ -369,6 +380,8 @@ Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window
 `spawn-agent.sh` launches Claude **as the window's command** rather than typing it into a shell, so the window dies with the process. Window liveness is therefore a sound proxy for "the agent is running" — which both the watchdog and the launcher's adoption pass depend on. A shell-hosted window would outlive a dead Claude and make every task it held permanently unrecoverable.
 
 **The same rule applies to the daemons.** `bootstrap.sh` and `agentmesh switch` pass each daemon's command to `tmux new-window` instead of `send-keys`-ing it into a shell, for exactly the reason above: the window must die with the process. Under the old `send-keys` form a crashed watchdog left a live `watchdog` window running zsh, so `agentmesh status` reported it healthy and no re-run of `bootstrap.sh` could ever notice it was gone.
+
+**A new directory's trust dialog is accepted.** The first Claude started in a directory — the first worker in any new `Repo:` — asks whether you trust the folder, with "No, exit" highlighted. Left alone, the Enter pressed after the prompt timeout would quit Claude and the launcher would retry that every scan. While waiting for the prompt `spawn-agent.sh` moves to "Yes, I trust this folder" and presses Enter only once the cursor is verified there, logged `spawn-trust-accepted`. Naming the repository in the task is the trust decision; the worker runs with `--dangerously-skip-permissions` either way.
 
 **Typing the skill invocation is verified, not assumed.** After the prompt appears `spawn-agent.sh` waits briefly for startup rendering to settle, types the command with `send-keys -l`, and presses Enter as a *separate* send — the same split `notify-worker.sh` uses. One send carrying both is written to the pty as a single burst, which Claude Code can read as a paste: the Enter lands in the draft and the prompt sits there unsent, only some of the time. It then checks the pane: while the input line (`❯`+NBSP) still holds `--task <slug>` the command is a draft, so it presses Enter again, up to `SPAWN_SUBMIT_TRIES` (5). A draft that never clears logs `spawn-submit-unconfirmed`, **kills the window** and exits non-zero, so the launcher clears `.launching` and retries on its next scan — a live window holding an unsent prompt would otherwise hide the task from adoption indefinitely.
 
@@ -460,6 +473,8 @@ agentmesh/
     ├── <slug>.self-state       # state name the agent is about to set, so the sidecar suppresses its own write
     ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
     ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
+    ├── <slug>.repo-missing     # dedup flag so a task whose Repo: line names no directory is commented on once
+    ├── <slug>.repo             # the worker's repository (Repo: line resolved, else agentmesh); written at spawn, read by agent_init as TASK_REPO
     ├── <slug>.backoff          # sentinel while the watchdog sleeps out a crash backoff; adoption skips these
     ├── <slug>.sidecar-handle   # comment-author name the running sidecar filters on; checked before reusing it
     ├── <slug>.seen-comments    # sidecar baseline: comment IDs already reported
@@ -494,6 +509,9 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        implementer-spawned             WORK-xyz
 2026-04-26T...  launcher        sidecar-spawned                 WORK-xyz
 2026-04-26T...  launcher        task-refused-untyped            WORK-abc
+2026-04-26T...  launcher        task-refused-repo-missing        WORK-abc
+2026-04-26T...  launcher        task-skipped-repo-unread         WORK-abc
+2026-04-26T...  launcher        adoption-skipped-repo-missing    WORK-abc
 2026-04-26T...  launcher        task-adopted:attention           WORK-xyz
 2026-04-26T...  launcher        adoption-skipped-untyped         WORK-abc
 2026-04-26T...  launcher        adoption-skipped-tmux-unavailable -
@@ -517,6 +535,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  spawn-agent     spawn-submit-retried:<n>         WORK-xyz
 2026-04-26T...  spawn-agent     spawn-submit-unconfirmed         WORK-xyz
 2026-04-26T...  spawn-agent     spawn-prompt-timeout             WORK-xyz
+2026-04-26T...  spawn-agent     spawn-trust-accepted             WORK-xyz
 2026-04-26T...  notify-worker   nudge-delivered                 WORK-xyz
 2026-04-26T...  notify-worker   delivery-deferred-not-ready      WORK-xyz
 2026-04-26T...  notify-worker   delivery-failed-send             WORK-xyz

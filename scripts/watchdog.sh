@@ -56,7 +56,8 @@ cleanup_task() {
         "${SIGNALS}/${slug}.merged" \
         "${SIGNALS}/${slug}.pr-closed" \
         "${SIGNALS}/${slug}.summary-posted" \
-        "${SIGNALS}/${slug}.hot-until"
+        "${SIGNALS}/${slug}.hot-until" \
+        "${SIGNALS}/${slug}.repo"
 }
 
 echo "[watchdog] started"
