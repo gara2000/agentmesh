@@ -63,8 +63,18 @@ if [[ -n "$MODEL" ]]; then
   # come straight from a task description.
   CLAUDE_CMD="$CLAUDE_CMD --model $(printf '%q' "$MODEL")"
 fi
+# The NoteCove CLI reads .notecove from its working directory, else $HOME. A
+# worker started in its task's Repo: directory has none there, so every raw
+# `notecove` call it made used ~/.notecove — whatever profile and project scope
+# that happens to hold — instead of the one bootstrap.sh wrote here, and failed
+# with "No running Notecove instance found for profile …". Pin it for the whole
+# Claude process so it holds in every Bash call, sourced helper or not.
+ENV_CMD=""
+if [[ -f "$AGENTMESH/.notecove" ]]; then
+  ENV_CMD="export NOTECOVE_CONFIG_PATH=$(printf '%q' "$AGENTMESH/.notecove") && "
+fi
 tmux new-window -t "${SESSION}:" -n "$WINDOW" \
-  "cd $(printf '%q' "$WORKDIR") && $CLAUDE_CMD"
+  "cd $(printf '%q' "$WORKDIR") && ${ENV_CMD}$CLAUDE_CMD"
 
 # Pacing knobs, overridable so tests need not wait them out.
 #   SPAWN_SETTLE         — pause after the prompt first appears, before typing

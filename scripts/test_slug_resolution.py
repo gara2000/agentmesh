@@ -303,3 +303,49 @@ class TestNcTaskId(RefHarness):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestConfigPath(unittest.TestCase):
+    """
+    The CLI reads .notecove from its cwd, else $HOME. A worker runs in its
+    task's Repo: directory, so the lookup fell through to ~/.notecove — another
+    profile and project scope — and every call failed with "No running Notecove
+    instance found for profile …" (WORK-2cg). Sourcing the helper pins the
+    config to the agentmesh checkout's own file.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.am = self.root / "agentmesh"
+        (self.am / "scripts").mkdir(parents=True)
+        shutil.copy(SCRIPTS / "notecove-ref.sh", self.am / "scripts" / "notecove-ref.sh")
+        self.elsewhere = self.root / "some-repo"
+        self.elsewhere.mkdir()
+
+    def config_seen_by_child(self, shell="bash", preset=None) -> str:
+        script = (f'source "{self.am / "scripts" / "notecove-ref.sh"}"\n'
+                  'bash -c \'printf "%s" "${NOTECOVE_CONFIG_PATH:-unset}"\'')
+        env = dict(os.environ, HOME=str(self.root))
+        env.pop("NOTECOVE_CONFIG_PATH", None)
+        if preset:
+            env["NOTECOVE_CONFIG_PATH"] = preset
+        return subprocess.run([shell, "-c", script], capture_output=True, text=True,
+                              env=env, cwd=str(self.elsewhere)).stdout
+
+    def test_pins_the_checkouts_config_from_another_cwd(self):
+        (self.am / ".notecove").write_text("{}")
+        self.assertEqual(self.config_seen_by_child(), str(self.am / ".notecove"))
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh not installed")
+    def test_pins_it_when_sourced_from_zsh(self):
+        (self.am / ".notecove").write_text("{}")
+        self.assertEqual(self.config_seen_by_child(shell="zsh"), str(self.am / ".notecove"))
+
+    def test_explicit_setting_wins(self):
+        (self.am / ".notecove").write_text("{}")
+        self.assertEqual(self.config_seen_by_child(preset="/x/.notecove"), "/x/.notecove")
+
+    def test_no_config_written_yet_leaves_it_unset(self):
+        self.assertEqual(self.config_seen_by_child(), "unset")

@@ -278,6 +278,32 @@ class TestWorkdir(SpawnHarness):
                          "spaces and quotes in the path must survive quoting")
         self.assertIn("exec claude", self.window_command())
 
+    def config_path_in_window(self) -> str:
+        # What NOTECOVE_CONFIG_PATH the window's claude would see.
+        cmd = self.window_command().replace("exec claude", "printenv NOTECOVE_CONFIG_PATH; :", 1)
+        env = dict(os.environ)
+        env.pop("NOTECOVE_CONFIG_PATH", None)
+        return subprocess.run(["bash", "-c", cmd], capture_output=True,
+                              text=True, env=env).stdout.strip()
+
+    def test_repo_worker_reads_the_agentmesh_notecove_config(self):
+        """
+        WORK-2cg: started in its Repo: directory, which holds no .notecove, the
+        CLI fell back to ~/.notecove — another profile — and every call failed.
+        """
+        cfg = Path(self._tmp.name) / ".notecove"
+        cfg.write_text("{}")
+        repo = Path(self._tmp.name) / "other repo"
+        repo.mkdir()
+        r = self.run_spawn(repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cd_target(), str(repo.resolve()))
+        self.assertEqual(self.config_path_in_window(), str(cfg))
+
+    def test_no_config_written_yet_sets_nothing(self):
+        self.assertEqual(self.run_spawn().returncode, 0)
+        self.assertNotIn("NOTECOVE_CONFIG_PATH", self.window_command())
+
     def test_missing_directory_fails_before_any_window(self):
         r = self.run_spawn(Path(self._tmp.name) / "nope")
         self.assertEqual(r.returncode, 1)
