@@ -68,6 +68,16 @@ _NOTECOVE_REF_SOURCED=1
 # the file being sourced, so that is the fallback.
 _NC_DEFAULT_SIGNALS=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/signals
 
+# The CLI reads its config (.notecove: profile id, token, project scope) from
+# the current directory, else $HOME. Daemons happen to run from the repo root,
+# but a worker runs in its task's Repo: directory, where the lookup fell through
+# to ~/.notecove — a different profile and project scope — and every call failed
+# with "No running Notecove instance found for profile …" (WORK-2cg). Pin it to
+# the file bootstrap.sh's `notecove init` writes here. An explicit setting wins.
+if [[ -z "${NOTECOVE_CONFIG_PATH:-}" && -f "${_NC_DEFAULT_SIGNALS%/signals}/.notecove" ]]; then
+    export NOTECOVE_CONFIG_PATH="${_NC_DEFAULT_SIGNALS%/signals}/.notecove"
+fi
+
 _nc_signals() {
     if [[ -n "${SIGNALS:-}" && -d "${SIGNALS}" ]]; then
         printf '%s' "$SIGNALS"
