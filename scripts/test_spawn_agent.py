@@ -60,7 +60,7 @@ case "$cmd" in
       case "$1" in
         -t) session="${2%%:*}"; shift 2 ;;
         -n) name="$2"; shift 2 ;;
-        *)  shift ;;
+        *)  printf '%s' "$1" > "$S/new-window.cmd"; shift ;;
       esac
     done
     echo "$name" >> "$S/windows.$session"
@@ -72,6 +72,14 @@ case "$cmd" in
     echo "$t|KILLED" >> "$S/sent.log"
     ;;
   capture-pane)
+    if [[ -f "$S/trust-dialog" ]]; then
+      if [[ "$(cat "$S/trust-cursor" 2>/dev/null)" == yes ]]; then
+        printf ' Quick safety check\n   No, exit\n ❯ Yes, I trust this folder\n'
+      else
+        printf ' Quick safety check\n ❯ No, exit\n   Yes, I trust this folder\n'
+      fi
+      exit 0
+    fi
     [[ -f "$S/no-prompt" ]] && { echo "Claude Code starting…"; exit 0; }
     typed=$(cat "$S/typed" 2>/dev/null || true)
     enters=$(cat "$S/enters" 2>/dev/null || echo 0)
@@ -88,6 +96,18 @@ case "$cmd" in
       case "$1" in -t) shift 2 ;; *) rest+=("$1"); shift ;; esac
     done
     echo "$t|${rest[*]}" >> "$S/sent.log"
+    if [[ -f "$S/trust-dialog" ]]; then
+      case "${rest[*]}" in
+        Down|Up) echo yes > "$S/trust-cursor" ;;
+        Enter)
+          if [[ "$(cat "$S/trust-cursor" 2>/dev/null)" == yes ]]; then
+            rm -f "$S/trust-dialog"
+          else   # "No, exit": claude quits and the window dies with it
+            session="${t%%:*}"; : > "$S/windows.$session"; echo exited > "$S/trust-exited"
+          fi ;;
+      esac
+      exit 0
+    fi
     if [[ "${rest[0]}" == "-l" ]]; then
       printf '%s' "${rest[1]}" > "$S/typed"
       echo 0 > "$S/enters"
@@ -131,7 +151,7 @@ class SpawnHarness(unittest.TestCase):
         else:
             f.write_text(str(n))
 
-    def run_spawn(self) -> subprocess.CompletedProcess:
+    def run_spawn(self, workdir=None) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PATH"] = f"{self.stub}{os.pathsep}{env.get('PATH', '')}"
         env["STUB_DIR"] = str(self.stub)
@@ -139,7 +159,8 @@ class SpawnHarness(unittest.TestCase):
                    SPAWN_VERIFY_DELAY="0", SPAWN_SUBMIT_TRIES="5")
         return subprocess.run(
             ["bash", str(self.scripts / "spawn-agent.sh"),
-             "workers", self.SLUG, self.SKILL, self.SLUG, "WORK"],
+             "workers", self.SLUG, self.SKILL, self.SLUG, "WORK"]
+            + ([str(workdir)] if workdir is not None else []),
             capture_output=True, text=True, env=env, timeout=90)
 
     def sent(self) -> list:
@@ -223,6 +244,62 @@ class TestPromptWait(SpawnHarness):
         self.assertEqual(r.returncode, 1)
         self.assertIn("already exists", r.stderr)
         self.assertEqual(self.sent(), [])
+
+
+class TestWorkdir(SpawnHarness):
+    """The optional 6th argument: the task's `Repo:` directory."""
+
+    def window_command(self) -> str:
+        return (self.stub / "new-window.cmd").read_text()
+
+    def cd_target(self) -> str:
+        # Evaluate the cd the window would run, without running claude.
+        cmd = self.window_command().split(" && exec ", 1)[0]
+        return subprocess.run(["bash", "-c", f"{cmd} && pwd -P"],
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_defaults_to_the_agentmesh_repo(self):
+        r = self.run_spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cd_target(), str(Path(self._tmp.name).resolve()))
+
+    def test_starts_in_the_given_directory(self):
+        repo = Path(self._tmp.name) / "my app's repo"
+        repo.mkdir()
+        r = self.run_spawn(repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cd_target(), str(repo.resolve()),
+                         "spaces and quotes in the path must survive quoting")
+        self.assertIn("exec claude", self.window_command())
+
+    def test_missing_directory_fails_before_any_window(self):
+        r = self.run_spawn(Path(self._tmp.name) / "nope")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not exist", r.stderr)
+        self.assertEqual(self.windows(), ["zsh"], "no window may be created")
+        self.assertEqual(self.sent(), [])
+
+
+class TestTrustDialog(SpawnHarness):
+    """First start in a new Repo: directory shows the workspace-trust dialog,
+    whose default is "No, exit"."""
+
+    def test_trust_dialog_is_accepted_then_the_command_is_typed(self):
+        (self.stub / "trust-dialog").touch()
+        r = self.run_spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.stub / "trust-exited").exists(),
+                         "Enter must never land on 'No, exit'")
+        self.assertIn("spawn-trust-accepted", self.events())
+        sent = self.sent()
+        target = f"workers:{self.SLUG}"
+        self.assertEqual(sent[:2], [f"{target}|Down", f"{target}|Enter"])
+        self.assertIn(f"{target}|-l {self.SKILL} --task {self.SLUG} --project WORK", sent)
+
+    def test_no_dialog_sends_no_navigation_keys(self):
+        self.run_spawn()
+        self.assertFalse(any(l.endswith("|Down") for l in self.sent()))
+        self.assertNotIn("spawn-trust-accepted", self.events())
 
 
 if __name__ == "__main__":

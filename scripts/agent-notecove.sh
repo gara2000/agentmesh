@@ -56,6 +56,15 @@ agent_init() {
     # Exported so a skill making its own raw CLI calls can use it too.
     TASK_REF=$(nc_ref "$SLUG")
     export TASK_REF
+    # The repository this task works in: its `Repo:` line, resolved by the
+    # launcher and recorded in signals/<slug>.repo at spawn. Skills branch
+    # their worktree from it with `git -C "$TASK_REPO"`, so it holds however far
+    # the agent has cd'd since. A task without the line, or a worker launched
+    # before the file existed, works in the agentmesh repo as it always did.
+    TASK_REPO=""
+    [ -f "${SIGNALS}/${SLUG}.repo" ] && TASK_REPO=$(head -n 1 "${SIGNALS}/${SLUG}.repo")
+    [ -n "$TASK_REPO" ] && [ -d "$TASK_REPO" ] || TASK_REPO=$(cd "${SIGNALS}/.." && pwd -P)
+    export TASK_REPO
     # The launcher sets .launching so its next scan does not spawn a second
     # worker while Claude boots. Claiming the task clears it.
     rm -f "${SIGNALS}/${SLUG}.launching"

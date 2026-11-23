@@ -35,6 +35,25 @@ def _make_task(type_ids: list, type_names: list, slug_short: str = "WORK-abc") -
     }
 
 
+def _fake_run_bash(list_payload=None, descriptions=None, show_fails=()):
+    """A run_bash stand-in: `task show` returns a task with contentText taken
+    from descriptions[<short slug>] (default empty); anything else returns
+    list_payload as JSON."""
+    descriptions = descriptions or {}
+
+    def fake(cmd):
+        if " task show " in cmd:
+            full = cmd.split(" task show ", 1)[1].split()[0].strip("'")
+            short = full.split(":", 1)[0]
+            if short in show_fails:
+                return MagicMock(returncode=1, stdout="")
+            return MagicMock(returncode=0, stdout=json.dumps(
+                {"slug": {"short": short, "full": full},
+                 "contentText": descriptions.get(short, "")}))
+        return MagicMock(returncode=0, stdout=json.dumps(list_payload or []))
+    return fake
+
+
 class TestTriageMapping(unittest.TestCase):
     """_triage() resolves a task's type to an agent type, or None."""
 
@@ -86,9 +105,10 @@ class TestPickUpReadyTasks(unittest.TestCase):
         self.addCleanup(self._signals_patch.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, tasks: list, live_windows=()):
+    def _run(self, tasks: list, live_windows=(), descriptions=None, show_fails=()):
         """Returns (spawned, refused) where refused is the list of commented slugs."""
         spawned, refused = [], []
+        self.repos = {}
         l = lnch.Launcher(project="WORK", max_workers=5,
                           profile="test-profile", poll_interval=30)
 
@@ -101,10 +121,12 @@ class TestPickUpReadyTasks(unittest.TestCase):
             patch.object(lnch, "log"),
             patch.object(lnch, "_print"),
         ):
-            mock_rb.return_value = MagicMock(returncode=0, stdout=json.dumps(tasks))
-            mock_sw.side_effect = (
-                lambda slug, agent_type, full_slug="": spawned.append((slug, agent_type))
-            )
+            mock_rb.side_effect = _fake_run_bash(tasks, descriptions, show_fails)
+
+            def fake_spawn(slug, agent_type, full_slug="", repo=None):
+                spawned.append((slug, agent_type))
+                self.repos[slug] = repo
+            mock_sw.side_effect = fake_spawn
             mock_nc.side_effect = lambda args: refused.append(args) or ""
             l.pick_up_ready_tasks()
 
@@ -199,22 +221,26 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
         self.addCleanup(self._signals_patch.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, by_state: dict, live_windows=()):
+    def _run(self, by_state: dict, live_windows=(), descriptions=None):
         """by_state maps state name -> task list. Returns slugs adopted."""
         adopted = []
+        self.repos = {}
         l = lnch.Launcher(project="WORK", max_workers=5,
                           profile="test-profile", poll_interval=30)
 
         with (
+            patch.object(lnch, "run_bash", side_effect=_fake_run_bash(descriptions=descriptions)),
+            patch.object(lnch, "notecove", return_value=""),
             patch.object(l, "_list_tasks", side_effect=lambda s: by_state.get(s, [])),
             patch.object(l, "_live_worker_windows", return_value=set(live_windows)),
             patch.object(l, "_spawn_worker") as mock_sw,
             patch.object(lnch, "log"),
             patch.object(lnch, "_print"),
         ):
-            mock_sw.side_effect = (
-                lambda slug, agent_type, full_slug="": adopted.append((slug, agent_type))
-            )
+            def fake_spawn(slug, agent_type, full_slug="", repo=None):
+                adopted.append((slug, agent_type))
+                self.repos[slug] = repo
+            mock_sw.side_effect = fake_spawn
             l.adopt_orphaned_tasks()
 
         return adopted
@@ -265,6 +291,7 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             _make_task(["bug"], ["Bug"], slug_short="WORK-b"),
         ]
         with (
+            patch.object(lnch, "run_bash", side_effect=_fake_run_bash()),
             patch.object(l, "_list_tasks", side_effect=lambda s: tasks if s == "Doing" else []),
             patch.object(l, "_live_worker_windows", return_value=set()),
             patch.object(l, "_spawn_worker") as mock_sw,
@@ -272,7 +299,7 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             patch.object(lnch, "_print"),
         ):
             # Registering consumes the single slot, as the real _spawn_worker does.
-            def fake_spawn(slug, agent_type, full_slug=""):
+            def fake_spawn(slug, agent_type, full_slug="", repo=None):
                 adopted.append(slug)
                 l._register_worker(slug, agent_type, full_slug)
             mock_sw.side_effect = fake_spawn
@@ -308,7 +335,7 @@ class TestAdoptionGuards(unittest.TestCase):
             patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
             patch.object(l, "_live_worker_windows", return_value=set()),
             patch.object(l, "_spawn_worker",
-                         side_effect=lambda s_, t, f_="": adopted.append(s_)),
+                         side_effect=lambda s_, t, f_="", r_=None: adopted.append(s_)),
             patch.object(lnch, "log"), patch.object(lnch, "_print"),
         ):
             l.adopt_orphaned_tasks()
@@ -325,7 +352,7 @@ class TestAdoptionGuards(unittest.TestCase):
             patch.object(l, "_list_tasks", side_effect=lambda st: [_make_task(["bug"], ["Bug"])] if st == "Doing" else []),
             patch.object(l, "_live_worker_windows", return_value=None),
             patch.object(l, "_spawn_worker",
-                         side_effect=lambda s_, t, f_="": adopted.append(s_)),
+                         side_effect=lambda s_, t, f_="", r_=None: adopted.append(s_)),
             patch.object(lnch, "log"), patch.object(lnch, "_print"),
         ):
             l.adopt_orphaned_tasks()
@@ -351,6 +378,129 @@ class TestAdoptionGuards(unittest.TestCase):
         self.assertFalse((Path(self._tmp.name) / "WORK-abc.launching").exists(),
                          "a failed spawn must release its launching flag")
         mock_side.assert_not_called()
+
+
+class TestRepoLineParsing(unittest.TestCase):
+    """parse_repo_line / resolve_repo — the `Repo: <path>` description line."""
+
+    def test_line_anywhere_in_the_description(self):
+        text = "[[F:abc|Server/WORK-x]]\nKind: implement\nRepo: ~/src/app\nMore text"
+        self.assertEqual(lnch.parse_repo_line(text), "~/src/app")
+
+    def test_first_line_wins(self):
+        self.assertEqual(lnch.parse_repo_line("Repo: /a\nRepo: /b"), "/a")
+
+    def test_no_line(self):
+        self.assertIsNone(lnch.parse_repo_line("Kind: implement\nsome Repo: /x mid-line"))
+        self.assertIsNone(lnch.parse_repo_line(""))
+
+    def test_trailing_whitespace_is_trimmed(self):
+        self.assertEqual(lnch.parse_repo_line("  Repo:   /a b/c  \n"), "/a b/c")
+
+    def test_tilde_is_expanded(self):
+        self.assertEqual(lnch.resolve_repo("~/x"), (Path.home() / "x").resolve())
+
+    def test_relative_resolves_against_home(self):
+        self.assertEqual(lnch.resolve_repo("work/app"), (Path.home() / "work/app").resolve())
+
+    def test_absolute_is_kept(self):
+        self.assertEqual(lnch.resolve_repo("/tmp"), Path("/tmp").resolve())
+
+
+class TestRepoLinePickup(unittest.TestCase):
+    """pick_up_ready_tasks / adopt_orphaned_tasks honour the Repo: line."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.signals = self.root / "signals"
+        self.signals.mkdir()
+        self.repo = self.root / "app"
+        self.repo.mkdir()
+        p = patch.object(lnch, "SIGNALS", self.signals)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _pickup(self, descriptions, show_fails=()):
+        h = TestPickUpReadyTasks()
+        h._tmp = self._tmp
+        out = h._run([_make_task(["bug"], ["Bug"])], descriptions=descriptions,
+                     show_fails=show_fails)
+        return out, h.repos
+
+    def test_repo_line_becomes_the_workdir(self):
+        (spawned, _), repos = self._pickup({"WORK-abc": f"[[F:x|y]]\nRepo: {self.repo}"})
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertEqual(repos["WORK-abc"], self.repo.resolve())
+
+    def test_no_repo_line_defaults_to_agentmesh(self):
+        (spawned, _), repos = self._pickup({"WORK-abc": "Kind: implement"})
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertEqual(repos["WORK-abc"], lnch.AGENTMESH.resolve())
+
+    def test_missing_directory_is_refused_once(self):
+        desc = {"WORK-abc": f"Repo: {self.root / 'nope'}"}
+        (spawned, refused), _ = self._pickup(desc)
+        self.assertEqual(spawned, [], "a missing repo must not spawn a worker")
+        self.assertEqual(len(refused), 1)
+        self.assertIn("comments add", refused[0])
+        self.assertNotIn("--state", refused[0], "refusal must not change state")
+        (spawned, refused), _ = self._pickup(desc)
+        self.assertEqual((spawned, refused), ([], []), "the comment is deduped")
+
+    def test_fixing_the_line_makes_it_eligible_and_clears_the_flag(self):
+        self._pickup({"WORK-abc": f"Repo: {self.root / 'nope'}"})
+        self.assertTrue((self.signals / "WORK-abc.repo-missing").exists())
+        (spawned, _), _ = self._pickup({"WORK-abc": f"Repo: {self.repo}"})
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertFalse((self.signals / "WORK-abc.repo-missing").exists())
+
+    def test_unreadable_description_skips_rather_than_defaulting(self):
+        """Falling back to AGENTMESH on doubt would start it in the wrong repo."""
+        (spawned, refused), _ = self._pickup({}, show_fails=("WORK-abc",))
+        self.assertEqual((spawned, refused), ([], []))
+
+    def test_adoption_honours_the_repo_line(self):
+        h = TestAdoptOrphanedTasks()
+        h._tmp = self._tmp
+        adopted = h._run({"Doing": [_make_task(["bug"], ["Bug"])]},
+                         descriptions={"WORK-abc": f"Repo: {self.repo}"})
+        self.assertEqual(adopted, [("WORK-abc", "implementer")])
+        self.assertEqual(h.repos["WORK-abc"], self.repo.resolve())
+
+    def test_adoption_skips_a_missing_repo(self):
+        h = TestAdoptOrphanedTasks()
+        h._tmp = self._tmp
+        adopted = h._run({"Doing": [_make_task(["bug"], ["Bug"])]},
+                         descriptions={"WORK-abc": f"Repo: {self.root / 'nope'}"})
+        self.assertEqual(adopted, [])
+
+    def test_spawn_passes_the_repo_and_records_it(self):
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        with (
+            patch.object(lnch.subprocess, "run",
+                         return_value=MagicMock(returncode=0, stderr="")) as mock_run,
+            patch.object(l, "_spawn_sidecar"),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l._spawn_worker("WORK-abc", "implementer", "WORK-abc:longid", self.repo)
+        argv = mock_run.call_args[0][0]
+        self.assertEqual(argv[-1], str(self.repo), "spawn-agent.sh gets the repo as its 6th arg")
+        self.assertEqual((self.signals / "WORK-abc.repo").read_text().strip(), str(self.repo))
+
+    def test_spawn_without_repo_uses_agentmesh(self):
+        l = lnch.Launcher(project="WORK", max_workers=5,
+                          profile="test-profile", poll_interval=30)
+        with (
+            patch.object(lnch.subprocess, "run",
+                         return_value=MagicMock(returncode=0, stderr="")) as mock_run,
+            patch.object(l, "_spawn_sidecar"),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            l._spawn_worker("WORK-abc", "implementer")
+        self.assertEqual(mock_run.call_args[0][0][-1], str(lnch.AGENTMESH.resolve()))
 
 
 class TestReconcileSidecars(unittest.TestCase):
