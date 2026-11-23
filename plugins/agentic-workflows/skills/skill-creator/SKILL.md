@@ -246,14 +246,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -286,8 +286,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -739,14 +739,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -779,8 +779,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -945,11 +945,9 @@ Save results as a `WORK-<slug>/EVALS-<N>` note summarizing what was tested and w
 
 If evals reveal issues, iterate on the SKILL.md before proceeding to PR.
 
-### 4i. Log completion
+### 4i. Proceed to PR
 
-```bash
-notecove task comments add <slug> --user "SkillCreator" "Implementation complete: <brief summary of what skill was created>"
-```
+Proceed to Phase 5. Do not comment here — the summary posted with the PR URL is the one comment for this round.
 
 ---
 

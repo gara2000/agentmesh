@@ -246,14 +246,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -286,8 +286,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -471,13 +471,9 @@ if [ -n "$WORKTREE_CHANGES" ]; then
 fi
 ```
 
-### 3a-5. Log and proceed to PR
+### 3a-5. Proceed to PR
 
-```bash
-notecove task comments add <slug> --user "Documenter" "Documentation complete: <brief summary>"
-```
-
-Proceed to **Phase 4: PR Creation**.
+Proceed to **Phase 4: PR Creation**. Do not comment here — the summary posted with the PR URL is the one comment for this round.
 
 ---
 
@@ -537,9 +533,6 @@ EOF
 
 Log the completion and signal `Attention` (Confluence ready):
 ```bash
-notecove task comments add <slug> --user "Documenter" "Documentation complete: <brief summary>"
-```
-```bash
 printf '%s\tdocumenter   \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
 post_summary "Published Confluence page: $CONFLUENCE_URL — <one line>"
 request_attention "Attention"
@@ -551,7 +544,7 @@ After unblocking:
 - **`done`** — approved. Log `printf '%s\tdocumenter   \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Exit.
 - **`doing`** — feedback received. Log `printf '%s\tdocumenter   \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments for feedback:
   ```bash
-  notecove task show <slug> --format markdown-with-comments
+  notecove task show "$TASK_REF" --format markdown-with-comments
   ```
   Apply feedback (personal space only — same constraint), update the Confluence page(s), then re-signal:
   ```bash

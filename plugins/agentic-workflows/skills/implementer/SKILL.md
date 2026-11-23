@@ -246,14 +246,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -286,8 +286,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -486,14 +486,9 @@ fi
 
 If changes are detected, read `docs/agentic-workflow.md` and the changed files, then update the relevant sections of the document before syncing.
 
-### 4d. Log completion and proceed to PR
+### 4d. Proceed to PR
 
-Add a task comment summarizing what was done:
-```bash
-notecove task comments add <slug> --user "Implementer" "Implementation complete: <brief summary>"
-```
-
-Proceed directly to Phase 5. After creating the PR, post a summary with the PR URL and `request_attention`.
+Proceed directly to Phase 5. Do not comment here — after creating the PR, the summary posted with its URL is the one comment for this round.
 
 ---
 
