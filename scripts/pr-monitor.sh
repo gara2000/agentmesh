@@ -34,8 +34,9 @@
 # needs to know about PR comments.
 #
 # The worker replies under the same GitHub account as the user, so the author
-# cannot tell its replies apart. Replies end with REPLY_MARKER, a hidden HTML
-# comment, and any comment containing it is ignored.
+# cannot tell its replies apart. Replies go through reply_pr_comment in
+# agent-notecove.sh, which ends each with a visible AI-response footer and then
+# REPLY_MARKER, a hidden HTML comment; any comment containing it is ignored.
 set -uo pipefail
 
 ONCE=0
@@ -67,6 +68,7 @@ CLOSED="$SIGNALS/${SLUG}.pr-closed"
 PR_SEEN="$SIGNALS/${SLUG}.pr-seen-comments"
 
 MONITOR_AUTHOR="PR Monitor"
+# Must equal PR_REPLY_MARKER in agent-notecove.sh, which appends it.
 REPLY_MARKER="<!-- agentmesh -->"
 # Pause between merge-nudge retries; overridable so tests do not wait.
 : "${MERGE_RETRY_SLEEP:=30}"
@@ -207,9 +209,10 @@ header = f"{n} new inline review comment{plural} on {url}"
 footer = (
     f"To the worker: for each one, read it in full (gh api {repo}/pulls/comments/<id>). "
     "If it is relevant, address it: commit and push to the PR branch. If not, leave the code alone. "
-    f"Either way, reply briefly in its thread: gh api {api}/comments/<thread-id>/replies -f body=... "
-    "(thread-id is the thread # where shown, else the comment #), and end every reply with "
-    f"{marker} or it will be reported back to you. Then post_summary and request_attention."
+    f"Either way, reply briefly in its thread with reply_pr_comment {url} <thread-id> \"<text>\" "
+    "(thread-id is the thread # where shown, else the comment #) - never a raw gh api call: "
+    f"it adds the AI-response footer and the {marker} marker that keeps your reply from being "
+    "reported back to you. Then post_summary and request_attention."
 )
 
 # NoteCove rejects a comment over 996 characters; keep well inside it.

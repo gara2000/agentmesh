@@ -230,7 +230,10 @@ class TestNewComments(PrMonitorHarness):
         self.assertIn("#2", text)
         self.assertIn("@alice src/x.py:12", text)
         self.assertIn("handle None here", text)
-        self.assertIn(f"gh api {API}/comments/<thread-id>/replies", text)
+        self.assertIn(f"reply_pr_comment {PR_URL} <thread-id>", text)
+        self.assertIn("AI-response footer", text)
+        self.assertNotIn("/replies", text, "workers must reply via the helper, not raw gh api")
+        self.assertLessEqual(len(text), 996, "NoteCove rejects longer comments")
         self.assertIn("<!-- agentmesh -->", text)
         self.assertIn("request_attention", text)
         self.assertNotIn("#1 ", text)
@@ -391,7 +394,7 @@ class TestMultiplePrs(PrMonitorHarness):
         self.assertEqual(len(posts), 2)
         self.assertTrue(any(PR_URL in t and "#1 " in t for t in posts))
         self.assertTrue(any(PR_URL_2 in t and "typo in gadgets" in t
-                            and "repos/acme/gadgets/pulls/9" in t for t in posts))
+                            and f"reply_pr_comment {PR_URL_2} " in t for t in posts))
         self.run_once()
         self.assertEqual(len(self.posted()), 2, "each reported once")
 
