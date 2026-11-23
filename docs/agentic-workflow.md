@@ -145,6 +145,20 @@ A task description may carry a line `Repo: <path>` — anywhere in it, since `en
 - **Adoption honours it too**, so a respawned worker lands where its predecessor worked (`adoption-skipped-repo-missing` / `adoption-skipped-repo-unread` otherwise).
 - **The resolved path goes to `spawn-agent.sh` as its 6th argument** and into `signals/<slug>.repo`; `agent_init` exports it as `$TASK_REPO`. Phase 4a runs `git -C "$TASK_REPO"`, branches from the remote's default branch (`origin/HEAD`, else `origin/main`), and puts the worktree **beside** the repository as `<parent>/<repo-name>-<slug>` — agentmesh's own worktrees included. The agentmesh doc-sync step (4c) runs only when the repository is agentmesh.
 
+### Per-task model
+
+1. **Task** — a `Model: <id-or-alias>` line in the description (`Model: opus`, `Model: claude-sonnet-5-5`). Read by the same description-line reader as `Repo:` (`parse_description_line`), from the same single `task show`.
+2. **Agent type** — `$AGENTMESH_MODEL_<TYPE>`, the agent handle upper-cased with `-` → `_` (`AGENTMESH_MODEL_IMPLEMENTER=opus`, `AGENTMESH_MODEL_SKILL_CREATOR=sonnet`).
+3. **Global** — `agentmesh start --model <id>`, else `$AGENTMESH_MODEL`.
+4. Otherwise no `--model` at all, as before.
+
+- **The launcher reads no `AGENTMESH_MODEL*` variable itself.** Its window inherits the tmux *server's* environment, not the shell that ran `agentmesh start`, so a variable set there would never arrive — and a stale one from whenever the server started would. `bootstrap.sh` turns the user's environment into launcher arguments (`--model <id>`, `--type-model <handle>=<id>`, via `launcher_model_args` in `notecove-ref.sh`), so the command line is the whole truth.
+- **Values are passed through unvalidated** — aliases and full ids both work and the list changes too often to pin. The model goes to `spawn-agent.sh` as its 7th argument (`claude … --model <id>`, `%q`-quoted), into the registry's 5th field, and into `events.log` as `model-resolved:<level>:<value>` (`model-resolved:default:-` when none).
+- **A rejected model does not stop Claude starting.** It prints a warning banner (which also shows for valid ids newer than the installed Claude Code, so it proves nothing) and draws its prompt; only the reply to the first message says *"There's an issue with the selected model"*, after which the REPL idles. Left alone, that live window would hide the task from pickup and adoption forever. So `spawn-agent.sh`, when given a model, watches the pane after submitting for up to 15s: the rejection text logs `spawn-model-rejected:<value>`, kills the window and exits **3**; any other first reply (`⏺`), or none, counts as accepted.
+- **Exit 3 refuses the task until the model changes.** The launcher records the value in `signals/<slug>.model-rejected`, comments once, and skips the task (`task-refused-model-rejected`) on every scan while it still resolves to that value — in pickup and adoption alike. Fixing the `Model:` line or the setting makes it eligible on the next scan; without this, every scan would start a Claude into the same error.
+
+The resolved model is shown per worker in `agentmesh status`. Changing it on a running system is another `agentmesh start`: bootstrap records the launcher's command line in `signals/launcher.cmd` and restarts the launcher when a start asks for a different one (`launcher-config-changed-restarting`); running workers keep their model.
+
 ### The launcher does not set task state
 
 The worker sets `Doing` itself as its first action. That leaves the task in `Ready` while Claude boots (10–60s observed), so the launcher writes `signals/<slug>.launching` before spawning and skips any slug holding a live flag. The worker clears it on claiming the task.
@@ -411,7 +425,7 @@ agentmesh task create <title> --project WORK --type feature
 
 Level 3 clears the registry because a deliberate stop is not a crash: left behind, the watchdog read every vanished window as one, deleting its inbox and re-queuing it to `Ready`. Without a terminal `stop` refuses to guess a level, and level 4 needs `--yes`.
 
-`status` reports the launcher heartbeat, the daemons, active workers, **sidecar count** (warning if fewer sidecars than workers — those workers get no user replies), **SSE availability**, and the count of tasks refused for a missing type.
+`status` reports the launcher heartbeat, the daemons, active workers (each with its agent type and model — `default` when started without `--model`), **sidecar count** (warning if fewer sidecars than workers — those workers get no user replies), **SSE availability**, and the count of tasks refused for a missing type.
 
 `switch` kills only the launcher, which is the one project-scoped component. Sidecars keep serving workers from the previous project — they are project-agnostic, keyed only on a task slug — and PR monitors keep watching for merges.
 
@@ -583,7 +597,9 @@ New ones are not delivered by the monitor. It posts **one NoteCove comment on th
 
 ## Agent Spawner
 
-`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project> [<workdir>]` creates a tmux window, starts `claude --dangerously-skip-permissions`, waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then types the skill invocation. `<workdir>` is the task's `Repo:` directory, resolved by the launcher (default: the agentmesh repo); a directory that does not exist fails before any window is created.
+`scripts/spawn-agent.sh <session> <window> <skill> <slug> <project> [<workdir> [<model>]]` creates a tmux window, starts `claude --dangerously-skip-permissions` (plus `--model <model>` when one was resolved), waits for the REPL prompt (matching the `❯` + NBSP byte sequence, with a 60-second fallback), then types the skill invocation. `<workdir>` is the task's `Repo:` directory, resolved by the launcher (default: the agentmesh repo); a directory that does not exist fails before any window is created.
+
+**A rejected model is caught after the first reply.** Claude starts normally on a model it does not accept; only its reply to the skill command says *"There's an issue with the selected model"*. With a model given, `spawn-agent.sh` watches the pane for up to 15s after submitting (`SPAWN_MODEL_TRIES` × `SPAWN_MODEL_POLL`): that text logs `spawn-model-rejected:<value>`, kills the window and exits 3, which the launcher turns into a refusal until the model changes. Any other first reply, or none, counts as accepted.
 
 **A new directory's trust dialog is accepted.** The first Claude started in a directory — the first worker in any new `Repo:` — asks whether you trust the folder, with "No, exit" highlighted. Left alone, the Enter pressed after the prompt timeout would quit Claude and the launcher would retry that every scan. While waiting for the prompt `spawn-agent.sh` moves to "Yes, I trust this folder" and presses Enter only once the cursor is verified there, logged `spawn-trust-accepted`. Naming the repository in the task is the trust decision; the worker runs with `--dangerously-skip-permissions` either way.
 

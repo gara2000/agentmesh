@@ -67,7 +67,8 @@ class StopHarness(unittest.TestCase):
             (self.signals / f"WORK-abc{suffix}").write_text(body)
 
     def run_cli(self, *args) -> subprocess.CompletedProcess:
-        env = dict(os.environ)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("AGENTMESH_MODEL", "AGENTMESH_PROFILE"))}
         env["PATH"] = f"{self.stub}{os.pathsep}{env.get('PATH', '')}"
         env["STUB_DIR"] = str(self.stub)
         return subprocess.run(
@@ -181,6 +182,24 @@ class TestStartRefusesClean(StopHarness):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("agentmesh clean", r.stderr)
         self.assertTrue(self.exists("WORK-abc.inbox"))
+
+
+
+class TestStatusModels(StopHarness):
+    """`agentmesh status` lists each worker with its agent type and model (A1)."""
+
+    def test_each_worker_shows_its_model_or_default(self):
+        (self.signals / "workers").write_text(
+            "# format: <task-slug> <tmux-window-name> <agent-type> [<full-slug>] [<model>]\n"
+            "WORK-abc WORK-abc implementer WORK-abc:long opus\n"
+            "WORK-def WORK-def documenter WORK-def:long\n"
+            "WORK-ghi WORK-ghi planner - sonnet\n")
+        out = self.run_cli("status").stdout
+        lines = [l.split() for l in out.splitlines()]
+        self.assertIn(["WORK-abc", "implementer", "·", "opus"], lines)
+        self.assertIn(["WORK-def", "documenter", "·", "default"], lines)
+        self.assertIn(["WORK-ghi", "planner", "·", "sonnet"], lines)
+        self.assertIn("active workers         3", out)
 
 
 if __name__ == "__main__":

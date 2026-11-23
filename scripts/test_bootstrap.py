@@ -76,7 +76,8 @@ case "$cmd" in
       case "$1" in
         -t) session="${2%:}"; shift 2 ;;
         -n) name="$2";       shift 2 ;;
-        *)  shift ;;
+        -d) shift ;;
+        *)  printf '%s' "$1" > "$STUB/cmd.$name"; shift ;;
       esac
     done
     echo "$name" >> "$STUB/windows.$session"
@@ -174,8 +175,12 @@ class BootstrapHarness(unittest.TestCase):
         past = time.time() - secs
         os.utime(hb, (past, past))
 
-    def run_bootstrap(self, *extra) -> subprocess.CompletedProcess:
-        env = dict(os.environ)
+    def run_bootstrap(self, *extra, env_extra=None) -> subprocess.CompletedProcess:
+        # Hermetic: the developer's own AGENTMESH_PROFILE_NAME / AGENTMESH_MODEL*
+        # would otherwise leak into what bootstrap resolves.
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("AGENTMESH_MODEL", "AGENTMESH_PROFILE"))}
+        env.update(env_extra or {})
         env["PATH"] = f"{self.stub}{os.pathsep}{env.get('PATH', '')}"
         env["STUB_DIR"] = str(self.stub)
         env["AGENTMESH_NOTECOVE"] = "notecove"
@@ -423,6 +428,83 @@ class TestLauncherHealth(BootstrapHarness):
         # Only the launcher — the workers and the other daemons stay up.
         self.assertIn("WORK-abc", self.windows("workers"))
         self.assertIn("watchdog", self.windows("orchestrator"))
+
+
+
+class TestLauncherModel(BootstrapHarness):
+    """--model, $AGENTMESH_MODEL and $AGENTMESH_MODEL_<TYPE> reach the launcher's
+    command line, and a changed configuration replaces a healthy launcher (A1)."""
+
+    def launcher_cmd(self) -> str:
+        return (self.stub / "cmd.launcher").read_text()
+
+    def test_no_model_means_no_model_arguments(self):
+        r = self.run_bootstrap()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("--model", self.launcher_cmd())
+        self.assertNotIn("--type-model", self.launcher_cmd())
+
+    def test_model_flag_reaches_the_launcher(self):
+        r = self.run_bootstrap("--model", "claude-sonnet-5-5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--model claude-sonnet-5-5;", self.launcher_cmd())
+
+    def test_global_env_is_the_fallback_and_the_flag_wins(self):
+        self.run_bootstrap(env_extra={"AGENTMESH_MODEL": "haiku"})
+        self.assertIn("--model haiku;", self.launcher_cmd())
+        (self.stub / "windows.orchestrator").unlink()
+        self.run_bootstrap("--model", "opus", env_extra={"AGENTMESH_MODEL": "haiku"})
+        self.assertIn("--model opus;", self.launcher_cmd())
+        self.assertNotIn("haiku", self.launcher_cmd())
+
+    def test_type_env_vars_become_type_model_arguments(self):
+        self.run_bootstrap(env_extra={"AGENTMESH_MODEL_IMPLEMENTER": "opus",
+                                      "AGENTMESH_MODEL_SKILL_CREATOR": "sonnet",
+                                      "AGENTMESH_MODEL_DOCUMENTER": ""})
+        cmd = self.launcher_cmd()
+        self.assertIn("--type-model implementer=opus", cmd)
+        self.assertIn("--type-model skill-creator=sonnet", cmd)
+        self.assertNotIn("documenter", cmd, "an empty variable sets nothing")
+
+    def test_the_launcher_command_parses_its_model_arguments(self):
+        """What bootstrap writes is what launcher.py's argparse accepts."""
+        self.run_bootstrap("--model", "odd model", env_extra={"AGENTMESH_MODEL_IMPLEMENTER": "opus"})
+        inner = self.launcher_cmd().split("python3 ", 1)[1].split(";", 1)[0]
+        argv = subprocess.run(["bash", "-c", f'printf "%s\\n" {inner}'],
+                              capture_output=True, text=True).stdout.splitlines()
+        self.assertEqual(argv[argv.index("--model") + 1], "odd model")
+        self.assertEqual(argv[argv.index("--type-model") + 1], "implementer=opus")
+
+    def _healthy_launcher(self):
+        self.run_bootstrap(env_extra={"AGENTMESH_MODEL_IMPLEMENTER": "opus"})
+        self.set_heartbeat_age(5)
+        (self.stub / "created.log").unlink()
+
+    def test_unchanged_configuration_leaves_a_healthy_launcher_alone(self):
+        self._healthy_launcher()
+        r = self.run_bootstrap(env_extra={"AGENTMESH_MODEL_IMPLEMENTER": "opus"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.killed(), [])
+        self.assertEqual(self.created(), [])
+
+    def test_changed_configuration_replaces_a_healthy_launcher(self):
+        self._healthy_launcher()
+        r = self.run_bootstrap(env_extra={"AGENTMESH_MODEL_IMPLEMENTER": "sonnet"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.killed(), ["orchestrator:launcher"])
+        self.assertEqual(self.created(), ["orchestrator:launcher"])
+        self.assertIn("implementer=sonnet", self.launcher_cmd())
+        self.assertIn("launcher-config-changed-restarting",
+                      (self.signals / "events.log").read_text())
+
+    def test_no_record_leaves_a_healthy_launcher_alone_and_records(self):
+        """A launcher from before launcher.cmd existed is not restarted blind."""
+        self.set_windows("orchestrator", ["watchdog", "folder-cleanup", "reaper", "launcher"])
+        self.set_heartbeat_age(5)
+        r = self.run_bootstrap("--model", "opus")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.created(), [])
+        self.assertIn("--model opus", (self.signals / "launcher.cmd").read_text())
 
 
 if __name__ == "__main__":

@@ -278,4 +278,47 @@ else:
     printf '%s' "$_NC_FALLBACK_PROFILE"
 }
 
+# launcher_model_args [<model>] — the launcher's model arguments, as one string
+# ready to paste into its command line (each value %q-quoted).
+#
+#   --model <id>                 from <model> (`agentmesh start --model`), else
+#                                $AGENTMESH_MODEL; omitted when neither is set
+#   --type-model <handle>=<id>   one per non-empty $AGENTMESH_MODEL_<TYPE>, the
+#                                handle lower-cased with `_` -> `-`, sorted
+#
+# The launcher reads no AGENTMESH_MODEL* variable itself: its tmux window
+# inherits the tmux *server's* environment, not the shell that ran
+# `agentmesh start`, so a variable set there would silently not arrive — and a
+# stale one from whenever the server started would. Turning the caller's env
+# into arguments here makes the command line the whole truth, which is also what
+# lets bootstrap.sh notice that it changed. Shared by bootstrap.sh and
+# `agentmesh switch`. No ${!var}: this file is also sourced from zsh.
+launcher_model_args() {
+    local model="${1:-${AGENTMESH_MODEL:-}}"
+    if [ -n "$model" ]; then
+        printf ' --model %q' "$model"
+    fi
+    env | LC_ALL=C sort | while IFS= read -r line; do
+        case "$line" in
+            AGENTMESH_MODEL_?*=?*) ;;
+            *) continue ;;
+        esac
+        name=${line%%=*}
+        handle=$(printf '%s' "${name#AGENTMESH_MODEL_}" | tr 'A-Z_' 'a-z-')
+        printf ' --type-model %q' "$handle=${line#*=}"
+    done
+}
+
+# launcher_command <agentmesh> <project> <profile> <max-workers> <poll-interval> [<model>]
+#
+# The launcher window's command: launcher.py inside its restart loop. One
+# builder for bootstrap.sh and `agentmesh switch`, because bootstrap compares it
+# with signals/launcher.cmd to decide whether a running launcher's configuration
+# changed — two hand-written copies would differ by a byte and restart it on
+# every start. \$(date) is escaped so it evaluates inside the loop.
+launcher_command() {
+    local am="$1" project="$2" profile="$3" max="$4" poll="$5" model="${6:-}"
+    printf '%s' "cd $am && while true; do python3 $am/scripts/launcher.py --project $project --profile $profile --max-workers $max --poll-interval $poll$(launcher_model_args "$model"); printf '%s\tlauncher     \tprocess-exited-restarting\t-\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> '$am/signals/events.log'; echo '[launcher] exited — restarting in 5s'; sleep 5; done"
+}
+
 fi  # _NOTECOVE_REF_SOURCED
