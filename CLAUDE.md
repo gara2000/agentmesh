@@ -295,6 +295,7 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 
 - **Baseline in `signals/<slug>.pr-seen-comments`**, shared by all the task's PRs (GitHub comment ids are global), with a `baseline <pulls-api-path>` line recording each PR's first listing — so a PR added later gets a first listing of its own. It survives a monitor restart so nothing is replayed. It does *not* survive adoption or crash cleanup, so a fresh monitor's first listing is not history: only comments already answered in-thread by a marked worker reply are baselined, and every other one is reported. Treating the whole first listing as history hid an unanswered bot comment from two restarted workers (WORK-2mb).
 - **The worker's replies are skipped by marker, not author.** It replies under the same GitHub account as the user, so its replies end with a hidden `<!-- agentmesh -->` and the monitor ignores any comment containing it. Without the marker every reply would wake the worker to reply to itself.
+- **Every worker reply says it is AI-generated.** Under the user's account a reviewer cannot otherwise tell the agent's replies from the user's. The worker replies only through `reply_pr_comment <pr-url> <thread-id> <text>` in `agent-notecove.sh`, which appends a visible `🤖 AI-generated response, posted by the AgentMesh <Role> agent` footer and then the marker — once, whatever the agent typed — so neither depends on the agent remembering. The PR Monitor's instructions name the helper rather than the raw `gh api` call.
 - **A failed `gh api` call or NoteCove post leaves the baseline untouched**, so the comments are retried next poll rather than lost.
 
 ### Watchdog
@@ -460,7 +461,7 @@ agentmesh/
 │   ├── notecove-ref.sh     # the one safe way to call the NoteCove CLI with a slug: stdin closed, short slug resolved to full
 │   ├── sidecar.sh          # per-worker NoteCove watcher; nudges its agent on comments/state changes
 │   ├── notify-worker.sh    # delivery: types a one-line nudge into a worker's Claude REPL; sourced by sidecar + pr-monitor
-│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox, ensure_task_folder, create_note
+│   ├── agent-notecove.sh   # sourced bash helper for agents: agent_init, resume_work, post_summary, request_attention, read_inbox, ensure_task_folder, create_note, reply_pr_comment
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state

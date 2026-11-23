@@ -541,5 +541,82 @@ class TestWatchPr(AgentHarness):
         self.assertEqual(self.spawns(), [])
 
 
+GH_REPLY_STUB = r"""#!/usr/bin/env bash
+# gh api <path> -f body=<body> --jq .html_url
+python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$STUB_DIR/gh.jsonl"
+echo "https://github.com/acme/widgets/pull/7#discussion_r99"
+"""
+
+
+class TestReplyPrComment(AgentHarness):
+    """Every GitHub reply says it is AI-generated, and ends with the marker."""
+
+    URL = "https://github.com/acme/widgets/pull/7"
+    MARKER = "<!-- agentmesh -->"
+    FOOTER = "🤖 _AI-generated response, posted by the AgentMesh Implementer agent._"
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(GH_REPLY_STUB)
+        (bin_dir / "gh").chmod(0o755)
+        self.path = f"{bin_dir}:{os.environ['PATH']}"
+
+    def reply(self, *args, shell="bash"):
+        quoted = " ".join("'" + a.replace("'", "'\\''") + "'" for a in args)
+        return self.run_snippet(f'export PATH="{self.path}"\nreply_pr_comment {quoted}',
+                                shell=shell)
+
+    def calls(self):
+        f = self.stub_dir / "gh.jsonl"
+        return [json.loads(l) for l in f.read_text().splitlines()] if f.exists() else []
+
+    def body(self):
+        args = self.calls()[-1]
+        return next(a[len("body="):] for a in args if a.startswith("body="))
+
+    def test_footer_then_marker_appended(self):
+        r = self.reply(self.URL, "41", "Renamed, thanks.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls()[0][:2],
+                         ["api", "repos/acme/widgets/pulls/7/comments/41/replies"])
+        self.assertEqual(self.body(),
+                         f"Renamed, thanks.\n\n---\n{self.FOOTER}\n\n{self.MARKER}")
+        self.assertIn("discussion_r99", r.stdout)
+
+    def test_existing_footer_and_marker_are_not_doubled(self):
+        self.reply(self.URL, "41", f"Done.\n\n---\n{self.FOOTER}\n\n{self.MARKER}\n")
+        self.assertEqual(self.body(), f"Done.\n\n---\n{self.FOOTER}\n\n{self.MARKER}")
+
+    def test_marker_alone_is_moved_after_the_footer(self):
+        self.reply(self.URL, "41", f"Done.\n\n{self.MARKER}")
+        body = self.body()
+        self.assertEqual(body.count(self.MARKER), 1)
+        self.assertTrue(body.endswith(f"{self.FOOTER}\n\n{self.MARKER}"))
+
+    def test_unparseable_url_posts_nothing(self):
+        r = self.reply("https://example.com/not-a-pr", "41", "x")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.calls(), [])
+
+    def test_non_numeric_thread_posts_nothing(self):
+        r = self.reply(self.URL, "<thread-id>", "x")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.calls(), [])
+
+    def test_works_sourced_from_zsh(self):
+        if not shutil.which("zsh"):
+            self.skipTest("zsh not installed")
+        r = self.reply(self.URL, "41", "Fixed.", shell="zsh")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.body(),
+                         f"Fixed.\n\n---\n{self.FOOTER}\n\n{self.MARKER}")
+
+    def test_marker_matches_pr_monitor(self):
+        text = (SCRIPTS / "pr-monitor.sh").read_text()
+        self.assertIn(f'REPLY_MARKER="{self.MARKER}"', text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -9,6 +9,7 @@
 #   post_summary "<brief summary of what just happened>"
 #   request_attention "<state>" # hand the task back to the user, then END YOUR TURN
 #   read_inbox                  # what the sidecar had to tell you
+#   reply_pr_comment <pr-url> <thread-id> "<text>"   # answer a PR review comment
 #
 # NoteCove is the only interaction surface between the agent and the user:
 #   - Comments carry the conversation, in both directions.
@@ -652,4 +653,49 @@ watch_pr() {
     fi
     tmux new-window -d -t 'orchestrator:' -n "$window" \
         "bash ~/agentmesh/scripts/pr-monitor.sh '$SLUG'" 2>/dev/null || true
+}
+
+# The hidden marker pr-monitor.sh uses to recognise the worker's own GitHub
+# replies; must equal REPLY_MARKER there.
+PR_REPLY_MARKER="<!-- agentmesh -->"
+
+# reply_pr_comment <pr-url> <thread-id> <body>
+#
+# Reply in the thread of an inline review comment. Always use this rather than a
+# raw `gh api …/replies`: the worker posts under the user's own GitHub account,
+# so without help a reader cannot tell its replies from the user's. Every reply
+# gets a visible footer saying it is AI-generated, then the hidden marker that
+# keeps pr-monitor from reporting the reply back to you. Both are added here
+# (once — a body already carrying either is not doubled), so neither depends on
+# the agent remembering it.
+#
+# <thread-id> is the thread's root comment id, as the PR Monitor comment names it.
+# An unparseable URL or a non-numeric id posts nothing and returns 1, rather than
+# replying somewhere else. Prints the new reply's URL.
+reply_pr_comment() {
+    local pr_url="${1:?reply_pr_comment: pr-url required}"
+    local thread="${2:?reply_pr_comment: thread-id required}"
+    local body="${3:?reply_pr_comment: body required}"
+    local api footer nl=$'\n'
+    api=$(printf '%s' "$pr_url" \
+        | sed -nE 's#^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*$#repos/\1/\2/pulls/\3#p')
+    case "$thread" in ''|*[!0-9]*) api="" ;; esac
+    if [ -z "$api" ]; then
+        echo "reply_pr_comment: not a GitHub PR URL and numeric thread id: $pr_url $thread" >&2
+        return 1
+    fi
+    footer="🤖 _AI-generated response, posted by the AgentMesh ${AGENT_HANDLE:-agent} agent._"
+    # Normalise: drop any footer/marker the agent added itself, then append both
+    # in a fixed order so the marker always ends the reply.
+    body="${body//"$PR_REPLY_MARKER"/}"
+    body="${body//"$footer"/}"
+    while :; do
+        case "$body" in
+            *"$nl"|*" ") body="${body%?}" ;;
+            *"${nl}---") body="${body%---}" ;;
+            *) break ;;
+        esac
+    done
+    body="${body}${nl}${nl}---${nl}${footer}${nl}${nl}${PR_REPLY_MARKER}"
+    gh api "${api}/comments/${thread}/replies" -f body="$body" --jq .html_url </dev/null
 }

@@ -123,6 +123,8 @@ watch_pr "$PR_URL"
 
 That adds the PR to your task's monitor (starting it if needed). It reports new review comments on any watched PR, and delivers a `pr-merged` message only once **all** of them are merged — so a user who merges on GitHub instead of commenting `approve` still gets a response, and the task is not closed while one PR is still open. A PR closed without merging drops out. Without the call, a merge is invisible to you and the task sits in `Attention` indefinitely.
 
+**Reply to GitHub review comments only with `reply_pr_comment "$PR_URL" <thread-id> "<text>"`**, never a raw `gh api …/replies`. You post under the user's own GitHub account, so the helper ends every reply with a visible footer saying it is an AI-generated response, followed by the hidden `<!-- agentmesh -->` marker that stops the PR monitor reporting your reply back to you.
+
 ### Writing the PR description
 
 A PR description is for a human reviewer skimming it, not a record of everything you know. It must fit on one screen — aim for **under ~1,500 characters**. Use exactly these sections, in this order, each heading led by its emoji:
