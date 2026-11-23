@@ -246,14 +246,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -286,8 +286,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -435,7 +435,7 @@ request_attention "Attention"
 **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
 After confirmed resume:
-1. Read latest task comments: `notecove task show <slug> --format markdown-with-comments`
+1. Read latest task comments: `notecove task show "$TASK_REF" --format markdown-with-comments`
 2. Re-read the QUESTIONS note for inline answers: `notecove note show <questions-note-id> --format markdown`
 3. Check for any `<slug>/ANSWER-<N>` note the user may have written separately.
 4. If more questions remain, create `QUESTIONS-<N+1>` and repeat.
@@ -679,9 +679,9 @@ notecove task change ${CHILD_SLUG} --state ${CHILD_STATE}
 
 Tasks start in `Triage` (Step A) so the launcher cannot pick them up before context and blocking relationships are fully in place. Only after Step E completes are tasks promoted to `Ready` (independent) or `Blocked` (dependent).
 
-After creating all tasks and links, add a summary comment:
+After creating all tasks and links, post the summary comment:
 ```bash
-notecove task comments add <slug> --user "Brainstormer" "Tasks created: <slug-1>, <slug-2>, ..."
+post_summary "Tasks created: <slug-1>, <slug-2>, ..."
 ```
 
 Then finish the parent task:

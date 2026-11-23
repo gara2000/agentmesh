@@ -246,14 +246,14 @@ TRIAGE_FOLDER=$(notecove folder list --json | python3 -c "import sys,json; folde
 The launcher spawned you but left the task in `Ready` — you claimed it by setting `Doing` in Step 1. Fetch the task:
 
 ```bash
-notecove task show <slug> --format json
+notecove task show "$TASK_REF" --format json
 ```
 
 Verify the state is `doing` (your own write from Step 1). If it is anything else, the user has moved the task — stop.
 
 Fetch full task content:
 ```bash
-notecove task show <slug> --format markdown-with-comments
+notecove task show "$TASK_REF" --format markdown-with-comments
 ```
 
 ### Find or create task folder
@@ -286,8 +286,8 @@ All notes go directly in the task folder.
 
 Study the task and all linked context.
 
-- Task tree: `notecove task tree <slug> --depth 3 --json`
-- Inbound links: `notecove task inbound-links <slug> --type all --json`
+- Task tree: `notecove task tree "$TASK_REF" --depth 3 --json`
+- Inbound links: `notecove task inbound-links "$TASK_REF" --type all --json`
 - Read linked tasks, notes, folders found in the description
 - Explore the codebase (Read, Glob, Grep)
 
@@ -449,37 +449,33 @@ EOF
 
 ## Phase 5: Signal Research Ready
 
-After all Context notes are written, add a summary comment and signal that research is ready for user review:
-
-```bash
-notecove task comments add <slug> --user "Investigator" "Research complete. Context notes written: <list of note titles>"
-```
+After all Context notes are written, post one summary comment — naming the notes — and signal that research is ready for user review:
 
 ```bash
 printf '%s\tinvestigator \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-post_summary "Research complete — <one line answer>; details in <slug>/CONTEXT notes"
+post_summary "Research complete — <one line answer>. Notes: <list of note titles>"
 request_attention "Attention"
 ```
 
 **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
 
-After unblocking, check which state was set:
-- **`done`** — user approved. Log `printf '%s\tinvestigator \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Investigator exits.
-- **`doing`** — feedback received. Log `printf '%s\tinvestigator \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. Read task comments for feedback:
+The reply arrives as a new turn: run `resume_work` then `read_inbox` (see *Resuming after a message*), and act on what the inbox says:
+- **`approve`** — the user accepted the research. Log `printf '%s\tinvestigator \tapproved\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`, post "Read as: approve → marking Done" with `post_summary`, then `finish_task "Done" "<project>"` and exit.
+- **`abort`** — `finish_task "Won't Do" "<project>"` and exit.
+- **A `state-change` you did not make, or `resume_work` returning 3** — the user closed the task themselves. Call `finish_cleanup "<project>"` and exit; do not overwrite their state.
+- **Anything else is feedback.** Log `printf '%s\tinvestigator \tfeedback-received\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"`. The inbox carries the comment; if you need the earlier conversation too:
   ```bash
-  notecove task show <slug> --format markdown-with-comments
+  notecove task show "$TASK_REF" --format markdown-with-comments
   ```
-  Conduct additional research as requested, write new or updated Context notes, then re-signal:
+  Conduct additional research as requested, write new or updated Context notes, then hand back again:
   ```bash
   printf '%s\tinvestigator \tawaiting-user\t<slug>\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-  post_summary "Research complete — <one line answer>; details in <slug>/CONTEXT notes"
+  post_summary "Research updated — <one line on what changed>. Notes: <list of note titles>"
   request_attention "Attention"
   ```
 
   **Then end your turn.** The sidecar delivers the user's reply into your REPL as a new turn — see *Resuming after a message* in the shared section above. Nothing you write after this point in the same turn will be reached by that reply.
-  Repeat until state is `done`.
-
-Investigator exits only after confirmed `done` state (user has approved the research).
+  Repeat until the user approves, aborts, or closes the task.
 
 ---
 

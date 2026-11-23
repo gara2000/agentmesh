@@ -58,7 +58,7 @@ Two defences, both in `notecove-ref.sh`:
 - **`nc_run` closes stdin** on every call. The same ambiguous call then returns `rc=1` and "Please use a more specific slug." immediately. This converts a silent permanent hang into a loud fast failure, and it holds even when resolution has nothing to work with.
 - **`nc_ref` resolves the short slug to the full one**, from `signals/<slug>.full-slug` (written by the launcher, which had the task JSON in hand anyway), or by listing tasks and caching the result. Two matches resolve to *nothing* rather than a guess — the distinguishing part was never recorded, and acting on the wrong task is worse than failing.
 
-Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` call. In Python, `launcher.py` passes `stdin=subprocess.DEVNULL` on every CLI invocation for the same reason.
+Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` call. The skill text itself is held to that by `test_skill_text.py`, which also forbids `notecove task comments add` — agents comment only through `post_summary`, so each hand-back is one comment. In Python, `launcher.py` passes `stdin=subprocess.DEVNULL` on every CLI invocation for the same reason.
 
 **The helpers must work when sourced from zsh**, because agents source `agent-notecove.sh` straight into the Claude Code Bash tool's shell, which is zsh on macOS. `NOTECOVE_BIN` is a two-word command line (`node …/cli.cjs`) expanded unquoted, and zsh does not word-split parameters, so every call there used to fail with `failed to run command 'node /Applications/…'` — `resume_work` silently never set `Doing`. `nc_run` now turns on `sh_word_split` for that call only, and the default signals dir falls back to `$0` where zsh leaves `BASH_SOURCE` empty. Both are covered by zsh tests in `test_slug_resolution.py` and `test_agent_notecove.py`.
 
@@ -481,7 +481,8 @@ agentmesh/
 │   ├── test_task_folder_link.py # unit tests for ensure_task_folder: never writing on a failed read, idempotence, verification
 │   ├── test_create_note.py     # unit tests for create_note: the title line, title verification, no stdin to the CLI
 │   ├── test_pr_monitor.py      # unit tests for pr-monitor.sh: review-comment baseline, marker filter, retry on failure, multi-PR merge path
-│   └── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
+│   ├── test_task_done.py       # unit tests for task-done.sh: dependent unblocking by full slug, cleanup
+│   └── test_skill_text.py      # guards on worker-skill text: no raw notecove call with <slug>, no `task comments add`
 └── signals/                # runtime directory, created on bootstrap
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
