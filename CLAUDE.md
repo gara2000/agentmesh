@@ -180,6 +180,7 @@ Responsibilities, in order, every `--poll-interval` seconds (default 30):
 - **Pick up `Ready` tasks**, up to `max-workers` in parallel, triaged by `typeIds` then `typeNames` against `TYPE_MAP`
 - Refuse tasks whose type does not resolve (see below)
 - Start each worker in the repository named by the task's `Repo:` line, if it has one (see below)
+- Start each worker on the model resolved from the task's `Model:` line, its agent type, or the global setting (see below)
 - Write `signals/launcher.heartbeat` **after each completed scan** for `agentmesh status`
 
 Adoption runs first: finishing work already in flight takes priority over starting more of it, and both draw from the same slot budget.
@@ -195,6 +196,18 @@ Adoption runs first: finishing work already in flight takes priority over starti
 - **Adoption honours it too**, so a respawned worker lands where its predecessor worked (`adoption-skipped-repo-missing` / `adoption-skipped-repo-unread` otherwise).
 - **The resolved path goes to `spawn-agent.sh` as its 6th argument** and into `signals/<slug>.repo`; `agent_init` exports it as `$TASK_REPO`. Phase 4a runs `git -C "$TASK_REPO"`, branches from the remote's default branch (`origin/HEAD`, else `origin/main`), and puts the worktree **beside** the repository as `<parent>/<repo-name>-<slug>` — agentmesh's own worktrees included. The agentmesh doc-sync step (4c) runs only when the repository is agentmesh.
 
+**Per-task model: `Model:` line, per-type env, or global.** Workers used to start with no `--model`, so every agent ran on Claude Code's default for the user. The launcher now resolves a model per spawn, first match wins — the same shape as profile resolution:
+
+1. **Task** — a `Model: <id-or-alias>` line in the description (`Model: opus`, `Model: claude-sonnet-5-5`). Read by the same description-line reader as `Repo:` (`parse_description_line`), from the same single `task show`.
+2. **Agent type** — `$AGENTMESH_MODEL_<TYPE>`, the agent handle upper-cased with `-` → `_` (`AGENTMESH_MODEL_IMPLEMENTER=opus`, `AGENTMESH_MODEL_SKILL_CREATOR=sonnet`).
+3. **Global** — `agentmesh start --model <id>`, else `$AGENTMESH_MODEL`.
+4. Otherwise no `--model` at all, as before.
+
+- **The launcher reads no `AGENTMESH_MODEL*` variable itself.** Its window inherits the tmux *server's* environment, not the shell that ran `agentmesh start`, so a variable set there would never arrive — and a stale one from whenever the server started would. `bootstrap.sh` turns the user's environment into launcher arguments (`--model <id>`, `--type-model <handle>=<id>`, via `launcher_model_args` in `notecove-ref.sh`), so the command line is the whole truth.
+- **Values are passed through unvalidated** — aliases and full ids both work and the list changes too often to pin. The model goes to `spawn-agent.sh` as its 7th argument (`claude … --model <id>`, `%q`-quoted), into the registry's 5th field, and into `events.log` as `model-resolved:<level>:<value>` (`model-resolved:default:-` when none).
+- **A rejected model does not stop Claude starting.** It prints a warning banner (which also shows for valid ids newer than the installed Claude Code, so it proves nothing) and draws its prompt; only the reply to the first message says *"There's an issue with the selected model"*, after which the REPL idles. Left alone, that live window would hide the task from pickup and adoption forever. So `spawn-agent.sh`, when given a model, watches the pane after submitting for up to 15s: the rejection text logs `spawn-model-rejected:<value>`, kills the window and exits **3**; any other first reply (`⏺`), or none, counts as accepted.
+- **Exit 3 refuses the task until the model changes.** The launcher records the value in `signals/<slug>.model-rejected`, comments once, and skips the task (`task-refused-model-rejected`) on every scan while it still resolves to that value — in pickup and adoption alike. Fixing the `Model:` line or the setting makes it eligible on the next scan; without this, every scan would start a Claude into the same error.
+
 **Adoption: recovering orphaned work.** A task in `Doing` or `Attention` means a worker was working on it. If its tmux window is gone, that worker died — on an `agentmesh stop`/`start`, a machine reboot, or because the watchdog reaped it while the task sat in `Attention`. Nothing else would ever look at that task again: the pickup scan only queries `Ready`, and `agentmesh stop --level 3` (or a start that finds no `workers` session) clears `signals/workers`, so after a restart the watchdog has no record of it either.
 
 Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker + sidecar for any whose window is missing. It skips:
@@ -204,6 +217,7 @@ Each scan, the launcher lists `Doing` and `Attention` tasks and spawns a worker 
 - tasks holding a `.backoff` sentinel — the watchdog is sleeping out a crash backoff and will re-queue the task itself; adopting here would have it tear down the worker we just made
 - tasks whose type no longer maps to an agent — there is no way to know which agent owned the work
 - tasks whose `Repo:` line names a missing directory, or whose description cannot be read this scan
+- tasks whose resolved model Claude has already rejected (`signals/<slug>.model-rejected`)
 
 If `tmux list-windows` cannot be queried at all, the whole pass is skipped rather than treating an empty result as "every worker is dead".
 
@@ -302,13 +316,16 @@ Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.i
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
-# format: <task-slug> <tmux-window-name> <agent-type> [<full-slug>]
-WORK-pm4 WORK-pm4 implementer WORK-pm4:fg9k2m4x76zz6de5hatbq
-WORK-xyz WORK-xyz investigator
+# format: <task-slug> <tmux-window-name> <agent-type> [<full-slug>] [<model>]
+WORK-pm4 WORK-pm4 implementer WORK-pm4:fg9k2m4x76zz6de5hatbq opus
+WORK-abc WORK-abc documenter WORK-abc:k2m4x76zz6de5hatbqfg9
+WORK-xyz WORK-xyz investigator - sonnet
 ```
 
-The 4th field is optional and the launcher omits it when the full slug is not
-known; every reader already tolerates the 3-field form.
+The 4th and 5th fields are optional; every reader already tolerates the
+3-field form. The 4th (full slug) is omitted when unknown — or written as `-`
+when a model follows, so the 5th stays positional. The 5th is the resolved
+model, omitted when the worker runs on Claude Code's default.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
@@ -382,6 +399,8 @@ Keeping `workers` exclusively Claude agents is deliberate: the watchdog's window
 **The same rule applies to the daemons.** `bootstrap.sh` and `agentmesh switch` pass each daemon's command to `tmux new-window` instead of `send-keys`-ing it into a shell, for exactly the reason above: the window must die with the process. Under the old `send-keys` form a crashed watchdog left a live `watchdog` window running zsh, so `agentmesh status` reported it healthy and no re-run of `bootstrap.sh` could ever notice it was gone.
 
 **A new directory's trust dialog is accepted.** The first Claude started in a directory — the first worker in any new `Repo:` — asks whether you trust the folder, with "No, exit" highlighted. Left alone, the Enter pressed after the prompt timeout would quit Claude and the launcher would retry that every scan. While waiting for the prompt `spawn-agent.sh` moves to "Yes, I trust this folder" and presses Enter only once the cursor is verified there, logged `spawn-trust-accepted`. Naming the repository in the task is the trust decision; the worker runs with `--dangerously-skip-permissions` either way.
+
+**A rejected `--model` is caught after the first reply**, not at startup — Claude starts normally on an unknown model and only errors on the first message. See *Per-task model* under the Launcher for the check and the `exit 3` refusal.
 
 **Typing the skill invocation is verified, not assumed.** After the prompt appears `spawn-agent.sh` waits briefly for startup rendering to settle, types the command with `send-keys -l`, and presses Enter as a *separate* send — the same split `notify-worker.sh` uses. One send carrying both is written to the pty as a single burst, which Claude Code can read as a paste: the Enter lands in the draft and the prompt sits there unsent, only some of the time. It then checks the pane: while the input line (`❯`+NBSP) still holds `--task <slug>` the command is a draft, so it presses Enter again, up to `SPAWN_SUBMIT_TRIES` (5). A draft that never clears logs `spawn-submit-unconfirmed`, **kills the window** and exits non-zero, so the launcher clears `.launching` and retries on its next scan — a live window holding an unsent prompt would otherwise hide the task from adoption indefinitely.
 
@@ -466,6 +485,7 @@ agentmesh/
     ├── workers             # worker registry; line per active worker: "<slug> <window-name> <agent-type>"
     ├── triage_folder       # Triage folder ID written by bootstrap.sh; read by agents
     ├── launcher.heartbeat  # UTC timestamp written by launcher.py after each completed scan; read by `agentmesh status`
+    ├── launcher.cmd        # the running launcher's command line; a start asking for a different one restarts it
     ├── events.log          # append-only TSV: timestamp, component, event_type, slug
     ├── <slug>.inbox            # line-delimited JSON; sidecar/pr-monitor write, agent reads and clears
     ├── <slug>.ready            # delivery gate; touched by the worker's agent_init once its skill is running
@@ -474,6 +494,7 @@ agentmesh/
     ├── <slug>.launching        # in-flight guard; written by launcher before spawn, cleared by the worker on claim
     ├── <slug>.untyped          # dedup flag so an untriageable task is commented on exactly once
     ├── <slug>.repo-missing     # dedup flag so a task whose Repo: line names no directory is commented on once
+    ├── <slug>.model-rejected   # the model Claude rejected for this task; refused until the resolved model differs
     ├── <slug>.repo             # the worker's repository (Repo: line resolved, else agentmesh); written at spawn, read by agent_init as TASK_REPO
     ├── <slug>.backoff          # sentinel while the watchdog sleeps out a crash backoff; adoption skips these
     ├── <slug>.sidecar-handle   # comment-author name the running sidecar filters on; checked before reusing it
@@ -510,6 +531,10 @@ timestamp       component       event_type                      slug
 2026-04-26T...  launcher        sidecar-spawned                 WORK-xyz
 2026-04-26T...  launcher        task-refused-untyped            WORK-abc
 2026-04-26T...  launcher        task-refused-repo-missing        WORK-abc
+2026-04-26T...  launcher        model-resolved:type:opus         WORK-xyz
+2026-04-26T...  launcher        model-rejected:bogus             WORK-abc
+2026-04-26T...  launcher        task-refused-model-rejected      WORK-abc
+2026-04-26T...  launcher        launcher-config-changed-restarting -
 2026-04-26T...  launcher        task-skipped-repo-unread         WORK-abc
 2026-04-26T...  launcher        adoption-skipped-repo-missing    WORK-abc
 2026-04-26T...  launcher        task-adopted:attention           WORK-xyz
@@ -536,6 +561,7 @@ timestamp       component       event_type                      slug
 2026-04-26T...  spawn-agent     spawn-submit-unconfirmed         WORK-xyz
 2026-04-26T...  spawn-agent     spawn-prompt-timeout             WORK-xyz
 2026-04-26T...  spawn-agent     spawn-trust-accepted             WORK-xyz
+2026-04-26T...  spawn-agent     spawn-model-rejected:bogus       WORK-abc
 2026-04-26T...  notify-worker   nudge-delivered                 WORK-xyz
 2026-04-26T...  notify-worker   delivery-deferred-not-ready      WORK-xyz
 2026-04-26T...  notify-worker   delivery-failed-send             WORK-xyz
@@ -626,7 +652,16 @@ agentmesh start --project <key>
                 [--profile <id>]           # else $AGENTMESH_PROFILE, else $AGENTMESH_PROFILE_NAME
                 [--max-workers <n>]        # default: 30
                 [--poll-interval <secs>]   # default: 30 — Ready-task scan interval
+                [--model <id>]             # else $AGENTMESH_MODEL; default: Claude Code's own
 ```
+
+**Model resolution** for each worker, first match wins: the task's `Model:` line; `$AGENTMESH_MODEL_<TYPE>` for its agent type (e.g. `AGENTMESH_MODEL_IMPLEMENTER=opus`, `AGENTMESH_MODEL_DOCUMENTER=sonnet`); `--model`, else `$AGENTMESH_MODEL`; otherwise no `--model` at all. Aliases (`opus`, `sonnet`, `haiku`) and full ids are both passed through. See *Per-task model* under the Launcher.
+
+```bash
+AGENTMESH_MODEL_IMPLEMENTER=opus agentmesh start --project WORK   # implementers on Opus, the rest on the default
+```
+
+**Changing the model on a running system is just another `start`.** `bootstrap.sh` records the launcher's command line in `signals/launcher.cmd`; a start asking for a different one — another `--model`, a changed `AGENTMESH_MODEL_*`, a different `--max-workers` — restarts the launcher (`launcher-config-changed-restarting`). Running workers are untouched and keep the model they were started on; the new setting applies to the next spawn. Because the start's environment is the configuration, re-running `start` from a shell *without* the variables reverts to the default.
 
 **Profile resolution** (`nc_resolve_profile` in `notecove-ref.sh`), first match wins: `--profile <id>`; `$AGENTMESH_PROFILE` (an id); `$AGENTMESH_PROFILE_NAME` (looked up via `notecove profiles`, case-insensitive, no default name — set but unmatched or ambiguous is an error, never a silent fall-through); finally the historical id. Put `export AGENTMESH_PROFILE_NAME=Work` in your shell profile instead of editing the scripts.
 
@@ -648,6 +683,7 @@ What "idempotent" means concretely:
 - **Only provably dead bookkeeping is cleared.** With no `workers` session (a reboot, a killed tmux server) no worker can be alive, so the registry entries and `.ready`/`.pending-delivery` gates are dropped (`stale-workers-cleared`) — left in place, the watchdog would read each entry as a crash, delete its inbox and re-queue it to `Ready` instead of letting adoption resume it. With no `watchdog` window `.backoff` is stale; with no `launcher` window `.launching` is. Inboxes, baselines and PR state always stay. If tmux cannot be queried, nothing is touched.
 - **Missing per-worker pieces are reported.** Each live worker without a sidecar, or with an open PR but no pr-monitor, is listed; the launcher spawns them on its first scan. `start` deliberately does not spawn them itself — it could race the launcher into a second sidecar for one worker.
 - **Daemons are spawned only if their window is absent**, and as the window's command — see the tmux Layout note above for why that makes the check trustworthy.
+- **The launcher is replaced when its configuration changed** — the command line recorded in `signals/launcher.cmd` differs from the one this start would run (see *Model resolution* above). With no record yet it is left alone and the record written.
 - **The launcher is the exception**, because its window can be up while it is wedged. Its heartbeat measures exactly that (it is stamped after each *completed scan*), so a launcher window with a heartbeat older than 90s is replaced; a healthy one is left strictly alone.
 - **The heartbeat is never pre-stamped**, not by `bootstrap.sh` and not by `switch`. Stamping on spawn makes a launcher that dies on startup — a bad `--project`, say — report healthy for a full minute.
 
@@ -698,6 +734,8 @@ watchdog               ✓ running
 folder-cleanup         ✓ running
 reaper                 ✓ running
 active workers         2  (WORK-abc,WORK-def)
+  WORK-abc             implementer · opus
+  WORK-def             documenter · default
 sidecars               2
 notecove events        ✓ available (push)
 ```
@@ -706,6 +744,7 @@ notecove events        ✓ available (push)
 
 - **`sidecars` must equal `active workers`.** A worker whose sidecar has died is deaf to the user — nothing will ever type the user's reply into its REPL, so it sits in `Attention` indefinitely. `status` warns explicitly when they diverge.
 - **`notecove events`** shows whether sidecars are waking on SSE push (sub-second) or on the 60-second safety-net poll. Both work; this tells you which.
+- **Each worker's line shows its agent type and model** — `default` when it runs without `--model`.
 - **`untyped tasks`** appears only when tasks have been refused for a missing or unmapped type.
 
 ---

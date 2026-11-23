@@ -36,6 +36,7 @@ TMUX_STUB = r"""#!/usr/bin/env bash
 #   enters-needed      — Enters it takes to submit (absent = never submits)
 #   no-prompt          — the REPL never draws its prompt
 #   die-on-enter       — the window vanishes on the first Enter
+#   reply              — text shown under the submitted command (Claude's reply)
 # Every send-keys is appended to sent.log as "<target>|<args>".
 set -uo pipefail
 S="$STUB_DIR"
@@ -85,7 +86,8 @@ case "$cmd" in
     enters=$(cat "$S/enters" 2>/dev/null || echo 0)
     needed=$(cat "$S/enters-needed" 2>/dev/null || echo 999)
     if [[ -n "$typed" && "$enters" -ge "$needed" ]]; then
-      printf '❯ %s\n\n❯%s\n' "$typed" "$NBSP"
+      reply=$(cat "$S/reply" 2>/dev/null || true)
+      printf '❯ %s\n%s\n❯%s\n' "$typed" "$reply" "$NBSP"
     else
       printf '❯%s%s\n' "$NBSP" "$typed"
     fi
@@ -151,16 +153,20 @@ class SpawnHarness(unittest.TestCase):
         else:
             f.write_text(str(n))
 
-    def run_spawn(self, workdir=None) -> subprocess.CompletedProcess:
+    def run_spawn(self, workdir=None, model=None) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PATH"] = f"{self.stub}{os.pathsep}{env.get('PATH', '')}"
         env["STUB_DIR"] = str(self.stub)
         env.update(SPAWN_SETTLE="0", SPAWN_SUBMIT_SETTLE="0",
-                   SPAWN_VERIFY_DELAY="0", SPAWN_SUBMIT_TRIES="5")
+                   SPAWN_VERIFY_DELAY="0", SPAWN_SUBMIT_TRIES="5",
+                   SPAWN_MODEL_TRIES="3", SPAWN_MODEL_POLL="0")
+        if model is not None and workdir is None:
+            workdir = Path(self._tmp.name)
         return subprocess.run(
             ["bash", str(self.scripts / "spawn-agent.sh"),
              "workers", self.SLUG, self.SKILL, self.SLUG, "WORK"]
-            + ([str(workdir)] if workdir is not None else []),
+            + ([str(workdir)] if workdir is not None else [])
+            + ([model] if model is not None else []),
             capture_output=True, text=True, env=env, timeout=90)
 
     def sent(self) -> list:
@@ -300,6 +306,57 @@ class TestTrustDialog(SpawnHarness):
         self.run_spawn()
         self.assertFalse(any(l.endswith("|Down") for l in self.sent()))
         self.assertNotIn("spawn-trust-accepted", self.events())
+
+
+class TestModel(SpawnHarness):
+    """The optional 7th argument: the resolved model (A1)."""
+
+    def window_command(self) -> str:
+        return (self.stub / "new-window.cmd").read_text()
+
+    def test_model_becomes_a_model_flag(self):
+        (self.stub / "reply").write_text("⏺ Starting on the task.")
+        r = self.run_spawn(model="sonnet")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.window_command().endswith(
+            "exec claude --dangerously-skip-permissions --model sonnet"))
+
+    def test_no_model_means_no_flag(self):
+        self.assertEqual(self.run_spawn().returncode, 0)
+        self.assertNotIn("--model", self.window_command())
+
+    def test_empty_model_means_no_flag(self):
+        self.assertEqual(self.run_spawn(model="").returncode, 0)
+        self.assertNotIn("--model", self.window_command())
+
+    def test_model_value_is_quoted(self):
+        (self.stub / "reply").write_text("⏺ ok")
+        self.run_spawn(model="odd model; rm -rf x")
+        cmd = self.window_command().split(" && ", 1)[1]
+        argv = subprocess.run(
+            ["bash", "-c", 'f() { printf "%s\\n" "$@"; }; ' + cmd.replace("exec claude", "f"),],
+            capture_output=True, text=True).stdout.splitlines()
+        self.assertEqual(argv[-2:], ["--model", "odd model; rm -rf x"])
+
+    def test_rejected_model_exits_3_logs_and_frees_the_window(self):
+        (self.stub / "reply").write_text(
+            "⏺ There's an issue with the selected model (bogus). It may not exist "
+            "or you may not have access to it. Run /model to pick a different model.")
+        r = self.run_spawn(model="bogus")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("spawn-model-rejected:bogus", self.events())
+        self.assertNotIn(self.SLUG, self.windows(),
+                         "an idle REPL on a bad model must not hold the task")
+
+    def test_no_reply_within_the_window_counts_as_accepted(self):
+        r = self.run_spawn(model="opus")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(self.SLUG, self.windows())
+        self.assertNotIn("spawn-model-rejected", self.events())
+
+    def test_rejection_text_is_not_checked_without_a_model(self):
+        (self.stub / "reply").write_text("⏺ There's an issue with the selected model (x).")
+        self.assertEqual(self.run_spawn().returncode, 0)
 
 
 if __name__ == "__main__":

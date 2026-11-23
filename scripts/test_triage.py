@@ -105,12 +105,15 @@ class TestPickUpReadyTasks(unittest.TestCase):
         self.addCleanup(self._signals_patch.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, tasks: list, live_windows=(), descriptions=None, show_fails=()):
+    def _run(self, tasks: list, live_windows=(), descriptions=None, show_fails=(),
+             model=None, type_models=None):
         """Returns (spawned, refused) where refused is the list of commented slugs."""
         spawned, refused = [], []
         self.repos = {}
+        self.models = {}
         l = lnch.Launcher(project="WORK", max_workers=5,
-                          profile="test-profile", poll_interval=30)
+                          profile="test-profile", poll_interval=30, model=model,
+                          type_models=type_models)
 
         with (
             patch.object(lnch, "run_bash") as mock_rb,
@@ -123,9 +126,11 @@ class TestPickUpReadyTasks(unittest.TestCase):
         ):
             mock_rb.side_effect = _fake_run_bash(tasks, descriptions, show_fails)
 
-            def fake_spawn(slug, agent_type, full_slug="", repo=None):
+            def fake_spawn(slug, agent_type, full_slug="", repo=None, model=None,
+                           model_level=""):
                 spawned.append((slug, agent_type))
                 self.repos[slug] = repo
+                self.models[slug] = (model_level, model)
             mock_sw.side_effect = fake_spawn
             mock_nc.side_effect = lambda args: refused.append(args) or ""
             l.pick_up_ready_tasks()
@@ -221,12 +226,15 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
         self.addCleanup(self._signals_patch.stop)
         self.addCleanup(self._tmp.cleanup)
 
-    def _run(self, by_state: dict, live_windows=(), descriptions=None):
+    def _run(self, by_state: dict, live_windows=(), descriptions=None, model=None,
+             type_models=None):
         """by_state maps state name -> task list. Returns slugs adopted."""
         adopted = []
         self.repos = {}
+        self.models = {}
         l = lnch.Launcher(project="WORK", max_workers=5,
-                          profile="test-profile", poll_interval=30)
+                          profile="test-profile", poll_interval=30, model=model,
+                          type_models=type_models)
 
         with (
             patch.object(lnch, "run_bash", side_effect=_fake_run_bash(descriptions=descriptions)),
@@ -237,9 +245,11 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             patch.object(lnch, "log"),
             patch.object(lnch, "_print"),
         ):
-            def fake_spawn(slug, agent_type, full_slug="", repo=None):
+            def fake_spawn(slug, agent_type, full_slug="", repo=None, model=None,
+                           model_level=""):
                 adopted.append((slug, agent_type))
                 self.repos[slug] = repo
+                self.models[slug] = (model_level, model)
             mock_sw.side_effect = fake_spawn
             l.adopt_orphaned_tasks()
 
@@ -299,7 +309,7 @@ class TestAdoptOrphanedTasks(unittest.TestCase):
             patch.object(lnch, "_print"),
         ):
             # Registering consumes the single slot, as the real _spawn_worker does.
-            def fake_spawn(slug, agent_type, full_slug="", repo=None):
+            def fake_spawn(slug, agent_type, full_slug="", repo=None, *_):
                 adopted.append(slug)
                 l._register_worker(slug, agent_type, full_slug)
             mock_sw.side_effect = fake_spawn
@@ -746,6 +756,210 @@ class TestAgentAuthorMap(unittest.TestCase):
         for agent in set(lnch.TYPE_MAP.values()):
             with self.subTest(agent=agent):
                 self.assertIn(agent, lnch.AGENT_AUTHOR)
+
+
+# ---------------------------------------------------------------------------
+# Per-task model (A1)
+# ---------------------------------------------------------------------------
+
+class TestResolveModel(unittest.TestCase):
+    """resolve_model: task line > type (--type-model) > global (--model) > none."""
+
+    TYPES = {"implementer": "opus"}
+
+    def test_task_line_beats_type_and_global(self):
+        self.assertEqual(
+            lnch.resolve_model("[[F:x|y]]\nModel: sonnet", "implementer", "haiku", self.TYPES),
+            ("task", "sonnet"))
+
+    def test_type_beats_global(self):
+        self.assertEqual(
+            lnch.resolve_model("no line here", "implementer", "haiku", self.TYPES),
+            ("type", "opus"))
+
+    def test_type_applies_only_to_its_type(self):
+        self.assertEqual(lnch.resolve_model("", "documenter", "haiku", self.TYPES),
+                         ("global", "haiku"))
+
+    def test_nothing_set_means_no_model(self):
+        self.assertEqual(lnch.resolve_model("Repo: ~/x", "implementer", None, {}),
+                         ("default", None))
+
+    def test_launcher_ignores_its_own_environment(self):
+        """The tmux server's env can be stale; bootstrap's arguments are the truth."""
+        with patch.dict(lnch.os.environ, {"AGENTMESH_MODEL": "haiku",
+                                          "AGENTMESH_MODEL_IMPLEMENTER": "opus"}):
+            self.assertEqual(lnch.resolve_model("", "implementer"), ("default", None))
+
+    def test_empty_values_are_ignored(self):
+        self.assertEqual(lnch.resolve_model("Model:   ", "implementer", " ", {"implementer": ""}),
+                         ("default", None))
+
+    def test_hyphenated_handle_maps_to_underscored_env(self):
+        self.assertEqual(lnch.model_env_var("skill-creator"), "AGENTMESH_MODEL_SKILL_CREATOR")
+        self.assertEqual(lnch.resolve_model("", "skill-creator", None, {"skill-creator": "opus"}),
+                         ("type", "opus"))
+
+    def test_type_model_arguments(self):
+        self.assertEqual(lnch.parse_type_models(["implementer=opus", "Skill-Creator=claude-x"]),
+                         {"implementer": "opus", "skill-creator": "claude-x"})
+        with self.assertRaises(ValueError):
+            lnch.parse_type_models(["implementer"])
+
+    def test_shares_the_repo_line_reader(self):
+        text = "**Kind:** x\nRepo: ~/app\nModel: opus\n"
+        self.assertEqual(lnch.parse_description_line(text, "Model"), "opus")
+        self.assertEqual(lnch.parse_description_line(text, "Repo"), lnch.parse_repo_line(text))
+
+    def test_value_is_passed_through_unvalidated(self):
+        self.assertEqual(lnch.resolve_model("Model: something-new-9", "implementer", None, {}),
+                         ("task", "something-new-9"))
+
+
+class TestModelPickup(unittest.TestCase):
+    """pick_up_ready_tasks / adopt_orphaned_tasks hand the resolved model on."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.signals = Path(self._tmp.name)
+        p = patch.object(lnch, "SIGNALS", self.signals)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _pickup(self, tasks, descriptions=None, model=None, type_models=None):
+        h = TestPickUpReadyTasks()
+        h._tmp = self._tmp
+        spawned, refused = h._run(tasks, descriptions=descriptions, model=model,
+                                  type_models=type_models)
+        return spawned, refused, h.models
+
+    def test_task_line_reaches_the_spawn(self):
+        _, _, models = self._pickup([_make_task(["bug"], [])], {"WORK-abc": "Model: sonnet"},
+                                    model="haiku", type_models={"implementer": "opus"})
+        self.assertEqual(models["WORK-abc"], ("task", "sonnet"))
+
+    def test_type_model_applies_to_implementers_only(self):
+        tasks = [_make_task(["bug"], [], "WORK-a"), _make_task(["documentation"], [], "WORK-b")]
+        spawned, _, models = self._pickup(tasks, type_models={"implementer": "opus"})
+        self.assertEqual(len(spawned), 2)
+        self.assertEqual(models["WORK-a"], ("type", "opus"))
+        self.assertEqual(models["WORK-b"], ("default", None))
+
+    def test_global_flag_is_the_fallback(self):
+        _, _, models = self._pickup([_make_task(["bug"], [])], model="haiku")
+        self.assertEqual(models["WORK-abc"], ("global", "haiku"))
+
+    def test_no_setting_spawns_without_a_model(self):
+        _, _, models = self._pickup([_make_task(["bug"], [])])
+        self.assertEqual(models["WORK-abc"], ("default", None))
+
+    def test_adoption_resolves_the_model_too(self):
+        h = TestAdoptOrphanedTasks()
+        h._tmp = self._tmp
+        h._run({"Attention": [_make_task(["bug"], [])]},
+               descriptions={"WORK-abc": "Model: opus"})
+        self.assertEqual(h.models["WORK-abc"], ("task", "opus"))
+
+    def test_resolution_is_logged_per_spawn(self):
+        logged = []
+        h = TestPickUpReadyTasks()
+        h._tmp = self._tmp
+        with patch.object(lnch, "log", side_effect=lambda c, e, s="-": logged.append((e, s))):
+            # _run patches log itself; patch _print-free path by calling directly.
+            l = lnch.Launcher(project="WORK", max_workers=5, profile="p", poll_interval=30)
+            with (
+                patch.object(lnch, "run_bash",
+                             side_effect=_fake_run_bash([_make_task(["bug"], [])],
+                                                        {"WORK-abc": "Model: sonnet"})),
+                patch.object(l, "_spawn_worker"),
+                patch.object(l, "_live_worker_windows", return_value=set()),
+                patch.object(lnch, "_print"),
+            ):
+                l.pick_up_ready_tasks()
+        self.assertIn(("model-resolved:task:sonnet", "WORK-abc"), logged)
+
+
+class TestModelSpawnAndRegistry(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.signals = Path(self._tmp.name)
+        p = patch.object(lnch, "SIGNALS", self.signals)
+        p.start()
+        self.addCleanup(p.stop)
+        self.l = lnch.Launcher(project="WORK", max_workers=5, profile="p", poll_interval=30)
+
+    def _spawn(self, model, rc=0, full_slug="WORK-abc:longid"):
+        comments = []
+        with (
+            patch.object(lnch.subprocess, "run",
+                         return_value=MagicMock(returncode=rc, stderr="")) as mock_run,
+            patch.object(self.l, "_spawn_sidecar"),
+            patch.object(lnch, "notecove", side_effect=lambda a: comments.append(a) or ""),
+            patch.object(lnch, "log"), patch.object(lnch, "_print"),
+        ):
+            self.l._spawn_worker("WORK-abc", "implementer", full_slug, None, model, "task")
+        return mock_run.call_args[0][0], comments
+
+    def registry(self):
+        p = self.signals / "workers"
+        return p.read_text().strip().splitlines() if p.exists() else []
+
+    def test_model_is_the_seventh_argument(self):
+        argv, _ = self._spawn("sonnet")
+        self.assertEqual(argv[-2:], [str(lnch.AGENTMESH.resolve()), "sonnet"])
+
+    def test_no_model_no_seventh_argument(self):
+        argv, _ = self._spawn(None)
+        self.assertEqual(argv[-1], str(lnch.AGENTMESH.resolve()))
+
+    def test_registry_records_the_model_as_fifth_field(self):
+        self._spawn("opus")
+        self.assertEqual(self.registry(), ["WORK-abc WORK-abc implementer WORK-abc:longid opus"])
+
+    def test_registry_keeps_the_model_positional_without_a_full_slug(self):
+        self._spawn("opus", full_slug="")
+        self.assertEqual(self.registry(), ["WORK-abc WORK-abc implementer - opus"])
+
+    def test_registry_without_model_is_unchanged(self):
+        self._spawn(None)
+        self.assertEqual(self.registry(), ["WORK-abc WORK-abc implementer WORK-abc:longid"])
+
+    def test_rejected_model_is_recorded_commented_and_not_registered(self):
+        _, comments = self._spawn("bogus", rc=3)
+        self.assertEqual(self.registry(), [])
+        self.assertFalse((self.signals / "WORK-abc.launching").exists())
+        self.assertEqual((self.signals / "WORK-abc.model-rejected").read_text().strip(), "bogus")
+        self.assertEqual(len(comments), 1)
+        self.assertIn("bogus", comments[0])
+        self.assertNotIn("--state", comments[0])
+
+    def test_rejected_model_refuses_pickup_until_it_changes(self):
+        (self.signals / "WORK-abc.model-rejected").write_text("bogus\n")
+        h = TestPickUpReadyTasks()
+        h._tmp = self._tmp
+        spawned, refused = h._run([_make_task(["bug"], [])], descriptions={"WORK-abc": "Model: bogus"})
+        self.assertEqual((spawned, refused), ([], []), "same value: no spawn, no new comment")
+        spawned, _ = h._run([_make_task(["bug"], [])], descriptions={"WORK-abc": "Model: sonnet"})
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+        self.assertFalse((self.signals / "WORK-abc.model-rejected").exists())
+
+    def test_removing_the_model_clears_the_rejection(self):
+        (self.signals / "WORK-abc.model-rejected").write_text("bogus\n")
+        h = TestPickUpReadyTasks()
+        h._tmp = self._tmp
+        spawned, _ = h._run([_make_task(["bug"], [])], descriptions={"WORK-abc": "no line"})
+        self.assertEqual(spawned, [("WORK-abc", "implementer")])
+
+    def test_rejected_model_blocks_adoption_too(self):
+        (self.signals / "WORK-abc.model-rejected").write_text("bogus\n")
+        h = TestAdoptOrphanedTasks()
+        h._tmp = self._tmp
+        adopted = h._run({"Doing": [_make_task(["bug"], [])]},
+                         descriptions={"WORK-abc": "Model: bogus"})
+        self.assertEqual(adopted, [])
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ _heartbeat_age() {
 
 cmd_start() {
   local PROJECT="" PROFILE=""
-  local MAX_WORKERS="30" POLL_INTERVAL="30"
+  local MAX_WORKERS="30" POLL_INTERVAL="30" MODEL=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,6 +57,7 @@ cmd_start() {
       --profile)       PROFILE="$2";       shift 2 ;;
       --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
       --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+      --model)         MODEL="$2";         shift 2 ;;
       --clean)
         # start only ever adds what is missing. Wiping is its own, explicit,
         # confirmed command, so a routine start can never lose a pending reply.
@@ -87,7 +88,8 @@ cmd_start() {
     --project "$PROJECT" \
     ${PROFILE:+--profile "$PROFILE"} \
     --max-workers "$MAX_WORKERS" \
-    --poll-interval "$POLL_INTERVAL"
+    --poll-interval "$POLL_INTERVAL" \
+    ${MODEL:+--model "$MODEL"}
 
   echo ""
   echo "agentmesh started. Project: ${PROJECT}."
@@ -310,6 +312,12 @@ cmd_status() {
   else
     printf "%-22s %s\n" "active workers" "$workers"
   fi
+  # One line per worker: agent type and model. The model is the registry's
+  # optional 5th field; absent means claude was started without --model.
+  if [ "$workers" -gt 0 ] 2>/dev/null; then
+    awk '!/^#/ && NF { printf "  %-20s %s · %s\n", $1, ($3 != "" ? $3 : "?"), (NF >= 5 ? $5 : "default") }' \
+      "$SIGNALS/workers" 2>/dev/null || true
+  fi
 
   # sidecars — one per live worker; a worker without one is deaf to the user
   local sidecars
@@ -433,7 +441,7 @@ cmd_task() {
 
 cmd_switch() {
   local PROJECT="" PROFILE=""
-  local MAX_WORKERS="30" POLL_INTERVAL="30"
+  local MAX_WORKERS="30" POLL_INTERVAL="30" MODEL=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -441,6 +449,7 @@ cmd_switch() {
       --profile)       PROFILE="$2";       shift 2 ;;
       --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
       --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+      --model)         MODEL="$2";         shift 2 ;;
       *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
   done
@@ -489,8 +498,12 @@ print(match)")
   #    As the window's command, not send-keys'd into a shell: the window must die
   #    with the restart loop, or a crashed launcher leaves a window that both
   #    `agentmesh status` and bootstrap's ensure pass read as healthy.
-  tmux new-window -d -t "orchestrator:" -n launcher \
-    "cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; printf '%s\tlauncher     \tprocess-exited-restarting\t-\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> '$SIGNALS/events.log'; echo '[launcher] exited — restarting in 5s'; sleep 5; done"
+  #    Built by the same helper as bootstrap's and recorded the same way, so the
+  #    next `agentmesh start` with the same settings leaves it alone.
+  local LAUNCHER_CMD
+  LAUNCHER_CMD=$(launcher_command "$AGENTMESH" "$PROJECT" "$PROFILE" "$MAX_WORKERS" "$POLL_INTERVAL" "$MODEL")
+  tmux new-window -d -t "orchestrator:" -n launcher "$LAUNCHER_CMD"
+  printf '%s\n' "$LAUNCHER_CMD" > "$SIGNALS/launcher.cmd"
   echo "  ✓ launcher started (project: $PROJECT)"
 
   # 6. Any daemon that died while the system was up comes back here too — switch

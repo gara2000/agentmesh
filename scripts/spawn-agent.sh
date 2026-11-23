@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # spawn-agent.sh — launch a Claude agent in a new tmux window
-# Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir>]
+# Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir> [<model>]]
 #   <workdir> — the worker's working directory: the task's `Repo:` line, resolved
 #               by the launcher. Defaults to the agentmesh repo.
+#   <model>   — passed to claude as --model, unvalidated; empty or absent means
+#               no --model at all (Claude Code's own default).
+#
+# Exit codes: 0 running, 1 failed to start, 3 Claude rejected <model>.
 set -euo pipefail
 
-if [[ $# -lt 5 || $# -gt 6 ]]; then
-  echo "Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir>]" >&2
+if [[ $# -lt 5 || $# -gt 7 ]]; then
+  echo "Usage: spawn-agent.sh <session> <window-name> <skill> <task-slug> <project> [<workdir> [<model>]]" >&2
   exit 1
 fi
 
@@ -18,6 +22,7 @@ PROJECT=$5
 
 AGENTMESH=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKDIR="${6:-$AGENTMESH}"
+MODEL="${7:-}"
 
 # Checked before any window exists: a `cd` that fails inside the window kills it
 # straight away, which would surface only as "died before the REPL appeared".
@@ -52,15 +57,25 @@ rm -f "$AGENTMESH/signals/${SLUG}.ready"
 # list, avoiding index collisions when several windows are created at once.
 # %q, not hand-written single quotes: the directory comes from a task
 # description and may hold spaces or quotes of its own.
+CLAUDE_CMD="exec claude --dangerously-skip-permissions"
+if [[ -n "$MODEL" ]]; then
+  # %q for the same reason as the directory: the value is unvalidated and may
+  # come straight from a task description.
+  CLAUDE_CMD="$CLAUDE_CMD --model $(printf '%q' "$MODEL")"
+fi
 tmux new-window -t "${SESSION}:" -n "$WINDOW" \
-  "cd $(printf '%q' "$WORKDIR") && exec claude --dangerously-skip-permissions"
+  "cd $(printf '%q' "$WORKDIR") && $CLAUDE_CMD"
 
 # Pacing knobs, overridable so tests need not wait them out.
 #   SPAWN_SETTLE         — pause after the prompt first appears, before typing
 #   SPAWN_SUBMIT_SETTLE  — pause between typing the command and pressing Enter
 #   SPAWN_VERIFY_DELAY   — pause after Enter before checking it took
 #   SPAWN_SUBMIT_TRIES   — Enter presses allowed before giving up
+#   SPAWN_MODEL_TRIES    — pane checks for a model rejection after submitting
+#   SPAWN_MODEL_POLL     — pause between those checks (30 × 0.5s = 15s)
 : "${SPAWN_SETTLE:=1}"
+: "${SPAWN_MODEL_TRIES:=30}"
+: "${SPAWN_MODEL_POLL:=0.5}"
 : "${SPAWN_SUBMIT_SETTLE:=0.3}"
 : "${SPAWN_VERIFY_DELAY:=0.5}"
 : "${SPAWN_SUBMIT_TRIES:=5}"
@@ -161,6 +176,37 @@ draft_pending() {
     | grep -F "$PROMPT" | grep -qF -- "--task $SLUG"
 }
 
+# model_check — only when a model was passed. Claude does NOT refuse an unknown
+# model at startup: it prints a warning banner (which also appears for valid ids
+# newer than this Claude Code, so it proves nothing) and draws its prompt as
+# usual. The rejection only comes as the reply to the first message — the skill
+# command just submitted — after which the REPL idles at its prompt. Left alone
+# that window would hide the task from pickup and adoption forever, so watch for
+# the first reply: the rejection text means exit 3; any other reply, or none
+# within the window, counts as accepted. Never kill on absence of evidence.
+MODEL_REJECTED_TEXT="issue with the selected model"
+model_check() {
+  [[ -n "$MODEL" ]] || return 0
+  local i=0 pane
+  while [ $i -lt "$SPAWN_MODEL_TRIES" ]; do
+    if ! window_alive; then
+      echo "spawn-agent.sh: window '$SESSION:$WINDOW' died after the skill command was sent" >&2
+      exit 1
+    fi
+    pane=$(tmux capture-pane -t "$SESSION:$WINDOW" -p 2>/dev/null || true)
+    if printf '%s' "$pane" | grep -qF "$MODEL_REJECTED_TEXT"; then
+      return 1
+    fi
+    # ⏺ marks Claude's first reply (or tool call): it answered on this model.
+    if printf '%s' "$pane" | grep -qF '⏺'; then
+      return 0
+    fi
+    sleep "$SPAWN_MODEL_POLL"
+    i=$((i + 1))
+  done
+  return 0
+}
+
 # Press Enter, then confirm it took. Nothing used to check, so a swallowed Enter
 # left the task in Ready behind a .launching flag for its full 5-minute expiry —
 # and since the window was alive, adoption would never have repaired it anyway.
@@ -176,6 +222,13 @@ while [ $_tries -lt "$SPAWN_SUBMIT_TRIES" ]; do
   if ! draft_pending; then
     [ $_tries -gt 1 ] && _log "spawn-submit-retried:$_tries"
     _log "spawn-submitted"
+    if ! model_check; then
+      # The value goes into a tab-separated log field: no tabs or newlines.
+      _log "spawn-model-rejected:$(printf '%s' "$MODEL" | tr -d '\t\n')"
+      tmux kill-window -t "$SESSION:$WINDOW" 2>/dev/null || true
+      echo "spawn-agent.sh: Claude rejected model '$MODEL'" >&2
+      exit 3
+    fi
     exit 0
   fi
 done

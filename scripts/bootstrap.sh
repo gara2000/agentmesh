@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # bootstrap.sh — initialize the AgentMesh runtime: notecove init, signals dir, daemons
 # Usage: bootstrap.sh --project <PROJECT> [--profile <profile-id>]   # else $AGENTMESH_PROFILE / $AGENTMESH_PROFILE_NAME [--max-workers <n>]
-#                     [--poll-interval <seconds>]
+#                     [--poll-interval <seconds>] [--model <id>]   # else $AGENTMESH_MODEL
+#
+# Per-agent-type models come from $AGENTMESH_MODEL_<TYPE> (e.g.
+# AGENTMESH_MODEL_IMPLEMENTER=opus) and are passed to the launcher as arguments;
+# see launcher_model_args in notecove-ref.sh.
 #
 # This is idempotent, additive and never destructive. Running it against a live
 # system brings up whatever daemon is missing and touches nothing else: no worker
@@ -31,6 +35,7 @@ PROJECT=""
 PROFILE=""
 MAX_WORKERS="30"
 POLL_INTERVAL="30"
+MODEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --profile)       PROFILE="$2";       shift 2 ;;
     --max-workers)   MAX_WORKERS="$2";   shift 2 ;;
     --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+    --model)         MODEL="$2";         shift 2 ;;
     --clean)
       echo "Error: start never cleans. Run 'agentmesh clean' first, then start." >&2
       exit 1 ;;
@@ -186,29 +192,52 @@ ensure_daemon reaper         "bash $SCRIPTS/reaper.sh"
 #     — it is stamped after each completed scan — so a window with a stale
 #     heartbeat is replaced rather than left.
 #
-#     A healthy launcher is otherwise left alone, even if its code on disk has
-#     changed. To pick up new daemon code without a full reset, kill the window
-#     and re-run this; it will come back on the new code.
+#     It is also replaced when its configuration changed: the command line it
+#     was started with is recorded in signals/launcher.cmd, and a start asking
+#     for a different one (another --model, $AGENTMESH_MODEL_<TYPE>,
+#     --max-workers, …) restarts it. Otherwise `AGENTMESH_MODEL_IMPLEMENTER=opus
+#     agentmesh start` against a running system would silently do nothing.
+#     Restarting the launcher touches no worker. With no record (a launcher from
+#     before this existed) it is left alone and the record is written.
+#
+#     A healthy, unchanged launcher is otherwise left alone, even if its code on
+#     disk has changed. To pick up new daemon code without a full reset, kill
+#     the window and re-run this; it will come back on the new code.
 # ---------------------------------------------------------------------------
-LAUNCHER_CMD="cd $AGENTMESH && while true; do python3 $SCRIPTS/launcher.py --project $PROJECT --profile $PROFILE --max-workers $MAX_WORKERS --poll-interval $POLL_INTERVAL; printf '%s\tlauncher     \tprocess-exited-restarting\t-\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> '$LOG'; echo '[launcher] exited — restarting in 5s'; sleep 5; done"
+LAUNCHER_CMD=$(launcher_command "$AGENTMESH" "$PROJECT" "$PROFILE" "$MAX_WORKERS" "$POLL_INTERVAL" "$MODEL")
+
+LAUNCHER_CMD_FILE="$SIGNALS/launcher.cmd"
+
+start_launcher() {
+  tmux new-window -d -t 'orchestrator:' -n launcher "$LAUNCHER_CMD"
+  printf '%s\n' "$LAUNCHER_CMD" > "$LAUNCHER_CMD_FILE"
+  log_event "daemon-started:launcher"
+}
+
+restart_launcher() {
+  # Loop: tmux kill-window removes only the first name match.
+  while _window_exists launcher; do
+    tmux kill-window -t orchestrator:launcher 2>/dev/null || break
+  done
+  start_launcher
+}
 
 if _window_exists launcher; then
   _age=$(_heartbeat_age)
-  if [[ "$_age" -lt 90 ]]; then
-    echo "[bootstrap] launcher already running (heartbeat: ${_age}s ago)"
-  else
+  if [[ "$_age" -ge 90 ]]; then
     echo "[bootstrap] launcher window present but heartbeat is ${_age}s old — restarting it"
     log_event "launcher-wedged-restarting"
-    # Loop: tmux kill-window removes only the first name match.
-    while _window_exists launcher; do
-      tmux kill-window -t orchestrator:launcher 2>/dev/null || break
-    done
-    tmux new-window -d -t 'orchestrator:' -n launcher "$LAUNCHER_CMD"
-    log_event "daemon-started:launcher"
+    restart_launcher
+  elif [[ -f "$LAUNCHER_CMD_FILE" && "$(cat "$LAUNCHER_CMD_FILE")" != "$LAUNCHER_CMD" ]]; then
+    echo "[bootstrap] launcher configuration changed — restarting it (workers are untouched)"
+    log_event "launcher-config-changed-restarting"
+    restart_launcher
+  else
+    echo "[bootstrap] launcher already running (heartbeat: ${_age}s ago)"
+    [[ -f "$LAUNCHER_CMD_FILE" ]] || printf '%s\n' "$LAUNCHER_CMD" > "$LAUNCHER_CMD_FILE"
   fi
 else
-  tmux new-window -d -t 'orchestrator:' -n launcher "$LAUNCHER_CMD"
-  log_event "daemon-started:launcher"
+  start_launcher
   echo "[bootstrap] launcher started"
 fi
 

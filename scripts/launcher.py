@@ -11,7 +11,8 @@ directly between that agent and the user through NoteCove comments, with the
 agent's sidecar waking it when the user replies.
 
 Usage: python3 launcher.py --project <key> [--max-workers <n>] [--profile <id>]
-                           [--poll-interval <seconds>]
+                           [--poll-interval <seconds>] [--model <id>]
+                           [--type-model <handle>=<id> ...]
 """
 import argparse
 import json
@@ -76,7 +77,13 @@ UNTYPED_COMMENT = (
 # as before.
 # ---------------------------------------------------------------------------
 
-REPO_LINE = re.compile(r"^[ \t]*Repo:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+# The one description-line reader. `Repo:` and `Model:` both go through it, and
+# so should any future `<Key>:` line — a second parser would drift from this one.
+def _description_line_re(key: str) -> "re.Pattern[str]":
+    return re.compile(rf"^[ \t]*{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+
+
+REPO_LINE = _description_line_re("Repo")
 
 REPO_MISSING_COMMENT = (
     "Cannot pick up this task: its `Repo:` line resolves to `{path}`, which is "
@@ -85,10 +92,15 @@ REPO_MISSING_COMMENT = (
 )
 
 
+def parse_description_line(text: str, key: str) -> str | None:
+    """The raw value of the first `<key>:` line in text, or None."""
+    m = _description_line_re(key).search(text or "")
+    return m.group(1) if m else None
+
+
 def parse_repo_line(text: str) -> str | None:
     """The raw value of the first `Repo:` line in text, or None."""
-    m = REPO_LINE.search(text or "")
-    return m.group(1) if m else None
+    return parse_description_line(text, "Repo")
 
 
 def resolve_repo(raw: str) -> Path:
@@ -101,6 +113,92 @@ def resolve_repo(raw: str) -> Path:
     if not p.is_absolute():
         p = Path.home() / p
     return p.resolve()
+
+
+def repo_from_description(text: str) -> tuple[str, Path]:
+    """Where a task's worker should start, read from its description text.
+
+    Returns (status, path):
+      ("default", AGENTMESH)  — no `Repo:` line
+      ("ok", <dir>)           — the line, resolved, names a directory
+      ("missing", <path>)     — the line resolves to no directory
+    """
+    raw = parse_repo_line(text)
+    if raw is None:
+        return "default", AGENTMESH.resolve()
+    path = resolve_repo(raw)
+    if not path.is_dir():
+        return "missing", path
+    return "ok", path
+
+
+# ---------------------------------------------------------------------------
+# Per-task model.
+#
+# Resolved per spawn, first match wins — the same shape as nc_resolve_profile:
+#   task    a `Model: <id-or-alias>` line in the description
+#   type    --type-model <handle>=<id>  (from $AGENTMESH_MODEL_<HANDLE>)
+#   global  --model                     (from `agentmesh start --model` / $AGENTMESH_MODEL)
+#   default nothing: claude runs without --model, on Claude Code's own default
+#
+# The launcher reads no AGENTMESH_MODEL* variable itself. Its window inherits
+# the tmux *server's* environment — not the shell that ran `agentmesh start` —
+# which can hold values from whenever the server was started. bootstrap.sh reads
+# the user's environment and turns it into these arguments, so the command line
+# is the whole truth and bootstrap can tell when it has changed.
+#
+# The value is passed through unvalidated: aliases and full ids are both
+# accepted by Claude Code and the list changes too often to pin here. A model
+# Claude rejects does NOT stop it starting — the first reply is an error and the
+# REPL idles — so spawn-agent.sh watches for that reply and exits 3, and the
+# task is refused while it still resolves to the rejected value.
+# ---------------------------------------------------------------------------
+
+MODEL_REJECTED_COMMENT = (
+    "Cannot start a worker for this task: Claude rejected the model `{model}` "
+    "(resolved from {source}). Fix the `Model:` line or the agentmesh model "
+    "setting and it will be picked up on the next scan."
+)
+
+MODEL_SOURCE = {
+    "task": "the task's `Model:` line",
+    "type": "${env}",
+    "global": "`agentmesh start --model` / $AGENTMESH_MODEL",
+}
+
+
+def model_env_var(agent_type: str) -> str:
+    """The per-type environment variable for an agent handle."""
+    return "AGENTMESH_MODEL_" + agent_type.upper().replace("-", "_")
+
+
+def resolve_model(text: str | None, agent_type: str, global_model: str | None = None,
+                  type_models: dict | None = None) -> tuple[str, str | None]:
+    """(level, model) for a task about to be spawned; ("default", None) if none.
+
+    `type_models` maps agent handle -> model (the --type-model arguments).
+    """
+    value = (parse_description_line(text or "", "Model") or "").strip()
+    if value:
+        return "task", value
+    value = ((type_models or {}).get(agent_type) or "").strip()
+    if value:
+        return "type", value
+    value = (global_model or "").strip()
+    if value:
+        return "global", value
+    return "default", None
+
+
+def parse_type_models(pairs: list[str]) -> dict[str, str]:
+    """`--type-model handle=model` arguments -> {handle: model}; last one wins."""
+    out: dict[str, str] = {}
+    for pair in pairs or []:
+        handle, sep, model = pair.partition("=")
+        if not sep or not handle.strip():
+            raise ValueError(f"--type-model expects <handle>=<model>, got {pair!r}")
+        out[handle.strip().lower()] = model.strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +270,13 @@ def _print(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 class Launcher:
-    def __init__(self, project: str, max_workers: int, profile: str, poll_interval: int) -> None:
+    def __init__(self, project: str, max_workers: int, profile: str, poll_interval: int,
+                 model: str | None = None, type_models: dict | None = None) -> None:
         self.project = project
+        # Global model (--model) and per-agent-type models (--type-model); see
+        # resolve_model. Neither is validated.
+        self.model = model or None
+        self.type_models = dict(type_models or {})
         self.max_workers = max_workers
         self.profile = profile
         self.poll_interval = poll_interval
@@ -253,7 +356,8 @@ class Launcher:
     # -----------------------------------------------------------------------
 
     def _spawn_worker(self, slug: str, agent_type: str, full_slug: str = "",
-                      repo: Path | None = None) -> None:
+                      repo: Path | None = None, model: str | None = None,
+                      model_level: str = "") -> None:
         """Launch the worker agent and its sidecar, and register the worker.
 
         `full_slug` is cached to signals/<slug>.full-slug before anything is
@@ -267,16 +371,29 @@ class Launcher:
         resolved), defaulting to AGENTMESH. It is recorded in signals/<slug>.repo
         so the agent's worktree step branches from the same repository however
         far it has cd'd away from it — agent_init exports it as TASK_REPO.
+
+        `model` (from resolve_model) becomes spawn-agent.sh's 7th argument and
+        the registry's 5th field; None means no --model at all. Exit 3 from
+        spawn-agent.sh means Claude rejected it: the value is recorded so the
+        task is not respawned into the same error every scan.
         """
         repo = Path(repo) if repo else AGENTMESH.resolve()
         self._write_full_slug(slug, full_slug)
         self._write_repo(slug, repo)
         self._launching_flag(slug).touch()
 
-        result = subprocess.run([
+        argv = [
             "bash", str(SCRIPTS / "spawn-agent.sh"),
             "workers", slug, f"/{agent_type}", slug, self.project, str(repo),
-        ], capture_output=True, text=True)
+        ]
+        if model:
+            argv.append(model)
+        result = subprocess.run(argv, capture_output=True, text=True)
+
+        if result.returncode == 3 and model:
+            self._launching_flag(slug).unlink(missing_ok=True)
+            self._record_model_rejected(slug, full_slug, model, model_level, agent_type)
+            return
 
         # Check the return code: spawn-agent.sh refuses duplicate window names and
         # aborts if the window dies before the REPL appears. Registering a worker
@@ -289,7 +406,7 @@ class Launcher:
                    f"{result.stderr.strip()[:200]}")
             return
 
-        self._register_worker(slug, agent_type, full_slug)
+        self._register_worker(slug, agent_type, full_slug, model)
         log("launcher     ", f"{agent_type}-spawned", slug)
         _print(f"spawned {agent_type} for {slug}")
 
@@ -310,6 +427,37 @@ class Launcher:
         except OSError:
             pass
 
+    def _record_model_rejected(self, slug: str, full_slug: str, model: str,
+                               level: str, agent_type: str) -> None:
+        """Remember that Claude rejected `model` for this task, and say so once."""
+        log("launcher     ", f"model-rejected:{model}", slug)
+        _print(f"ERROR: Claude rejected model {model!r} for {slug} — refusing it until it changes")
+        try:
+            (SIGNALS / f"{slug}.model-rejected").write_text(model + "\n")
+        except OSError:
+            pass
+        source = MODEL_SOURCE.get(level, "the agentmesh model setting")
+        source = source.replace("${env}", f"${model_env_var(agent_type)}")
+        body = MODEL_REJECTED_COMMENT.format(model=model, source=source)
+        notecove(f'task comments add {shlex.quote(full_slug or slug)} --user "Launcher" {shlex.quote(body)}')
+
+    def _model_still_rejected(self, slug: str, model: str | None) -> bool:
+        """True while the task still resolves to the model Claude last rejected.
+
+        Any other value — a fixed `Model:` line, a changed env, or no model at
+        all — clears the record and lets the spawn go ahead.
+        """
+        flag = SIGNALS / f"{slug}.model-rejected"
+        try:
+            rejected = flag.read_text().strip()
+        except OSError:
+            return False
+        if model and rejected == model:
+            log("launcher     ", "task-refused-model-rejected", slug)
+            return True
+        flag.unlink(missing_ok=True)
+        return False
+
     def _full_slug(self, slug: str) -> str:
         """The cached full slug for slug, or the short slug if none is known."""
         try:
@@ -318,7 +466,8 @@ class Launcher:
             return slug
         return cached or slug
 
-    def _register_worker(self, slug: str, agent_type: str, full_slug: str = "") -> None:
+    def _register_worker(self, slug: str, agent_type: str, full_slug: str = "",
+                         model: str | None = None) -> None:
         """Record the worker in signals/workers, replacing any existing entry.
 
         Replace rather than append: adoption can re-spawn a worker for a slug the
@@ -336,8 +485,16 @@ class Launcher:
         # The optional 4th field is the full slug. Readers that only know the
         # three-field form (awk '{print $1}', `len(parts) >= 3`) are unaffected.
         entry = f"{slug} {slug} {agent_type}"
-        if full_slug and full_slug != slug:
+        has_full = bool(full_slug and full_slug != slug)
+        if has_full:
             entry += f" {full_slug}"
+        # The optional 5th field is the resolved model. Field 4 becomes "-" when
+        # the full slug is unknown, so the model stays positional. Whitespace is
+        # squashed: the value is unvalidated, and one field must stay one field.
+        if model:
+            if not has_full:
+                entry += " -"
+            entry += " " + "_".join(model.split())
         lines.append(entry)
         workers_file.write_text("\n".join(lines) + "\n")
 
@@ -667,19 +824,26 @@ class Launcher:
 
                 # A respawned worker must land in the same repository as the
                 # one it replaces, so the Repo: line is honoured here too.
-                status, repo = self._task_repo(slug, full_slug)
-                if status == "read-failed":
+                text = self._task_description(slug, full_slug)
+                if text is None:
                     log("launcher     ", "adoption-skipped-repo-unread", slug)
                     continue
+                status, repo = repo_from_description(text)
                 if status == "missing":
                     log("launcher     ", "adoption-skipped-repo-missing", slug)
                     self._refuse_repo_missing(slug, full_slug, repo)
+                    continue
+                # Same resolution as pickup: a respawned worker keeps its model
+                # unless the task, the env or --model has changed since.
+                level, model = resolve_model(text, agent_type, self.model, self.type_models)
+                if self._model_still_rejected(slug, model):
                     continue
 
                 log("launcher     ", f"task-adopted:{state.lower()}", slug)
                 _print(f"adopting {slug} (was {state}, worker gone) -> {agent_type}")
                 (SIGNALS / f"{slug}.repo-missing").unlink(missing_ok=True)
-                self._spawn_worker(slug, agent_type, full_slug, repo)
+                log("launcher     ", f"model-resolved:{level}:{model or '-'}", slug)
+                self._spawn_worker(slug, agent_type, full_slug, repo, model, level)
                 live_windows.add(slug)
 
     # -----------------------------------------------------------------------
@@ -738,22 +902,28 @@ class Launcher:
 
             (SIGNALS / f"{slug}.untyped").unlink(missing_ok=True)
 
-            status, repo = self._task_repo(slug, full_slug)
-            if status == "read-failed":
+            text = self._task_description(slug, full_slug)
+            if text is None:
                 # Never fall back to AGENTMESH on doubt: that would start the
                 # worker in the wrong repository. The next scan retries.
                 log("launcher     ", "task-skipped-repo-unread", slug)
                 continue
+            status, repo = repo_from_description(text)
             if status == "missing":
                 self._refuse_repo_missing(slug, full_slug, repo)
+                continue
+            level, model = resolve_model(text, agent_type, self.model, self.type_models)
+            if self._model_still_rejected(slug, model):
                 continue
 
             title = task.get("title", "")
             log("launcher     ", "task-picked-up", slug)
-            _print(f"picked up {slug}: {title} -> {agent_type} in {repo}")
+            _print(f"picked up {slug}: {title} -> {agent_type} in {repo}"
+                   + (f" on {model}" if model else ""))
             (SIGNALS / f"{slug}.repo-missing").unlink(missing_ok=True)
+            log("launcher     ", f"model-resolved:{level}:{model or '-'}", slug)
 
-            self._spawn_worker(slug, agent_type, full_slug, repo)
+            self._spawn_worker(slug, agent_type, full_slug, repo, model, level)
             slots -= 1
 
     def _triage(self, task: dict) -> str | None:
@@ -770,18 +940,13 @@ class Launcher:
                     return mapped
         return None
 
-    def _task_repo(self, slug: str, full_slug: str) -> tuple[str, Path | None]:
-        """Where this task's worker should start, read from its description.
-
-        Returns (status, path):
-          ("default", AGENTMESH)  — no `Repo:` line
-          ("ok", <dir>)           — the line, resolved, names a directory
-          ("missing", <path>)     — the line resolves to no directory
-          ("read-failed", None)   — the description could not be read
+    def _task_description(self, slug: str, full_slug: str) -> str | None:
+        """The task's full description text, or None if it could not be read.
 
         `task list` carries only a truncated `contentPreview`, so the full text
         is fetched with `task show`. That costs one CLI call per task actually
-        about to be spawned — triage has already passed by the time this runs.
+        about to be spawned — triage has already passed by the time this runs —
+        and feeds every description line (`Repo:`, `Model:`) from that one read.
         """
         result = run_bash(f"{NOTECOVE_BIN} task show {shlex.quote(full_slug or slug)} --json")
         try:
@@ -789,17 +954,21 @@ class Launcher:
         except (json.JSONDecodeError, ValueError):
             task = None
         if not isinstance(task, dict):
-            return "read-failed", None
+            return None
         text = task.get("contentText")
         if text is None:
             text = task.get("contentPreview") or ""
-        raw = parse_repo_line(text)
-        if raw is None:
-            return "default", AGENTMESH.resolve()
-        path = resolve_repo(raw)
-        if not path.is_dir():
-            return "missing", path
-        return "ok", path
+        return text
+
+    def _task_repo(self, slug: str, full_slug: str) -> tuple[str, Path | None]:
+        """Where this task's worker should start; see repo_from_description.
+
+        ("read-failed", None) when the description could not be read.
+        """
+        text = self._task_description(slug, full_slug)
+        if text is None:
+            return "read-failed", None
+        return repo_from_description(text)
 
     def _refuse_repo_missing(self, slug: str, full_slug: str, path: Path | None) -> None:
         """Leave the task where it is, commenting at most once (like untyped)."""
@@ -858,7 +1027,18 @@ def main() -> None:
                              "then $AGENTMESH_PROFILE_NAME, then the historical id)")
     parser.add_argument("--poll-interval", type=int, default=30,
                         help="Seconds between Ready-task scans (default: 30)")
+    parser.add_argument("--model", default=None,
+                        help="Global Claude model for workers (default: none, i.e. "
+                             "Claude Code's own). Overridden by --type-model and by a "
+                             "task's `Model:` line.")
+    parser.add_argument("--type-model", action="append", default=[], metavar="HANDLE=MODEL",
+                        help="Model for one agent type, e.g. implementer=opus; repeatable. "
+                             "bootstrap.sh builds these from $AGENTMESH_MODEL_<TYPE>.")
     args = parser.parse_args()
+    try:
+        type_models = parse_type_models(args.type_model)
+    except ValueError as e:
+        sys.exit(str(e))
 
     if not args.profile:
         # One implementation of the resolution order: the shell helper.
@@ -875,6 +1055,8 @@ def main() -> None:
         max_workers=args.max_workers,
         profile=args.profile,
         poll_interval=args.poll_interval,
+        model=args.model,
+        type_models=type_models,
     ).run()
 
 
