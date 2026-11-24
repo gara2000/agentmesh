@@ -37,6 +37,11 @@
 # cannot tell its replies apart. Replies go through reply_pr_comment in
 # agent-notecove.sh, which ends each with a visible AI-response footer and then
 # REPLY_MARKER, a hidden HTML comment; any comment containing it is ignored.
+#
+# A failed CI check on an open PR travels the same way: one "PR Monitor" comment
+# naming the failed checks and telling the worker to fix and push (or explain
+# why the failure is not its own). Each failure is reported once per (PR, head
+# commit, check), so a push that fails again is reported again.
 set -uo pipefail
 
 ONCE=0
@@ -66,6 +71,9 @@ CLOSED="$SIGNALS/${SLUG}.pr-closed"
 # been taken. Survives a monitor restart, so a respawned monitor does not
 # replay old comments.
 PR_SEEN="$SIGNALS/${SLUG}.pr-seen-comments"
+# Failed CI checks already reported, one "<pr-url> <head-sha> <check>" per line.
+# Keyed on the head commit: a fix pushed and failing again is a new failure.
+PR_CI="$SIGNALS/${SLUG}.pr-ci-reported"
 
 MONITOR_AUTHOR="PR Monitor"
 # Must equal PR_REPLY_MARKER in agent-notecove.sh, which appends it.
@@ -249,6 +257,100 @@ print(header + "\n" + "\n".join(lines) + "\n\n" + footer)
   rm -f "$pending"
 }
 
+# check_pr_ci <pr-url> <head-sha>
+#
+# Lists the PR's checks and, if any have failed on <head-sha> that were not
+# reported yet, posts one NoteCove comment naming them. Only the "fail" bucket
+# counts: pending, cancelled and skipped checks are not the worker's to fix.
+# gh exits non-zero whenever a check is failing or pending, so its exit code
+# says nothing; output that is not a JSON list (no checks, a gh error) means
+# nothing to report this poll. As with review comments, a failed post leaves
+# the record untouched and the failure is retried next poll.
+check_pr_ci() {
+  local PR_URL="$1" HEAD="$2" checks
+  checks=$(gh pr checks "$PR_URL" --json name,workflow,bucket,link 2>/dev/null)
+  [ -n "$checks" ] || return 0
+
+  local pending="$PR_CI.pending" message
+  message=$(printf '%s' "$checks" | PR_CI="$PR_CI" PENDING="$pending" \
+    PR_URL="$PR_URL" HEAD="$HEAD" python3 -c '
+import json, os, sys
+
+reported_path, pending_path = os.environ["PR_CI"], os.environ["PENDING"]
+url, head = os.environ["PR_URL"], os.environ["HEAD"]
+
+try:
+    checks = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+if not isinstance(checks, list):
+    sys.exit(0)
+
+reported = set()
+if os.path.exists(reported_path):
+    with open(reported_path) as f:
+        reported = {l.rstrip("\n") for l in f}
+
+new, keys = [], []
+for c in checks:
+    if not isinstance(c, dict) or c.get("bucket") != "fail":
+        continue
+    name = " ".join(str(c.get("name") or "?").split())
+    workflow = " ".join(str(c.get("workflow") or "").split())
+    label = f"{workflow} / {name}" if workflow else name
+    key = f"{url} {head} {label}"
+    if key in reported or key in keys:
+        continue
+    keys.append(key)
+    new.append((label, c.get("link") or ""))
+
+if not new:
+    sys.exit(0)
+with open(pending_path, "w") as f:
+    f.writelines(k + "\n" for k in keys)
+
+n = len(new)
+plural = "s" if n != 1 else ""
+header = f"CI failing on {url} (commit {head[:7]}): {n} failed check{plural}"
+footer = (
+    f"To the worker: inspect each failure (gh pr checks {url}; for GitHub Actions, "
+    "gh run view <run-id> --log-failed). If this PR caused it, fix it: commit and push "
+    "to the PR branch. If it is unrelated or flaky, leave the code alone and say so "
+    "in your summary. Then post_summary and request_attention."
+)
+
+# NoteCove rejects a comment over 996 characters; keep well inside it.
+budget = 980 - len(header) - len(footer) - 4
+lines, used = [], 0
+for i, (label, link) in enumerate(new):
+    e = f"- {label}: {link}" if link else f"- {label}"
+    more = f"- (+{n - i - 1} more: gh pr checks {url})" if i < n - 1 else ""
+    if used + len(e) + 1 + len(more) > budget:
+        lines.append(f"- (+{n - i} more: gh pr checks {url})")
+        break
+    lines.append(e)
+    used += len(e) + 1
+
+print(header + "\n" + "\n".join(lines) + "\n\n" + footer)
+')
+
+  if [ -z "$message" ]; then
+    rm -f "$pending"
+    return 0
+  fi
+
+  local ref
+  ref=$(nc_ref "$SLUG")
+  if nc_run task comments add "$ref" --user "$MONITOR_AUTHOR" "$message" >/dev/null 2>&1; then
+    cat "$pending" >> "$PR_CI"
+    log_event "pr-ci-failed-detected"
+    echo "[pr-monitor] CI failing on $PR_URL — posted to the task"
+  else
+    log_event "pr-ci-post-failed"
+  fi
+  rm -f "$pending"
+}
+
 if [ -n "$ARG_URL" ] && ! in_list "$PRS" "$ARG_URL"; then
   printf '%s\n' "$ARG_URL" >> "$PRS"
 fi
@@ -308,7 +410,10 @@ while true; do
       log_event "pr-url-unparsed"
     fi
 
-    state=$(gh pr view "$url" --json state --jq '.state' 2>/dev/null </dev/null || echo "")
+    view=$(gh pr view "$url" --json state,headRefOid --jq '.state + " " + .headRefOid' \
+      2>/dev/null </dev/null || echo "")
+    state="" head=""
+    read -r state head <<< "$view"
     case "$state" in
       MERGED)
         printf '%s\n' "$url" >> "$MERGED"
@@ -324,6 +429,8 @@ while true; do
         # OPEN, or unknown because gh failed: still outstanding either way.
         open=$((open + 1))
         check_pr_comments "$url" </dev/null
+        # No head commit (gh failed): nothing to key a CI report on this poll.
+        [ -n "$head" ] && check_pr_ci "$url" "$head" </dev/null
         ;;
     esac
   done < <(watched_urls)

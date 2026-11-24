@@ -69,6 +69,7 @@ Agents get `$TASK_REF` from `agent_init` and must use it for any raw `notecove` 
 | `tmux send-keys` into `workers:<slug>` | Sidecar → Agent | A new comment (not the agent's own) or a state change the agent did not make |
 | `tmux send-keys` into `workers:<slug>` | PR Monitor → Agent | Every one of the agent's PRs was merged |
 | NoteCove comment by `PR Monitor` → sidecar | PR Monitor → Agent | New inline review comments on any of the agent's PRs |
+| NoteCove comment by `PR Monitor` → sidecar | PR Monitor → Agent | A CI check failed on any of the agent's open PRs (once per commit) |
 
 **Why messages and not `tmux wait-for`.** The old protocol fired `<slug>-nudge-<seq>` at an agent blocked inside `tmux wait-for`. That could only ever reach an agent *already waiting*: anything the user said while the agent was working went unseen until the agent next chose to wait — which, mid-implementation, could be many minutes or never. Typing into the REPL reaches the agent in both states. Idle at its prompt it starts a new turn; mid-turn, Claude Code queues the input and picks it up when the current turn ends.
 
@@ -285,6 +286,7 @@ Responsibilities, for each watched PR not yet resolved:
 - `MERGED`: record the URL in `signals/<slug>.merged` (logged `pr-merged-seen`) and stop polling it
 - `CLOSED` without merging: record it in `signals/<slug>.pr-closed` (logged `pr-closed-unmerged`) and drop it from the set — it no longer holds the task open, and it does not count as merged
 - Otherwise, list the PR's **inline review comments** and, if any are new, post **one NoteCove task comment per PR** as `PR Monitor` listing them with complete instructions (address if relevant, ignore if not, reply briefly in each thread)
+- Also list the PR's **CI checks** and, if any newly failed on the head commit, post **one NoteCove task comment per PR** as `PR Monitor` naming them with instructions (inspect, fix and push if this PR caused it, otherwise say so)
 
 **Only when every watched PR is resolved and at least one merged** does it append a single `pr-merged` inbox entry (`urls` lists every merged PR; `url` is kept for older readers), deliver the nudge, and exit. An earlier merge wakes nobody — there is nothing for the worker to do yet. Before exiting it re-reads the list, so a `watch_pr` racing with that last poll is not lost. If every PR was closed unmerged it says nothing and keeps waiting for a new one.
 
@@ -298,6 +300,12 @@ It does **not** set task state — the worker wakes, sees the merge, and sets `D
 - **The worker's replies are skipped by marker, not author.** It replies under the same GitHub account as the user, so its replies end with a hidden `<!-- agentmesh -->` and the monitor ignores any comment containing it. Without the marker every reply would wake the worker to reply to itself.
 - **Every worker reply says it is AI-generated.** Under the user's account a reviewer cannot otherwise tell the agent's replies from the user's. The worker replies only through `reply_pr_comment <pr-url> <thread-id> <text>` in `agent-notecove.sh`, which appends a visible `🤖 AI-generated response, posted by the AgentMesh <Role> agent` footer and then the marker — once, whatever the agent typed — so neither depends on the agent remembering. The PR Monitor's instructions name the helper rather than the raw `gh api` call.
 - **A failed `gh api` call or NoteCove post leaves the baseline untouched**, so the comments are retried next poll rather than lost.
+
+**Failed CI checks travel the same way.** Each poll of an open PR runs `gh pr checks --json` and reports checks in the `fail` bucket (pending, cancelled and skipped are not the worker's to fix) as one `PR Monitor` comment per PR, so a red CI reaches the worker without the user relaying it.
+
+- **Once per (PR, head commit, check)**, recorded in `signals/<slug>.pr-ci-reported`. The head SHA comes from the same `gh pr view` call that reads the state. A fix pushed and failing again is a new commit, so it is reported again; a fresh monitor (file lost to adoption or crash cleanup) reports whatever is failing now.
+- **gh's exit code is ignored** — it is non-zero whenever any check is failing or pending; output that is not a JSON list means nothing to report this poll.
+- **A failed NoteCove post leaves the record untouched** (`pr-ci-post-failed`), so the failure is retried next poll.
 
 ### Watchdog
 
@@ -314,7 +322,7 @@ Responsibilities:
 - Remove the entry from the registry regardless (window gone = worker dead)
 - If the state is terminal (`done`, `won't do`) → the worker finished cleanly; reset the crash count and clean up
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, `.hot-until`, and `.repo` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.pr-ci-reported`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, `.hot-until`, and `.repo` files.
 
 The worker registry (`signals/workers`) is a line-oriented file maintained by the launcher:
 ```
@@ -466,7 +474,7 @@ agentmesh/
 │   ├── watchdog.sh         # crash detector; re-queues tasks whose worker windows disappeared
 │   ├── folder-cleanup.sh   # async folder housekeeping; moves Done/Won't-Do task subfolders to the Done folder
 │   ├── reaper.sh           # kills the worker, sidecar and pr-monitor of any task that has reached a terminal state
-│   ├── pr-monitor.sh       # PR merge + review-comment detector; merge → inbox, new inline comments → NoteCove task comment
+│   ├── pr-monitor.sh       # PR merge + review-comment + CI-failure detector; merge → inbox, new inline comments / failed checks → NoteCove task comment
 │   ├── spawn-agent.sh      # launches a Claude agent in a new tmux window
 │   ├── task-done.sh        # terminal-state cleanup, called by the worker via finish_task: unblocks dependents, stops sidecar/pr-monitor
 │   ├── agentmesh.sh        # lifecycle CLI: start / stop (levels 1–4) / clean / switch / status / attach / task
@@ -507,6 +515,7 @@ agentmesh/
     ├── <slug>.merged           # pr-monitor: URLs of the task's PRs seen merged
     ├── <slug>.pr-closed        # pr-monitor: URLs of the task's PRs closed without merging; no longer watched
     ├── <slug>.pr-seen-comments # pr-monitor baseline: inline review comment ids already reported or ignored
+    ├── <slug>.pr-ci-reported   # pr-monitor: failed CI checks already reported, "<pr-url> <head-sha> <check>" per line
     ├── <slug>.crash-count      # consecutive crash counter; written by watchdog, reset on clean exit or `agentmesh clean`
     ├── <slug>.terminal-since   # reaper: first time the task was seen terminal; deleted if it is reopened
     ├── <slug>.full-slug        # the task's unambiguous full slug; written by the launcher at spawn, read by every CLI call
@@ -597,6 +606,8 @@ timestamp       component       event_type                      slug
 2026-04-26T...  pr-monitor      pr-comments-detected             WORK-xyz
 2026-04-26T...  pr-monitor      pr-comments-fetch-failed         WORK-xyz
 2026-04-26T...  pr-monitor      pr-comments-post-failed          WORK-xyz
+2026-04-26T...  pr-monitor      pr-ci-failed-detected            WORK-xyz
+2026-04-26T...  pr-monitor      pr-ci-post-failed                WORK-xyz
 2026-04-26T...  pr-monitor      pr-url-unparsed                  WORK-xyz
 2026-04-26T...  folder-cleanup  folder-moved                    WORK-xyz
 2026-04-26T...  reaper          started                          -
@@ -777,6 +788,7 @@ This covers every way a worker can disappear, not just a deliberate restart:
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PRs merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` (once per PR); fires when all are merged |
 | Reviewer leaves inline comments on the PR | `pr-monitor` posts them to the task; the sidecar wakes the worker |
+| A CI check fails on the PR | `pr-monitor` posts the failed checks to the task, once per commit; the sidecar wakes the worker |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |
 | A daemon window killed or never started | `agentmesh start` respawns it, workers untouched |

@@ -11,8 +11,12 @@ itself; and nothing lost when gh or NoteCove fails.
 One monitor watches every PR of its task (signals/<slug>.prs). The worker is told
 to set Done only once all of them have merged; a PR closed unmerged drops out.
 
-PR number <n> can be given its own state / comments via stub files state-<n> /
-comments-<n>.jsonl; without them every PR shares state / comments.jsonl.
+PR number <n> can be given its own state / comments / checks via stub files
+state-<n> / comments-<n>.jsonl / checks-<n>.json; without them every PR shares
+state / comments.jsonl / checks.json. A state file holds "<STATE> [<head-sha>]".
+
+A failed CI check is reported the same way as a review comment: one NoteCove
+comment as "PR Monitor", once per (PR, head commit, check).
 
 Driven with --once against stub gh / notecove / tmux on PATH.
 """
@@ -34,6 +38,13 @@ n=$(printf '%s' "$3" | sed -nE 's#.*/(pull|pulls)/([0-9]+).*#\2#p')
 case "$1 $2" in
   "pr view")
     if [ -f "$STUB/state-$n" ]; then cat "$STUB/state-$n"; else cat "$STUB/state" 2>/dev/null; fi ;;
+  "pr checks")
+    [ -f "$STUB/gh-checks-fail" ] && { echo "boom" >&2; exit 1; }
+    if [ -f "$STUB/checks-$n.json" ]; then cat "$STUB/checks-$n.json"
+    else cat "$STUB/checks.json" 2>/dev/null; fi
+    # gh exits 1 when a check failed and 8 while any is pending, --json or not.
+    grep -q '"fail"' "$STUB/checks-$n.json" "$STUB/checks.json" 2>/dev/null && exit 1
+    exit 0 ;;
   "api "*)
     [ -f "$STUB/gh-api-fail" ] && exit 1
     if [ -f "$STUB/comments-$n.jsonl" ]; then cat "$STUB/comments-$n.jsonl"
@@ -104,6 +115,14 @@ class PrMonitorHarness(unittest.TestCase):
 
     def set_pr_state(self, pr, state):
         (self.stub / f"state-{pr}").write_text(state + "\n")
+
+    def set_checks(self, checks, pr=None):
+        name = f"checks-{pr}.json" if pr else "checks.json"
+        (self.stub / name).write_text(json.dumps(checks))
+
+    def ci_reported(self):
+        p = self.signals / f"{self.SLUG}.pr-ci-reported"
+        return p.read_text().splitlines() if p.exists() else None
 
     def watch(self, *urls):
         with open(self.signals / f"{self.SLUG}.prs", "a") as f:
@@ -423,6 +442,142 @@ class TestMultiplePrs(PrMonitorHarness):
         self.set_pr_state(11, "OPEN")
         self.run_once()
         self.assertEqual(self.inbox(), [])
+
+
+def _check(name, bucket="fail", workflow="CI", link=None):
+    return {"name": name, "bucket": bucket, "workflow": workflow,
+            "link": link or f"https://github.com/acme/widgets/actions/runs/1/job/{name}"}
+
+
+SHA = "abc1234def5678"
+SHA_2 = "fed9876cba5432"
+
+
+class TestCiFailures(PrMonitorHarness):
+    """A failed check on an open PR is posted to the task once per commit."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_state(f"OPEN {SHA}")
+
+    def test_failed_check_posts_one_comment_as_pr_monitor(self):
+        self.set_checks([_check("lint"), _check("unit", bucket="pass")])
+        self.run_once()
+        posts = self.posted()
+        self.assertEqual(len(posts), 1)
+        args = posts[0]
+        self.assertEqual(args[3], self.FULL, "must address the task by full slug")
+        self.assertEqual(args[args.index("--user") + 1], "PR Monitor")
+        text = args[-1]
+        self.assertIn(f"CI failing on {PR_URL}", text)
+        self.assertIn(SHA[:7], text)
+        self.assertIn("CI / lint", text)
+        self.assertIn("actions/runs/1/job/lint", text)
+        self.assertNotIn("unit", text, "passing checks are not listed")
+        self.assertIn("--log-failed", text)
+        self.assertIn("push", text)
+        self.assertIn("request_attention", text)
+        self.assertLessEqual(len(text), 996)
+        self.assertEqual(self.ci_reported(), [f"{PR_URL} {SHA} CI / lint"])
+        self.assertIn("pr-ci-failed-detected", self.events())
+
+    def test_reported_once_per_commit(self):
+        self.set_checks([_check("lint")])
+        self.run_once()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_another_check_failing_later_on_the_same_commit_is_reported(self):
+        self.set_checks([_check("lint"), _check("unit", bucket="pending")])
+        self.run_once()
+        self.set_checks([_check("lint"), _check("unit")])
+        self.run_once()
+        posts = [p[-1] for p in self.posted()]
+        self.assertEqual(len(posts), 2)
+        self.assertIn("CI / unit", posts[1])
+        self.assertNotIn("CI / lint", posts[1], "lint was already reported")
+
+    def test_new_commit_failing_again_is_reported_again(self):
+        self.set_checks([_check("lint")])
+        self.run_once()
+        self.set_state(f"OPEN {SHA_2}")
+        self.run_once()
+        posts = [p[-1] for p in self.posted()]
+        self.assertEqual(len(posts), 2)
+        self.assertIn(SHA_2[:7], posts[1])
+
+    def test_passing_pending_cancelled_and_skipped_post_nothing(self):
+        self.set_checks([_check("a", bucket="pass"), _check("b", bucket="pending"),
+                         _check("c", bucket="cancel"), _check("d", bucket="skipping")])
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+        self.assertNotIn("pr-ci", self.events())
+
+    def test_no_checks_posts_nothing(self):
+        # gh prints "no checks reported" to stderr and nothing on stdout.
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+
+    def test_gh_failure_posts_nothing_and_is_retried(self):
+        self.set_checks([_check("lint")])
+        (self.stub / "gh-checks-fail").touch()
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+        (self.stub / "gh-checks-fail").unlink()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_failed_post_is_retried_next_poll(self):
+        self.set_checks([_check("lint")])
+        (self.stub / "nc-fail").touch()
+        self.run_once()
+        self.assertIsNone(self.ci_reported())
+        self.assertIn("pr-ci-post-failed", self.events())
+        (self.stub / "nc-fail").unlink()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+        self.assertEqual(len(self.ci_reported()), 1)
+
+    def test_unknown_head_commit_skips_the_check(self):
+        self.set_state("OPEN")
+        self.set_checks([_check("lint")])
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+        self.assertNotIn("pr checks", (self.stub / "gh.log").read_text())
+
+    def test_merged_pr_is_not_checked(self):
+        self.set_state(f"MERGED {SHA}")
+        self.set_checks([_check("lint")])
+        self.run_once()
+        self.assertEqual(self.posted(), [])
+        self.assertNotIn("pr checks", (self.stub / "gh.log").read_text())
+
+    def test_check_without_workflow_is_named_alone(self):
+        self.set_checks([_check("ci/circleci: build", workflow="")])
+        self.run_once()
+        text = self.posted()[0][-1]
+        self.assertIn("- ci/circleci: build:", text)
+
+    def test_many_failures_stay_under_the_notecove_limit(self):
+        self.set_checks([_check(f"job-{i}-" + "x" * 40) for i in range(40)])
+        self.run_once()
+        text = self.posted()[0][-1]
+        self.assertLessEqual(len(text), 996)
+        self.assertIn("40 failed checks", text)
+        self.assertIn("more:", text)
+        self.assertIn("request_attention", text, "instructions must survive truncation")
+        self.assertEqual(len(self.ci_reported()), 40, "every failure counts as reported")
+
+    def test_each_pr_is_reported_separately(self):
+        self.watch(PR_URL_2)
+        self.set_pr_state(9, f"OPEN {SHA_2}")
+        self.set_checks([_check("lint")], pr=7)
+        self.set_checks([_check("build")], pr=9)
+        self.run_once()
+        posts = [p[-1] for p in self.posted()]
+        self.assertEqual(len(posts), 2)
+        self.assertTrue(any(PR_URL in t and "CI / lint" in t for t in posts))
+        self.assertTrue(any(PR_URL_2 in t and "CI / build" in t for t in posts))
 
 
 class TestUnparsableUrl(PrMonitorHarness):
