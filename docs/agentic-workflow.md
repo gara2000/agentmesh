@@ -490,7 +490,7 @@ An `Attention` task whose window is gone is **not** a clean exit: the task is mi
 
 This path still **counts crashes**. Adoption respawns on a 30s cadence, so a worker that reproducibly dies right after `request_attention` would otherwise be respawned forever with no cap and nothing reported. At three the task is set `Blocked` with a comment warning that the user's reply may never have been read.
 
-Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, and `.hot-until` files.
+Crash cleanup kills `side-<slug>` and `pr-mon-<slug>` and removes the task's `.inbox`, `.ready`, `.pending-delivery`, `.self-state`, `.launching`, `.seen-comments`, `.seen-state`, `.terminal-since`, `.full-slug`, `.task-id`, `.pr-seen-comments`, `.pr-ci-reported`, `.prs`, `.merged`, `.pr-closed`, `.summary-posted`, and `.hot-until` files.
 
 **Crash detection latency**: at most 60 seconds (two poll cycles).
 
@@ -592,6 +592,15 @@ New ones are not delivered by the monitor. It posts **one NoteCove comment on th
 - **The worker's own replies are skipped by marker, not author.** The worker posts under the same GitHub account as the user, so the author cannot tell them apart; any comment containing `<!-- agentmesh -->` is recorded as seen and never reported. The same reason — a reviewer cannot tell the agent from the user — is why `reply_pr_comment` adds the visible AI-response footer. Bot comments are reported — the worker judges their relevance.
 - **Nothing is lost on failure.** A failed `gh api` call (`pr-comments-fetch-failed`) or a failed NoteCove post (`pr-comments-post-failed`) leaves the baseline untouched, so the same comments are retried on the next poll.
 - **The comment stays under NoteCove's 996-character limit.** A long batch is cut to "+N more" with the command to list them all; the instructions are never truncated.
+
+### Failed CI checks
+
+Each poll of an open PR also lists its checks (`gh pr checks <url> --json name,workflow,bucket,link`) and reports the ones in the `fail` bucket the same way as review comments: **one `PR Monitor` comment per PR**, naming each failed check (`<workflow> / <name>: <link>`) and the head commit, followed by the instructions — inspect the failure (`gh run view <run-id> --log-failed` for GitHub Actions), fix and push if this PR caused it, otherwise leave the code alone and say so, then `post_summary` and `request_attention`. Pending, cancelled and skipped checks are not reported. Before this, a red CI went unnoticed until the user mentioned it.
+
+- **Once per commit.** Reported failures are recorded in `signals/<slug>.pr-ci-reported` as `<pr-url> <head-sha> <check>` lines. The head commit comes from the same `gh pr view` call that reads the PR state. A check failing again after a fix is pushed is a new commit and so a new report; another check failing later on the same commit is reported on its own.
+- **A fresh monitor reports what is failing now.** The file is lost on adoption or crash cleanup, like the review-comment baseline, and for the same reason it is not treated as history.
+- **gh's exit code is ignored** — `gh pr checks` exits non-zero whenever a check is failing or pending. Output that is not a JSON list (no checks, a gh error) means nothing to report this poll.
+- **Nothing is lost on failure.** A failed NoteCove post (`pr-ci-post-failed`) leaves the record untouched, so the failure is retried next poll; a successful one logs `pr-ci-failed-detected`. The comment stays under the 996-character limit the same way.
 
 ---
 
@@ -718,6 +727,7 @@ Every NoteCove call the sidecar makes is bounded by a 30s `timeout`. Without one
 | Launcher restarts while workers survive | Reconciliation re-registers them |
 | PRs merged on GitHub instead of `approve` | `pr-monitor`, started by the agent via `watch_pr` (once per PR); fires when all are merged |
 | Reviewer leaves inline comments on the PR | `pr-monitor` posts them to the task as a `PR Monitor` comment; the sidecar wakes the worker |
+| A CI check fails on the PR | `pr-monitor` posts the failed checks to the task as a `PR Monitor` comment, once per commit; the sidecar wakes the worker |
 | Launcher itself exits | Its `while true` restart loop in `bootstrap.sh`, after 5s |
 | Launcher up but wedged (stale heartbeat) | `agentmesh start` replaces it; no stop needed |
 | A daemon window killed or never started | `agentmesh start` respawns it, workers untouched |
