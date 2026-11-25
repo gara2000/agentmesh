@@ -102,6 +102,7 @@ rm -f "$AGENTMESH/signals/${SLUG}.inbox" \
       "$AGENTMESH/signals/${SLUG}.merged" \
       "$AGENTMESH/signals/${SLUG}.pr-seen-comments" \
       "$AGENTMESH/signals/${SLUG}.pr-ci-reported" \
+      "$AGENTMESH/signals/${SLUG}.pr-conflict-reported" \
       "$AGENTMESH/signals/${SLUG}.prs" \
       "$AGENTMESH/signals/${SLUG}.pr-closed" \
       "$AGENTMESH/signals/${SLUG}.sidecar-handle" \

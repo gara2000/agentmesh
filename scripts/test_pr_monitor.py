@@ -580,6 +580,96 @@ class TestCiFailures(PrMonitorHarness):
         self.assertTrue(any(PR_URL_2 in t and "CI / build" in t for t in posts))
 
 
+class TestMergeConflicts(PrMonitorHarness):
+    """A PR GitHub reports as CONFLICTING is posted to the task once per commit."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_state(f"OPEN {SHA} CONFLICTING main")
+
+    def conflict_reported(self):
+        p = self.signals / f"{self.SLUG}.pr-conflict-reported"
+        return p.read_text().splitlines() if p.exists() else None
+
+    def test_conflict_posts_one_comment_as_pr_monitor(self):
+        self.run_once()
+        posts = self.posted()
+        self.assertEqual(len(posts), 1)
+        args = posts[0]
+        self.assertEqual(args[3], self.FULL, "must address the task by full slug")
+        self.assertEqual(args[args.index("--user") + 1], "PR Monitor")
+        text = args[-1]
+        self.assertIn(f"Merge conflicts on {PR_URL}", text)
+        self.assertIn(SHA[:7], text)
+        self.assertIn("main", text)
+        self.assertIn("git merge origin/main", text)
+        self.assertIn("do not force-push", text)
+        self.assertIn("request_attention", text)
+        self.assertLessEqual(len(text), 996)
+        self.assertEqual(self.conflict_reported(), [f"{PR_URL} {SHA}"])
+        self.assertIn("pr-conflict-detected", self.events())
+
+    def test_mergeable_field_is_requested_from_the_existing_view(self):
+        self.run_once()
+        self.assertIn("mergeable", (self.stub / "gh.log").read_text())
+
+    def test_missing_base_branch_is_named_generically(self):
+        self.set_state(f"OPEN {SHA} CONFLICTING")
+        self.run_once()
+        self.assertIn("the base branch", self.posted()[0][-1])
+
+    def test_reported_once_per_head_commit(self):
+        self.run_once()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_new_head_still_conflicting_is_reported_again(self):
+        self.run_once()
+        self.set_state(f"OPEN {SHA_2} CONFLICTING main")
+        self.run_once()
+        posts = [p[-1] for p in self.posted()]
+        self.assertEqual(len(posts), 2)
+        self.assertIn(SHA_2[:7], posts[1])
+        self.assertEqual(self.conflict_reported(),
+                         [f"{PR_URL} {SHA}", f"{PR_URL} {SHA_2}"])
+
+    def test_mergeable_and_unknown_post_nothing(self):
+        for state in (f"OPEN {SHA} MERGEABLE main", f"OPEN {SHA} UNKNOWN main"):
+            self.set_state(state)
+            self.run_once()
+        self.assertEqual(self.posted(), [])
+        self.assertNotIn("pr-conflict", self.events())
+        self.assertIsNone(self.conflict_reported())
+
+    def test_failed_post_is_retried_next_poll(self):
+        (self.stub / "nc-fail").touch()
+        self.run_once()
+        self.assertIsNone(self.conflict_reported())
+        self.assertIn("pr-conflict-post-failed", self.events())
+        (self.stub / "nc-fail").unlink()
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+        self.assertEqual(self.conflict_reported(), [f"{PR_URL} {SHA}"])
+
+    def test_conflict_does_not_hold_back_the_merge_of_the_others(self):
+        # PR 7 conflicts and is still open; PR 9 has merged. Nothing is told to
+        # the worker while PR 7 is open. Once PR 7 merges, the worker is told
+        # once, and the conflict post is not repeated.
+        self.watch(PR_URL_2)
+        self.set_pr_state(9, "MERGED")
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1)
+        self.assertEqual(self.inbox(), [])
+
+        self.set_pr_state(7, f"MERGED {SHA} CONFLICTING main")
+        self.run_once()
+        self.assertEqual(len(self.posted()), 1, "a merged PR is not re-checked")
+        inbox = self.inbox()
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["kind"], "pr-merged")
+        self.assertEqual(inbox[0]["urls"], [PR_URL_2, PR_URL])
+
+
 class TestUnparsableUrl(PrMonitorHarness):
     def test_non_github_url_skips_comment_watch(self):
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
