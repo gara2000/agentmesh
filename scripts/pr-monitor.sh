@@ -42,6 +42,11 @@
 # naming the failed checks and telling the worker to fix and push (or explain
 # why the failure is not its own). Each failure is reported once per (PR, head
 # commit, check), so a push that fails again is reported again.
+#
+# A PR that conflicts with its base branch travels the same way: one "PR Monitor"
+# comment telling the worker to merge the base into the PR branch, resolve the
+# conflicts, and push. It is reported once per (PR, head commit). GitHub reports
+# MERGEABLE, CONFLICTING or UNKNOWN (still computing); only CONFLICTING is acted on.
 set -uo pipefail
 
 ONCE=0
@@ -74,6 +79,9 @@ PR_SEEN="$SIGNALS/${SLUG}.pr-seen-comments"
 # Failed CI checks already reported, one "<pr-url> <head-sha> <check>" per line.
 # Keyed on the head commit: a fix pushed and failing again is a new failure.
 PR_CI="$SIGNALS/${SLUG}.pr-ci-reported"
+# Merge conflicts already reported, one "<pr-url> <head-sha>" per line. Keyed on
+# the head commit: a push that still conflicts is a new report.
+PR_CONFLICT="$SIGNALS/${SLUG}.pr-conflict-reported"
 
 MONITOR_AUTHOR="PR Monitor"
 # Must equal PR_REPLY_MARKER in agent-notecove.sh, which appends it.
@@ -351,6 +359,36 @@ print(header + "\n" + "\n".join(lines) + "\n\n" + footer)
   rm -f "$pending"
 }
 
+# check_pr_conflict <pr-url> <head-sha> <mergeable> <base-branch>
+#
+# If GitHub reports the PR as CONFLICTING with its base and this head commit has
+# not been reported yet, posts one NoteCove comment telling the worker to merge
+# the base into the PR branch and resolve the conflicts. MERGEABLE and UNKNOWN
+# (GitHub still computing) post nothing and are retried on the next poll. A
+# failed post leaves the record untouched and is retried next poll.
+# The worker merges rather than rebases, so the push is a fast-forward and needs
+# no force-push.
+check_pr_conflict() {
+  local PR_URL="$1" HEAD="$2" MERGEABLE="$3" BASE="$4"
+  [ "$MERGEABLE" = "CONFLICTING" ] || return 0
+  in_list "$PR_CONFLICT" "$PR_URL $HEAD" && return 0
+
+  [ -n "$BASE" ] || BASE="the base branch"
+  local message
+  message="Merge conflicts on $PR_URL (commit ${HEAD:0:7}) with $BASE.
+To the worker: this PR cannot merge until the conflicts are resolved. Run: git fetch origin $BASE && git merge origin/$BASE in the PR branch (merge, not rebase, so do not force-push). Resolve each conflict, keeping the intent of both sides. Run the repo's checks, then commit and push to the PR branch. If a conflict cannot be resolved safely, do not push a guess: say which files conflict and why in your summary. Then post_summary and request_attention."
+
+  local ref
+  ref=$(nc_ref "$SLUG")
+  if nc_run task comments add "$ref" --user "$MONITOR_AUTHOR" "$message" >/dev/null 2>&1; then
+    printf '%s %s\n' "$PR_URL" "$HEAD" >> "$PR_CONFLICT"
+    log_event "pr-conflict-detected"
+    echo "[pr-monitor] merge conflicts on $PR_URL — posted to the task"
+  else
+    log_event "pr-conflict-post-failed"
+  fi
+}
+
 if [ -n "$ARG_URL" ] && ! in_list "$PRS" "$ARG_URL"; then
   printf '%s\n' "$ARG_URL" >> "$PRS"
 fi
@@ -410,10 +448,11 @@ while true; do
       log_event "pr-url-unparsed"
     fi
 
-    view=$(gh pr view "$url" --json state,headRefOid --jq '.state + " " + .headRefOid' \
+    view=$(gh pr view "$url" --json state,headRefOid,mergeable,baseRefName \
+      --jq '[.state, .headRefOid, .mergeable, .baseRefName] | join(" ")' \
       2>/dev/null </dev/null || echo "")
-    state="" head=""
-    read -r state head <<< "$view"
+    state="" head="" mergeable="" base=""
+    read -r state head mergeable base <<< "$view"
     case "$state" in
       MERGED)
         printf '%s\n' "$url" >> "$MERGED"
@@ -431,6 +470,7 @@ while true; do
         check_pr_comments "$url" </dev/null
         # No head commit (gh failed): nothing to key a CI report on this poll.
         [ -n "$head" ] && check_pr_ci "$url" "$head" </dev/null
+        [ -n "$head" ] && check_pr_conflict "$url" "$head" "$mergeable" "$base" </dev/null
         ;;
     esac
   done < <(watched_urls)

@@ -53,6 +53,7 @@ cleanup_task() {
         "${SIGNALS}/${slug}.task-id" \
         "${SIGNALS}/${slug}.pr-seen-comments" \
         "${SIGNALS}/${slug}.pr-ci-reported" \
+        "${SIGNALS}/${slug}.pr-conflict-reported" \
         "${SIGNALS}/${slug}.prs" \
         "${SIGNALS}/${slug}.merged" \
         "${SIGNALS}/${slug}.pr-closed" \
