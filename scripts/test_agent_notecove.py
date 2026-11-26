@@ -553,7 +553,7 @@ class TestReplyPrComment(AgentHarness):
 
     URL = "https://github.com/acme/widgets/pull/7"
     MARKER = "<!-- agentmesh -->"
-    FOOTER = "🤖 _AI-generated response, posted by the AgentMesh Implementer agent._"
+    FOOTER = "🤖 _AI-generated response._"
 
     def setUp(self):
         super().setUp()
