@@ -684,7 +684,7 @@ reply_pr_comment() {
         echo "reply_pr_comment: not a GitHub PR URL and numeric thread id: $pr_url $thread" >&2
         return 1
     fi
-    footer="🤖 _AI-generated response, posted by the AgentMesh ${AGENT_HANDLE:-agent} agent._"
+    footer="🤖 _AI-generated response._"
     # Normalise: drop any footer/marker the agent added itself, then append both
     # in a fixed order so the marker always ends the reply.
     body="${body//"$PR_REPLY_MARKER"/}"
